@@ -22,6 +22,7 @@ class VisionRequest(BaseModel):
     image_base64: str
     mime: str = "image/png"
     prompt: str = "看看这张图，说说你的感受。"
+    character_ids: list[str] = Field(default_factory=list)
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
@@ -40,7 +41,7 @@ async def images_chat(req: VisionRequest) -> StreamingResponse:
     api_key = req.api_key if req.api_key is not None else settings.model_api_key
     model = req.model or settings.model_vision
 
-    system = build_system_prompt()
+    system = build_system_prompt(character_ids=req.character_ids, messages=[{"role": "user", "content": req.prompt}])
     messages: list[dict] = []
     if system:
         messages.append({"role": "system", "content": system})

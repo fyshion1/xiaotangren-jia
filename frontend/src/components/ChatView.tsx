@@ -168,6 +168,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
       '/api/chat',
       {
         messages: next.map((m) => ({ role: m.role, content: m.content })),
+        character_ids: active.characterIds,
         base_url: config.baseUrl,
         api_key: config.apiKey,
         model: config.chatModel,
@@ -196,7 +197,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
       push(id, { role: 'assistant', content: '' })
       await streamSSE(
         '/api/images/chat',
-        { image_base64: base64, mime, prompt, base_url: config.baseUrl, api_key: config.apiKey, model: config.visionModel },
+        { image_base64: base64, mime, prompt, character_ids: active.characterIds, base_url: config.baseUrl, api_key: config.apiKey, model: config.visionModel },
         appendAssistantToken(id),
         () => setStreaming(false),
         (msg) => {

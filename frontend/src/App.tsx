@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import TopBar from './components/TopBar'
 import HomeView from './components/HomeView'
 import ChatView from './components/ChatView'
-import { loadCharacters, saveCharacters } from './data/characters'
 import type { CharacterProfile } from './data/characters'
+import { fetchCharacters, saveCharacter } from './api/client'
 
 type Theme = 'light' | 'dark'
 type View = 'home' | 'chat'
@@ -19,7 +19,8 @@ function initialTheme(): Theme {
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [view, setView] = useState<View>('chat')
-  const [characters, setCharacters] = useState<CharacterProfile[]>(loadCharacters)
+  const [characters, setCharacters] = useState<CharacterProfile[]>([])
+  const [charsReady, setCharsReady] = useState(false)
   // 跨页导航：从聊天页点「缩略头像」跳去某角色的介绍；从介绍页「进入聊天」跳去某会话
   const [profileCharId, setProfileCharId] = useState<string | undefined>(undefined)
   const [chatSessionId, setChatSessionId] = useState<string | undefined>(undefined)
@@ -29,14 +30,29 @@ export default function App() {
     localStorage.setItem(THEME_KEY, theme)
   }, [theme])
 
+  // 人设唯一真相源在后端 SQLite：启动时拉取一次。
+  useEffect(() => {
+    let alive = true
+    fetchCharacters()
+      .then((list) => {
+        if (!alive) return
+        setCharacters(list)
+        setCharsReady(true)
+      })
+      .catch(() => {
+        if (!alive) return
+        setCharsReady(true) // 加载失败也放行，避免白屏；可稍后重试
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
   const toggleTheme = useCallback(() => setTheme((t) => (t === 'light' ? 'dark' : 'light')), [])
 
-  const onSaveChar = useCallback((next: CharacterProfile) => {
-    setCharacters((list) => {
-      const nextList = list.map((c) => (c.id === next.id ? next : c))
-      saveCharacters(nextList)
-      return nextList
-    })
+  const onSaveChar = useCallback(async (next: CharacterProfile) => {
+    const saved = await saveCharacter(next)
+    setCharacters((list) => list.map((c) => (c.id === saved.id ? saved : c)))
   }, [])
 
   const openProfile = useCallback((charId: string) => {
@@ -53,7 +69,9 @@ export default function App() {
     <div className="flex h-screen flex-col">
       <TopBar theme={theme} view={view} onToggleTheme={toggleTheme} onView={setView} />
       <div className="min-h-0 flex-1">
-        {view === 'home' ? (
+        {!charsReady ? (
+          <div className="flex h-full items-center justify-center text-sm text-[var(--text-3)]">加载中…</div>
+        ) : view === 'home' ? (
           <HomeView
             characters={characters}
             initialCharId={profileCharId}

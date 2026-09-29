@@ -3,6 +3,8 @@ import type { CharacterProfile } from '../data/characters'
 import CharacterProfileCard from './CharacterProfileCard'
 import GalleryGrid from './GalleryGrid'
 import CharacterEditor from './CharacterEditor'
+import WorldbookPanel from './WorldbookPanel'
+import JailbreakPanel from './JailbreakPanel'
 
 type Props = {
   characters: CharacterProfile[]
@@ -43,6 +45,10 @@ export default function HomeView({ characters, initialCharId, onSaveChar, onEnte
       )}
 
       <GalleryGrid />
+
+      <WorldbookPanel />
+
+      <JailbreakPanel />
 
       {editing && (
         <CharacterEditor

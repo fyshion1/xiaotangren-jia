@@ -11,6 +11,7 @@
 
 - 前端：React + TypeScript + Vite + Tailwind CSS
 - 后端：FastAPI（Python 3.10+）
+- 存储：SQLite（人设 / 世界书 / 越狱设置；库文件 `backend/data/xiaotangren.db`，已加入 .gitignore）
 - 模型接入：OpenAI 兼容接口（商业 API / 第三方中转 / 本地 Ollama 通用）
 
 ---
