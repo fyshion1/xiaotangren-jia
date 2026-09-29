@@ -1,0 +1,22 @@
+# 小糖人之家 · Docker 一键启动（可选）
+
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./data:/app/data
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_PROXY=http://backend:8000

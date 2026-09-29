@@ -1,0 +1,33 @@
+# Local secrets override — never commit
+.env
+app/config.local.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.uv/
+.pytest_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Runtime data
+*.db
+*.sqlite3
+data/
+
+# Models (large binary files — keep local only)
+models/*.vrm
+models/**/*.moc3
+models/**/*.json
+!models/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
