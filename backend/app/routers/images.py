@@ -1,15 +1,15 @@
-"""看图（多模态 Vision）路由：上传图片 → Base64 → vision 模型流式回复。"""
+"""看图（多模态 Vision）路由：上传图片 → Base64 → vision 模型流式回复。
 
-import base64
+模型来源同样由前端显式传入（base_url/api_key/model），后端无状态转发。
+"""
+
 import json
 from collections.abc import AsyncIterator
-from typing import Literal
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..config import get_settings
 from ..providers import openai
 from ..services.prompt import build_system_prompt
 
@@ -22,6 +22,9 @@ class VisionRequest(BaseModel):
     image_base64: str
     mime: str = "image/png"
     prompt: str = "看看这张图，说说你的感受。"
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
 
 
 def _sse(event: str, data: dict) -> str:
@@ -30,8 +33,12 @@ def _sse(event: str, data: dict) -> str:
 
 @router.post("/images/chat")
 async def images_chat(req: VisionRequest) -> StreamingResponse:
+    from ..config import get_settings
+
     settings = get_settings()
-    model = settings.model_vision
+    base_url = req.base_url or settings.model_base_url
+    api_key = req.api_key if req.api_key is not None else settings.model_api_key
+    model = req.model or settings.model_vision
 
     system = build_system_prompt()
     messages: list[dict] = []
@@ -52,7 +59,7 @@ async def images_chat(req: VisionRequest) -> StreamingResponse:
 
     async def gen() -> AsyncIterator[str]:
         try:
-            async for delta in openai.stream_chat(messages, model):
+            async for delta in openai.stream_chat(messages, model, base_url, api_key):
                 yield _sse("token", {"text": delta})
             yield _sse("done", {})
         except Exception as exc:  # noqa: BLE001

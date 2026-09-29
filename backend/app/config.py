@@ -13,10 +13,10 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # 模型来源（OpenAI 兼容，多路切换）
-    model_base_url: str = "https://api.openai.com/v1"
+    model_base_url: str = "https://moyuu.cc/v1"
     model_api_key: str = ""
-    model_chat: str = "gemini-2.5-flash"
-    model_vision: str = "gemini-2.5-flash"
+    model_chat: str = "gemini-3.6-flash"
+    model_vision: str = "gemini-3.1-flash-image"
 
     # 跨域（本地留空即可；部署时填前端域名，逗号分隔）
     cors_origins: str = ""
