@@ -43,7 +43,14 @@ async def stream_chat(
             headers=headers,
             json=payload,
         ) as resp:
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # 上游报错时把真实响应体带上，方便定位（模型名/余额/限流等）。
+                body = await resp.aread()
+                raise httpx.HTTPStatusError(
+                    f"上游 {resp.status_code}: {body.decode('utf-8', errors='replace')[:500]}",
+                    request=resp.request,
+                    response=resp,
+                )
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):
                     continue
