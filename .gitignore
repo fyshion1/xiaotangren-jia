@@ -28,6 +28,9 @@ models/**/*.moc3
 models/**/*.json
 !models/.gitkeep
 
+# Local design/reference assets (keep local only)
+reference_picture/
+
 # OS
 .DS_Store
 Thumbs.db
