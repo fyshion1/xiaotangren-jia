@@ -20,7 +20,9 @@ frontend/.vite/
 # Runtime data
 *.db
 *.sqlite3
-data/
+# 只忽略运行期数据目录，别误伤前端源码 frontend/src/data/（源码里也有叫 data 的目录）
+/data/
+/backend/data/
 
 # TTS voice models (large files — download on demand)
 backend/data/tts/piper/
