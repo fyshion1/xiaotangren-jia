@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # 生图：vsllm 无生图通道，默认留空（错填会报「没有配置生图模型」）。
     model_image: str = ""
     image_base_url: str = ""
+    # 生图方式切换器（§7）：tencent（默认占位）/ comfyui（本地 SD，未接入）/ thirdparty。
+    # 仅记录选择；实机接入前只作占位提示，不改变上游调用。
+    image_engine: str = "tencent"
 
     # Embedding（记忆 RAG，§9.2.1）：默认本地小模型，可切云端 /v1/embeddings。
     # ⚠ 两者向量口径不同，换 engine 后必须重建记忆索引（§16.6）。

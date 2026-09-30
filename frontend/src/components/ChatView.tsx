@@ -18,6 +18,7 @@ import {
 } from '../api/storage'
 import { extractMemories, rememberMemory } from '../api/memory'
 import { starImage } from '../api/gallery'
+import { fetchImageEngines, selectImageEngine, type ImageEngine } from '../api/imagegen'
 
 export type ModelConfig = {
   baseUrl: string
@@ -280,6 +281,9 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
   const [genPrompt, setGenPrompt] = useState('')
   const [genBusy, setGenBusy] = useState(false)
   const [genImages, setGenImages] = useState<GenImage[]>([])
+  // 生图方式切换器（§7）：默认腾讯云占位；仅第三方 API 现在就接得通
+  const [enginesList, setEnginesList] = useState<ImageEngine[]>([])
+  const [genEngine, setGenEngine] = useState('tencent')
 
   // 记忆（§9.2/§9.3）：管理浮层 + 消息旁的「记住这条」快捷按钮
   const [memoryOpen, setMemoryOpen] = useState(false)
@@ -301,6 +305,15 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
   useEffect(() => {
     if (!genOpen) return
     void attachmentStats().then(setStats)
+  }, [genOpen])
+
+  // 打开生图浮层时拉一次生图方式列表（§7）；后端没起来就用内置表兜底
+  useEffect(() => {
+    if (!genOpen) return
+    void fetchImageEngines().then(({ engines, selected }) => {
+      setEnginesList(engines)
+      setGenEngine(selected)
+    })
   }, [genOpen])
 
   // 看原图浮层：Esc 关闭
@@ -1245,6 +1258,38 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
               <h3 className="text-[16px] font-bold">🎨 生成照片</h3>
               <button onClick={() => !genBusy && setGenOpen(false)} className="text-[var(--text-3)] hover:text-[var(--text)]">✕</button>
             </div>
+
+            {/* 生图方式切换器（§7）：腾讯云（默认占位）/ 本地 ComfyUI-SD（占位）/ 第三方 API */}
+            <div className="mb-3">
+              <span className="eyebrow mb-1.5 block">选生图方式</span>
+              <div className="flex flex-wrap gap-1.5">
+                {enginesList.map((e) => (
+                  <button
+                    key={e.id}
+                    type="button"
+                    onClick={() => {
+                      setGenEngine(e.id)
+                      void selectImageEngine(e.id).catch((err) =>
+                        setErrorText(err instanceof Error ? err.message : String(err)),
+                      )
+                    }}
+                    title={e.desc}
+                    className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
+                      genEngine === e.id
+                        ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
+                        : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-2)] hover:border-[var(--pink)]'
+                    }`}
+                  >
+                    {e.name}
+                    {!e.ready && <span className="ml-1 text-[10px] text-[var(--text-3)]">未接入</span>}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-[11px] leading-snug text-[var(--text-3)]">
+                {enginesList.find((e) => e.id === genEngine)?.desc ?? '生图方式加载中…'}
+              </p>
+            </div>
+
             <Field label="画面描述（提示词）">
               <textarea
                 className="textarea"

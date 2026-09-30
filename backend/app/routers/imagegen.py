@@ -9,9 +9,34 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import config as conf
+from .. import db
 from ..providers import openai
 
 router = APIRouter()
+
+
+# 生图方式切换器（§7）：三选一，默认腾讯云占位。
+# ready=False 表示只占位、还没接实机；前端据此给「未接入」提示，不阻挡选择。
+IMAGE_ENGINES = [
+    {
+        "id": "tencent",
+        "name": "腾讯云（占位）",
+        "ready": False,
+        "desc": "VSCode Remote-SSH 控制云端，免费 4h/天；实机接入排在生图通道就绪之后。",
+    },
+    {
+        "id": "comfyui",
+        "name": "本地 ComfyUI / SD（占位）",
+        "ready": False,
+        "desc": "3060 4GB 本地跑，吃显存但免费无限；填入本地 /v1 地址即可接入。",
+    },
+    {
+        "id": "thirdparty",
+        "name": "第三方生图 API",
+        "ready": True,
+        "desc": "任意支持 /images/generations 的中转，即插即用 —— 现在就能用。",
+    },
+]
 
 
 class ImageGenRequest(BaseModel):
@@ -21,6 +46,32 @@ class ImageGenRequest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
+
+
+def _selected_engine() -> str:
+    """当前选中的生图方式：DB 里的用户选择优先，其次环境变量，最后默认腾讯云。"""
+    picked = (db.get_settings().get("image_engine") or "").strip()
+    if not picked:
+        picked = (conf.get_settings().image_engine or "tencent").strip()
+    ids = {e["id"] for e in IMAGE_ENGINES}
+    return picked if picked in ids else "tencent"
+
+
+@router.get("/images/engines")
+async def list_image_engines() -> dict:
+    """生图方式列表 + 当前选中项（§7 切换器）。默认腾讯云。"""
+    return {"engines": IMAGE_ENGINES, "selected": _selected_engine()}
+
+
+@router.post("/images/engines/select")
+async def select_image_engine(body: dict[str, str]) -> dict:
+    """记住用户选中的生图方式。只存选择，不改变上游调用（实机接入后才生效）。"""
+    picked = (body.get("id") or "").strip()
+    ids = {e["id"] for e in IMAGE_ENGINES}
+    if picked not in ids:
+        raise HTTPException(status_code=400, detail=f"未知生图方式：{picked}")
+    db.set_settings({"image_engine": picked})
+    return {"selected": picked}
 
 
 @router.post("/images/generate")
