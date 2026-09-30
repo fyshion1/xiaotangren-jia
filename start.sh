@@ -20,13 +20,19 @@ echo ""
 echo "启动完成！后端 http://localhost:8000 ，前端 http://localhost:5173"
 echo ""
 echo "手机 / 同网段设备可用下面任一地址打开（同一 Wi-Fi 或校园网）："
-# 打印本机局域网 IPv4（Windows 的 ipconfig / Linux 的 hostname -I 都试一遍）
+# 打印本机局域网 IPv4（Windows 的 ipconfig / Linux 的 hostname -I 都试一遍）。
+# 过滤掉 169.254.*（APIPA 自分配地址，根本不可路由）；10./192.168. 排前面，
+# 172.x 多为虚拟网卡（WSL/Hyper-V），放最后。
 {
   ipconfig 2>/dev/null | grep -i "IPv4" | sed 's/.*: *//' || true
   hostname -I 2>/dev/null | tr ' ' '\n' || true
-} | grep -E '^[0-9]+\.' | sort -u | while read -r ip; do
+} | grep -E '^[0-9]+\.' | grep -vE '^169\.254\.' | sort -u | awk '
+  /^10\./ || /^192\.168\./ { print "1 " $0; next }
+  { print "2 " $0 }
+' | sort | sed 's/^[12] //' | while read -r ip; do
   echo "   http://$ip:5173"
 done
+echo "   （手机连的是哪个网，就用哪个 IP；虚拟网卡那些打不开）"
 echo "   （保持本机两个服务开着即可）"
 echo ""
 echo "按 Ctrl+C 停止服务。"

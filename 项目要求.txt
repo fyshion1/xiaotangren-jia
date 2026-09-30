@@ -362,4 +362,9 @@ Avatar（抽象接口）
 - **成因**：embedding 模型 ~100MB+，不入 git（同 piper 思路）。
 - **思路**：提供下载脚本，把模型下到 `backend/data/models/embedding/`；启动时若无模型则打印「先跑下载脚本」提示，并回退到云端 embedding（若配了）或提示配置。
 
+### 16.8 手机 / 局域网打开前端「全挤在一起」
+- **现象**：手机浏览器打开 `http://<局域网IP>:5173`，聊天页布局塌陷、所有内容挤在一起；电脑 `localhost` 正常。
+- **成因**：① 手机访问时浏览器**默认缩放**（`<meta viewport>` 缺 `user-scalable=no` / 初始缩放 >1 导致布局 viewport 失效）；② 三栏布局用固定 `w-[230px]/[240px]` + `max-w-[72%]`，在窄屏幕下宽度换算失效，flex 项被挤扁。
+- **思路**：① 补 `viewport` meta（`width=device-width, initial-scale=1.0, user-scalable=no`）；② 聊天区改为**移动优先**：窄屏时隐藏/折叠侧栏（抽屉式），`max-w` 改为百分比或 `sm:` 断点；③ 字体/按钮放大到手机可点；④ 启动脚本只打印 `10.x` 局域网地址，过滤掉 `169.254.x.x`（APIPA）和 `172.x` 校园网保留段。
+
 

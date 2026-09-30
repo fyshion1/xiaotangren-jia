@@ -230,6 +230,9 @@ type VoiceOption = { id: string; name: string }
 type EngineOption = { id: string; name: string; desc?: string; available: boolean }
 type GenImage = { url?: string; b64?: string }
 
+// 手机端底部 Tab（桌面端不用）
+type MobileTab = 'sessions' | 'chat' | 'status'
+
 export default function ChatView({ characters, initialSessionId, onOpenProfile }: Props) {
   const sessions = useMemo(() => buildSessions(characters), [characters])
   const [activeId, setActiveId] = useState<string>(initialSessionId ?? sessions[0]?.id ?? 'group')
@@ -792,19 +795,36 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
   const [sessionsExtra, setSessionsExtra] = useState<ChatSession[]>([])
   const allSessions = [...sessions, ...sessionsExtra]
 
+  // 手机端当前显示哪一栏（桌面端不生效）
+  const [mobileTab, setMobileTab] = useState<MobileTab>('chat')
+
   const suggestions = active ? suggestionsFor(active) : []
 
   if (!active) return null
 
+  // 手机端（<768px）三栏放不下 → 底部 Tab 一次只显示一栏；桌面端 md: 依旧三栏并排。
+  // 非当前 Tab 的栏用 max-md:hidden 藏起来，桌面端不受影响。
+  const tabCls = (tab: MobileTab) => (mobileTab === tab ? '' : 'max-md:hidden')
+
   return (
-    <div className="flex h-full">
+    <div className="flex h-full flex-col md:flex-row">
       {/* 左：最近聊天 / 会话列表 */}
-      <aside className="w-[230px] shrink-0 border-r border-[var(--border)] bg-[var(--surface)]">
-        <SessionList sessions={allSessions} activeId={active.id} onSelect={setActiveId} onImport={onImport} />
+      <aside
+        className={`min-h-0 min-w-0 flex-1 overflow-hidden border-[var(--border)] bg-[var(--surface)] max-md:flex max-md:flex-col md:w-[230px] md:flex-none md:border-r ${tabCls('sessions')}`}
+      >
+        <SessionList
+          sessions={allSessions}
+          activeId={active.id}
+          onSelect={(id) => {
+            setActiveId(id)
+            setMobileTab('chat') // 手机上选完会话直接跳到聊天
+          }}
+          onImport={onImport}
+        />
       </aside>
 
       {/* 中：对话框 */}
-      <section className="flex min-w-0 flex-1 flex-col bg-[var(--bg-soft)]">
+      <section className={`flex min-w-0 flex-1 flex-col bg-[var(--bg-soft)] ${tabCls('chat')}`}>
         {/* 顶部：小糖人缩略头像，点击进个人介绍 */}
         <header className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2">
           {active.characterIds.length > 0 ? (
@@ -829,7 +849,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
               {active.name}
             </span>
           )}
-          <span className="ml-auto flex items-center gap-1.5">
+          <span className="ml-auto hidden items-center gap-1.5 md:flex">
             <button
               onClick={() => setAutoMemory((v) => !v)}
               className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
@@ -973,7 +993,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
         )}
 
         {/* 消息流 */}
-        <div className="flex-1 overflow-y-auto px-5 py-4" onScroll={onScrollMessages}>
+        <div className="flex-1 overflow-y-auto px-3 py-4 sm:px-5" onScroll={onScrollMessages}>
           {loadingOlder && <div className="mb-2 text-center text-[12px] text-[var(--text-3)]">加载更早的消息…</div>}
           {messages.length === 0 && (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-[var(--text-3)]">
@@ -996,7 +1016,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
                     return (
                       <div
                         key={si}
-                        className="mb-2 max-w-[72%] rounded-2xl bg-[var(--surface)] px-4 py-2 text-[15px] text-[var(--text)]"
+                        className="mb-2 max-w-[85%] rounded-2xl bg-[var(--surface)] px-4 py-2 text-[15px] text-[var(--text)] sm:max-w-[72%]"
                       >
                         {s.speaker && (
                           <div className="mb-1 flex items-center gap-1.5">
@@ -1031,7 +1051,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
                   })
                 ) : (
                   <div
-                    className={`max-w-[72%] rounded-2xl px-4 py-2 text-[15px] ${
+                    className={`max-w-[85%] rounded-2xl px-4 py-2 text-[15px] sm:max-w-[72%] ${
                       m.role === 'user' ? 'bg-[var(--pink)] text-white' : 'bg-[var(--surface)] text-[var(--text)]'
                     }`}
                   >
@@ -1080,7 +1100,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
                   </div>
                 )}
                 {m.role === 'assistant' && isLast && err && (
-                  <div className="mt-1.5 max-w-[72%] rounded-lg bg-[var(--pink-deep)]/10 px-2.5 py-1.5 text-[12px] leading-snug text-[var(--pink-deep)]">
+                  <div className="mt-1.5 max-w-[85%] rounded-lg bg-[var(--pink-deep)]/10 px-2.5 py-1.5 text-[12px] leading-snug text-[var(--pink-deep)] sm:max-w-[72%]">
                     ⚠ {err}
                   </div>
                 )}
@@ -1170,7 +1190,9 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
       </section>
 
       {/* 右：状态栏 */}
-      <aside className="w-[240px] shrink-0 border-l border-[var(--border)] bg-[var(--surface)]">
+      <aside
+        className={`min-h-0 min-w-0 flex-1 overflow-hidden border-[var(--border)] bg-[var(--surface)] max-md:flex max-md:flex-col md:w-[240px] md:flex-none md:border-l ${tabCls('status')}`}
+      >
         <StatusSidebar
           session={active}
           characters={characters}
@@ -1377,6 +1399,28 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
           </button>
         </div>
       )}
+
+      {/* 手机端底部 Tab：一次只显示一栏（会话 / 聊天 / 状态）；桌面端隐藏 */}
+      <nav className="flex shrink-0 border-t border-[var(--border)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] md:hidden">
+        {(
+          [
+            ['sessions', '💬', '会话'],
+            ['chat', '🐾', '聊天'],
+            ['status', '📊', '状态'],
+          ] as const
+        ).map(([tab, icon, label]) => (
+          <button
+            key={tab}
+            onClick={() => setMobileTab(tab)}
+            className={`flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] transition ${
+              mobileTab === tab ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)]'
+            }`}
+          >
+            <span className="text-[18px] leading-none">{icon}</span>
+            {label}
+          </button>
+        ))}
+      </nav>
     </div>
   )
 }

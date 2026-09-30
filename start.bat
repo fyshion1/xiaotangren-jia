@@ -18,10 +18,9 @@ echo Done!  Backend  http://localhost:8000
 echo        Frontend http://localhost:5173
 echo.
 echo Phone / other devices on the same Wi-Fi or campus LAN:
-for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4"') do (
-  for /f "tokens=1" %%b in ("%%a") do echo        http://%%b:5173
-)
-echo   (open that address on your phone; keep both windows running)
+rem Skip 169.254.* (APIPA, unroutable). Most likely the real LAN IP:
+ipconfig | findstr /c:"IPv4" | findstr /v "169.254."
+echo   (open http://<that IP>:5173 on your phone; ignore virtual adapters)
 echo.
 echo Close the two windows to stop the servers.
 pause
