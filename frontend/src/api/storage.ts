@@ -64,9 +64,14 @@ export async function saveMessage(sessionId: string, m: ChatMessage): Promise<St
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(toPayload(sessionId, m)),
     })
-    if (!resp.ok) return null
+    if (!resp.ok) {
+      // 不再静默：落库失败（后端没起 / 500）必须留痕，否则用户以为「聊天记录已经存了」
+      console.warn(`保存消息失败 HTTP ${resp.status}（session=${sessionId}）`)
+      return null
+    }
     return (await resp.json()) as StoredMessage
-  } catch {
+  } catch (e) {
+    console.warn(`保存消息失败（session=${sessionId}）:`, e)
     return null
   }
 }

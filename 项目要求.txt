@@ -365,6 +365,14 @@ Avatar（抽象接口）
 ### 16.8 手机 / 局域网打开前端「全挤在一起」
 - **现象**：手机浏览器打开 `http://<局域网IP>:5173`，聊天页布局塌陷、所有内容挤在一起；电脑 `localhost` 正常。
 - **成因**：① 手机访问时浏览器**默认缩放**（`<meta viewport>` 缺 `user-scalable=no` / 初始缩放 >1 导致布局 viewport 失效）；② 三栏布局用固定 `w-[230px]/[240px]` + `max-w-[72%]`，在窄屏幕下宽度换算失效，flex 项被挤扁。
-- **思路**：① 补 `viewport` meta（`width=device-width, initial-scale=1.0, user-scalable=no`）；② 聊天区改为**移动优先**：窄屏时隐藏/折叠侧栏（抽屉式），`max-w` 改为百分比或 `sm:` 断点；③ 字体/按钮放大到手机可点；④ 启动脚本只打印 `10.x` 局域网地址，过滤掉 `169.254.x.x`（APIPA）和 `172.x` 校园网保留段。
+- **思路**：① 补 `viewport` meta（`width=device-width, initial-scale=1.0, user-scalable=no`）；② 聊天区改为**移动优先**：窄屏时侧栏收成**底部 Tab**（会话 / 聊天 / 状态，一次只显示一栏），桌面端 `md:` 仍三栏并排；气泡 `max-w` 窄屏 85%、`sm:` 起才 72%，字体/按钮放大到手机可点；③ 启动脚本只打印 `10.x` 局域网地址，过滤掉 `169.254.x.x`（APIPA）和 `172.x` 虚拟网卡段。
+
+
+### 16.9 刷新 / 后台切回后「聊天记录没了」（其实一直在库里）
+- **现象**：消息发出去后在库里能查到（`backend/data/xiaotangren.db` 的 `messages` 表有记录），但**刷新浏览器、或手机上后台切走再切回**，聊天页就空了；一直待在页面上、不刷新则正常。
+- **成因**：**载入路径**被 React StrictMode 的 effect 双调用「吃掉」了（`ChatView.tsx` 首次载入历史的 `useEffect`）。React 18 开发模式下 effect 会 **setup → cleanup → setup** 走两遍：第一遍 `loadedRef.add(id)` 并发出 `loadMessages` 请求，紧接着 cleanup 把 `cancelled = true`；第二遍因 `loadedRef` 已命中直接 `return`、不再发请求。于是第一遍的响应回来时看到 `cancelled === true`，结果被丢弃 —— 历史**永远**填不进界面。第二遍又因去重标记不再重试，刷新 / 切回（移动端常被系统回收页面而重载）就表现为「记录没了」。
+  - 注意：这跟**写入**没关系。落库是 fire-and-forget 的 `POST /api/messages`，一直是成功的（库里那 15 条就是证据）；坏的是**读出来渲染**这一步。
+- **思路**：① 载入 effect 里**去掉 cleanup 的 `cancelled` 丢弃**（StrictMode 双调用下标记必须靠 `loadedRef` 去重，不能靠 cleanup 取消）；② 载入结果与本地未落库消息（`seq == null`）**合并**而非整体替换，避免「载入期间刚发的那条」被历史覆盖；③ `saveMessage` 失败不再静默吞掉，`console.warn` 留痕（以前后端没起也一声不吭，误以为已存）。
+- **教训**：给「只跑一次」的 effect 加 `cancelled` 取消时，务必确认它不会被 StrictMode 的 cleanup + 去重 ref 组合打成「永远取消」。
 
 

@@ -331,17 +331,22 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
 
   // 切换会话时首次载入最近 30 条（已载过则不重复拉，避免覆盖正在播的流）
   useEffect(() => {
-    if (!active || loadedRef.current.has(active.id)) return
-    loadedRef.current.add(active.id)
-    let cancelled = false
-    loadMessages(active.id, undefined, PAGE_SIZE).then((page) => {
-      if (cancelled) return
-      setHistory((prev) => ({ ...prev, [active.id]: page.items.map(toChatMessage) }))
-      setPaging((prev) => ({ ...prev, [active.id]: { cursor: page.next_cursor, hasMore: page.has_more } }))
+    if (!active) return
+    const sid = active.id
+    if (loadedRef.current.has(sid)) return
+    loadedRef.current.add(sid)
+    // ⚠ 不要在这里用 cancelled 标志丢弃结果：dev 下 React StrictMode 会
+    // 「setup→cleanup→setup」，cleanup 会把第一次的 fetch 结果丢掉，而第二次因
+    // loadedRef 命中直接 return，导致刷新后历史永远载不出来（§16.9）。
+    loadMessages(sid, undefined, PAGE_SIZE).then((page) => {
+      const loaded = page.items.map(toChatMessage)
+      setHistory((prev) => {
+        // 载入期间本地新发、尚未落库的消息（无 seq）保留，别被历史覆盖掉
+        const localOnly = (prev[sid] ?? []).filter((m) => m.seq == null)
+        return { ...prev, [sid]: [...loaded, ...localOnly] }
+      })
+      setPaging((prev) => ({ ...prev, [sid]: { cursor: page.next_cursor, hasMore: page.has_more } }))
     })
-    return () => {
-      cancelled = true
-    }
   }, [active])
 
   // 向上滚到顶 → 按游标拉更早的一页，插到最前面（不跳视口）
