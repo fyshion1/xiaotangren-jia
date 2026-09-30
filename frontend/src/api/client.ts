@@ -1,4 +1,4 @@
-// 与后端通信封装（/api，经 Vite 代理到 127.0.0.1:8000）。
+// 与后端通信封装（/api，经 Vite 代理转发到后端 :8000；手机访问时也是同源，无需改地址）。
 import type { CharacterProfile } from '../data/characters'
 import type { WorldbookEntry } from '../data/worldbook'
 

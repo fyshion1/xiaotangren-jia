@@ -3,6 +3,7 @@ import TopBar from './components/TopBar'
 import HomeView from './components/HomeView'
 import ChatView from './components/ChatView'
 import type { CharacterProfile } from './data/characters'
+import { PROFILE_FALLBACK } from './data/characters'
 import { fetchCharacters, saveCharacter } from './api/client'
 
 type Theme = 'light' | 'dark'
@@ -41,7 +42,8 @@ export default function App() {
       })
       .catch(() => {
         if (!alive) return
-        setCharsReady(true) // 加载失败也放行，避免白屏；可稍后重试
+        setCharacters(PROFILE_FALLBACK) // 后端拉不到也先渲染出四位角色，避免白屏
+        setCharsReady(true)
       })
     return () => {
       alive = false
