@@ -12,9 +12,16 @@ dependencies = [
     "python-multipart>=0.0.9",
     "edge-tts>=7.2",
     "piper-tts>=1.8",
+    "pillow>=10.3",
 ]
 
 [project.optional-dependencies]
+# 记忆 RAG 的本地向量引擎（§9.2.1）。会拉 torch，体积大，所以不默认装；
+# 装了才有语义检索，没装时记忆仍可用（关键词兜底）。
+#   uv pip install --python backend/.venv/Scripts/python.exe -e "backend[memory]"
+memory = [
+    "sentence-transformers>=3.0",
+]
 dev = [
     "ruff>=0.6",
 ]

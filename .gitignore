@@ -25,6 +25,10 @@ data/
 # TTS voice models (large files — download on demand)
 backend/data/tts/piper/
 
+# Embedding models for memory RAG (large files — download on demand)
+# 实际落点 backend/data/models/ 已被上面的 data/ 覆盖，这里再兜一层，换目录也不怕。
+**/data/models/
+
 # Models (large binary files — keep local only)
 models/*.vrm
 models/**/*.moc3
@@ -37,3 +41,5 @@ reference_picture/
 # OS
 .DS_Store
 Thumbs.db
+# Claude Code 本地设置（机器相关，不进 git）
+.claude/settings.local.json

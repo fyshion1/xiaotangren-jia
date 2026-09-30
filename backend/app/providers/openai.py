@@ -4,8 +4,8 @@
 支持多模态图片 content；/images/generations 支持生图。这样商业 API、
 第三方无审查中转、本地 Ollama（OpenAI 兼容端点）都能用同一套代码切换。
 
-低耦合约定：本层只暴露 stream_chat() / stream_chat_retry() / generate_images()
-三个能力，调用方传入显式的 base_url / api_key / model；不读取全局配置，
+低耦合约定：本层只暴露 stream_chat() / stream_chat_retry() / complete_chat() /
+generate_images() 四个能力，调用方传入显式的 base_url / api_key / model；不读取全局配置，
 保持无状态、可测试。
 
 stream_chat() 产出「事件 dict」而非纯文本增量，事件类型：
@@ -116,6 +116,39 @@ async def stream_chat(
                 if text:
                     yield {"type": "text", "text": text}
             yield {"type": "done"}
+
+
+async def complete_chat(
+    messages: list[dict],
+    model: str,
+    base_url: str,
+    api_key: str = "",
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> str:
+    """非流式补全，一次性拿完整文本。给「记忆提炼」这类后台小任务用（§9.3）。
+
+    复用同一套 OpenAI 兼容口子；出错抛 RuntimeError（透出上游真实错误体）。
+    """
+    base = base_url.rstrip("/")
+    payload: dict = {"model": model, "messages": messages, "stream": False}
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+    if temperature is not None:
+        payload["temperature"] = temperature
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=30.0)) as client:
+        resp = await client.post(
+            f"{base}/chat/completions", headers=_headers(api_key), json=payload
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"上游 {resp.status_code}: {_error_text(resp.status_code, resp.content)}")
+    obj = resp.json()
+    if obj.get("error") and not (obj.get("choices") or []):
+        raise RuntimeError(f"上游: {_extract_error(obj['error'])}")
+    choices = obj.get("choices") or []
+    if not choices:
+        return ""
+    return (choices[0].get("message") or {}).get("content") or ""
 
 
 async def stream_chat_retry(

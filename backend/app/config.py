@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     model_image: str = ""
     image_base_url: str = ""
 
+    # Embedding（记忆 RAG，§9.2.1）：默认本地小模型，可切云端 /v1/embeddings。
+    # ⚠ 两者向量口径不同，换 engine 后必须重建记忆索引（§16.6）。
+    embed_engine: str = "local"  # local | cloud
+    embed_local_model: str = "BAAI/bge-small-zh-v1.5"  # 约 100MB，CPU 可跑
+    embed_local_dir: str = ""  # 本地模型落地目录，留空 = backend/data/models/embedding（§16.7）
+    embed_cloud_model: str = "text-embedding-3-small"
+    embed_base_url: str = ""  # 留空 = 同 model_base_url
+    memory_topk_home: int = 4  # 家记忆每次注入条数上限
+    memory_topk_personal: int = 4  # 每位在场角色个人记忆注入条数上限
+
     # 跨域（本地留空即可；部署时填前端域名，逗号分隔）
     cors_origins: str = ""
 

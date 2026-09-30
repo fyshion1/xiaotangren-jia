@@ -1,12 +1,13 @@
 """Prompt 组装实现。
 
-组装顺序（对应《项目要求》§9.1）：人设 → 世界书命中 → 越狱规则。
-记忆检索（向量 RAG）阶段 2 后半段再接入，此处不注入。
+组装顺序（对应《项目要求》§9.1）：
+人设 → 世界书命中 → 记忆检索（§9.2 三层 RAG）→ 越狱规则。
 """
 
 from __future__ import annotations
 
 from ... import db
+from .. import memory as memory_service
 
 DEFAULT_PERSONA = (
     "你是小糖人之家的一员，一个温柔、可爱、贴心的伙伴。"
@@ -15,6 +16,9 @@ DEFAULT_PERSONA = (
 
 # 扫描世界书时回看的最近消息条数
 WORLDBOOK_WINDOW = 10
+
+# 记忆检索时拼接 query 的最近消息条数（§9.2.3）
+MEMORY_QUERY_WINDOW = 4
 
 # 档案里挑出来、用「键：值」展示的字段（越靠前越重要）
 _PROFILE_ROWS: list[tuple[str, str]] = [
@@ -143,6 +147,24 @@ def build_system_prompt(
             content = (h.get("content") or "").strip()
             block.append(f"- {h.get('title', '')}：{content}")
         parts.append("\n".join(block))
+
+    # 记忆三层 RAG（§9.2）：query = 最近几轮拼接，只注入「在场者」的记忆
+    mem_ids = [p.get("id") for p in profiles if p.get("id")]
+    query = memory_service.build_query(messages, MEMORY_QUERY_WINDOW)
+    if mem_ids and query:
+        try:
+            recalled = memory_service.recall_for(
+                mem_ids,
+                query,
+                session_kind="single" if len(profiles) == 1 else "group",
+            )
+            name_of = {p.get("id") or "": p.get("name") or "小糖人" for p in profiles}
+            mem_block = memory_service.format_memory_block(recalled, name_of)
+            if mem_block:
+                parts.append(mem_block)
+        except Exception:  # noqa: BLE001
+            # 记忆检索失败不该拖垮聊天：模型没装好 / 向量库异常时静默跳过
+            pass
 
     jailbreak = (db.get_settings().get("jailbreak") or "").strip()
     if jailbreak:

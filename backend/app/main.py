@@ -2,20 +2,25 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import init_db
 from .routers import (
     characters,
     chat,
+    gallery,
     imagegen,
     images,
+    memory,
+    messages,
     voice,
     worldbook,
 )
 from .routers import (
     settings as settings_router,
 )
+from .services import attachments
 
 settings = get_settings()
 
@@ -37,9 +42,16 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(images.router, prefix="/api")
 app.include_router(imagegen.router, prefix="/api")
 app.include_router(voice.router, prefix="/api")
+app.include_router(messages.router, prefix="/api")
+app.include_router(memory.router, prefix="/api")
+app.include_router(gallery.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
 app.include_router(worldbook.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
+
+# 附件图片静态目录（§15.1：媒体落盘，库里只存引用）
+attachments.ensure_dir()
+app.mount("/api/files", StaticFiles(directory=str(attachments.ATTACHMENTS_DIR)), name="files")
 
 
 @app.get("/api/health")

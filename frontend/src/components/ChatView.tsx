@@ -4,7 +4,20 @@ import type { ChatSession, ChatMessage } from '../data/chats'
 import { buildSessions, suggestionsFor } from '../data/chats'
 import SessionList from './SessionList'
 import StatusSidebar from './StatusSidebar'
+import MemoryPanel from './MemoryPanel'
+import GalleryPanel from './GalleryPanel'
 import { useSpeechToText } from '../hooks/useSpeechToText'
+import {
+  attachmentStats,
+  clearOriginals,
+  loadMessages,
+  saveMessage,
+  toChatMessage,
+  uploadAttachment,
+  type AttachmentStats,
+} from '../api/storage'
+import { extractMemories, rememberMemory } from '../api/memory'
+import { starImage } from '../api/gallery'
 
 export type ModelConfig = {
   baseUrl: string
@@ -30,6 +43,9 @@ const DEFAULT_CONFIG: ModelConfig = {
 const NAME_MARKER = /^\s*(\*\*([^*\n]+?)\*\*|【([^】\n]+?)】)\s*[:：]?/
 
 const STORAGE_KEY = 'xiaotangren.config'
+
+// 每页条数（§15.2：启动预载最近 30 条，向上滚再按游标拉）
+const PAGE_SIZE = 30
 
 function loadConfig(): ModelConfig {
   try {
@@ -146,6 +162,22 @@ function createSmartStream(onChunk: (t: string) => void, emitEveryMs = 24) {
   }
 }
 
+// 消息旁的「记住这条」：点了写进长期记忆（§9.3），成功后标灰。
+function RememberButton({ done, onClick }: { done: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={done}
+      title={done ? '已经记住了' : '把这条存进长期记忆'}
+      className={`text-[11px] transition ${
+        done ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)] hover:text-[var(--pink-deep)]'
+      }`}
+    >
+      {done ? '🧠 已记住' : '🧠 记住'}
+    </button>
+  )
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
@@ -207,6 +239,13 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
   const [msgError, setMsgError] = useState<Record<string, string>>({})
   const messages = active ? history[active.id] ?? [] : []
 
+  // ---- 持久化（§15）：文本落库 + 附件落盘；启动只载最近 30 条，向上滚再按游标拉 ----
+  const loadedRef = useRef<Set<string>>(new Set())
+  const [paging, setPaging] = useState<Record<string, { cursor: number | null; hasMore: boolean }>>({})
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [stats, setStats] = useState<AttachmentStats | null>(null)
+  const [lightbox, setLightbox] = useState<string | null>(null)
+
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [config, setConfig] = useState<ModelConfig>(loadConfig)
@@ -242,9 +281,73 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
   const [genBusy, setGenBusy] = useState(false)
   const [genImages, setGenImages] = useState<GenImage[]>([])
 
+  // 记忆（§9.2/§9.3）：管理浮层 + 消息旁的「记住这条」快捷按钮
+  const [memoryOpen, setMemoryOpen] = useState(false)
+  const [remembered, setRemembered] = useState<Record<string, true>>({})
+  const [rememberMsg, setRememberMsg] = useState('')
+  // 自动记忆（§9.3）：一条回复结束后规则预筛 + LLM 提炼；提炼到的条数做轻提示
+  const [autoMemory, setAutoMemory] = useState(true)
+  const [autoMsg, setAutoMsg] = useState('')
+  // 画廊 + 照片记忆（§9.4）：图片气泡的「⭐ 存入画廊」与管理浮层
+  const [galleryOpen, setGalleryOpen] = useState(false)
+  const [starred, setStarred] = useState<Record<string, true>>({})
+  const [starring, setStarring] = useState('')
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // 打开生图浮层时刷新一次本地存储统计（原图/缩略图各占多少）
+  useEffect(() => {
+    if (!genOpen) return
+    void attachmentStats().then(setStats)
+  }, [genOpen])
+
+  // 看原图浮层：Esc 关闭
+  useEffect(() => {
+    if (!lightbox) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [lightbox])
+
+  // 切换会话时首次载入最近 30 条（已载过则不重复拉，避免覆盖正在播的流）
+  useEffect(() => {
+    if (!active || loadedRef.current.has(active.id)) return
+    loadedRef.current.add(active.id)
+    let cancelled = false
+    loadMessages(active.id, undefined, PAGE_SIZE).then((page) => {
+      if (cancelled) return
+      setHistory((prev) => ({ ...prev, [active.id]: page.items.map(toChatMessage) }))
+      setPaging((prev) => ({ ...prev, [active.id]: { cursor: page.next_cursor, hasMore: page.has_more } }))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [active])
+
+  // 向上滚到顶 → 按游标拉更早的一页，插到最前面（不跳视口）
+  const onScrollMessages = useCallback(
+    async (e: React.UIEvent<HTMLDivElement>) => {
+      const el = e.currentTarget
+      if (el.scrollTop > 40 || loadingOlder) return
+      const page = active ? paging[active.id] : undefined
+      if (!active || !page?.hasMore || !page.cursor) return
+      setLoadingOlder(true)
+      const prevHeight = el.scrollHeight
+      const older = await loadMessages(active.id, page.cursor, PAGE_SIZE)
+      setHistory((prev) => ({ ...prev, [active.id]: [...older.items.map(toChatMessage), ...(prev[active.id] ?? [])] }))
+      setPaging((prev) => ({ ...prev, [active.id]: { cursor: older.next_cursor, hasMore: older.has_more } }))
+      setLoadingOlder(false)
+      // 保持视口位置不跳：滚回「原高度 - 新内容补上的高度」
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight - prevHeight
+      })
+    },
+    [active, paging, loadingOlder],
+  )
 
   const saveConfig = useCallback((c: ModelConfig) => {
     setConfig(c)
@@ -269,23 +372,31 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
   )
 
   // 流结束后收尾：把群聊「一人分饰多角」的整段回复按 **名字** 拆成多张卡片，
-  // content 存拼接后的正文（供朗读），返回该正文。私聊/未拆多段则原样。
-  const finalizeAssistant = useCallback((id: string, full: string, isGroup: boolean): string => {
+// content 存拼接后的正文（供朗读），返回收尾后的消息（供落库）。私聊/未拆多段则原样。
+  const finalizeAssistant = useCallback((id: string, full: string, isGroup: boolean): ChatMessage => {
     const { segments, plain } = segmentGroupReply(full)
     const multi = isGroup && segments.length > 1
+    const finalized: ChatMessage = {
+      role: 'assistant',
+      content: plain,
+      kind: multi ? 'groups' : 'text',
+      segments: multi ? segments : undefined,
+    }
     setHistory((prev) => {
       const list = prev[id] ?? []
+      if (!list.length) return { ...prev, [id]: [finalized] }
       const copy = [...list]
-      const last = copy[copy.length - 1] ?? { role: 'assistant' as const, content: '' }
-      copy[copy.length - 1] = {
-        ...last,
-        kind: multi ? 'groups' : 'text',
-        segments: multi ? segments : undefined,
-        content: plain || last.content,
-      }
+      const last = copy[copy.length - 1]
+      copy[copy.length - 1] = { ...finalized, content: plain || last.content }
       return { ...prev, [id]: copy }
     })
-    return plain
+    return finalized
+  }, [])
+
+  // 收尾后落库（§15）：一条 assistant 消息 = 一条记录，分段以 JSON 存 kind/segments
+  const persistLast = useCallback((id: string, msg: ChatMessage) => {
+    if (!msg.content.trim() && !msg.segments?.length) return
+    void saveMessage(id, msg)
   }, [])
 
   const appendAssistantError = useCallback(
@@ -408,6 +519,42 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
     [playingKey, speakEngine, speakVoice, stopSpeak],
   )
 
+  // 自动记忆提炼（§9.3）：一条回复收尾后调一次。后端先做规则预筛（没命中触发词
+  // 就不叫 LLM），所以这里的开销大多数时候只是一次本地判断。
+  const autoExtract = useCallback(
+    async (list: ChatMessage[]) => {
+      if (!active) return
+      const turns = list.slice(-12).map((m) => ({
+        role: m.role,
+        content: m.content,
+        // 群聊分段时 character_id 留空，后端靠「**名字**：」前缀辨认发言人
+        character_id: '',
+      }))
+      try {
+        const res = await extractMemories({
+          messages: turns,
+          character_ids: active.characterIds,
+          session_kind: active.kind === 'single' ? 'single' : 'group',
+          base_url: config.baseUrl,
+          api_key: config.apiKey,
+          model: config.chatModel,
+        })
+        const saved = res.saved ?? []
+        if (saved.length) {
+          const names = saved
+            .map((s) => (s.bucket === 'home' ? '家记忆' : characters.find((c) => c.id === s.char_id)?.name ?? '个人'))
+            .join('、')
+          setAutoMsg(`🧠 自动记住了 ${saved.length} 条（${names}）`)
+          setTimeout(() => setAutoMsg(''), 6000)
+        }
+      } catch (e) {
+        // 提炼失败不打扰聊天，只在控制台留痕
+        console.warn('自动记忆提炼失败：', e)
+      }
+    },
+    [active, characters, config],
+  )
+
   const lastAssistantText = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === 'assistant' && messages[i].content.trim()) return messages[i].content
@@ -425,6 +572,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
     setInput('')
     setStreaming(true)
     push(id, { role: 'assistant', content: '' })
+    void saveMessage(id, { role: 'user', content: text })
 
     const acc = { value: '' }
     const q = createSmartStream((t) => {
@@ -446,7 +594,9 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
         q.finish()
         setStreaming(false)
         const plain = finalizeAssistant(id, acc.value, active.kind === 'group')
-        if (autoSpeak && plain.trim()) speakText(plain, `${id}:auto`)
+        persistLast(id, plain)
+        if (autoSpeak && plain.content.trim()) speakText(plain.content, `${id}:auto`)
+        if (autoMemory) void autoExtract([...next, plain])
       },
       (msg) => {
         q.dispose()
@@ -463,10 +613,13 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
     push,
     config,
     autoSpeak,
+    autoMemory,
+    autoExtract,
     appendAssistantToken,
     appendAssistantError,
     speakText,
     finalizeAssistant,
+    persistLast,
   ])
 
   const onPickImage = useCallback(
@@ -477,12 +630,21 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
       const base64 = dataUrl.split(',')[1]
       const mime = file.type || 'image/png'
       const prompt = '（这是一张发给你的图片）请看图回答。'
-      const userMsg: ChatMessage = { role: 'user', content: prompt, image: dataUrl }
+      // 先落盘拿引用（§15.1），失败才降级用 dataURL 直接显示
+      const att = await uploadAttachment(id, dataUrl, 'upload')
+      const userMsg: ChatMessage = {
+        role: 'user',
+        content: prompt,
+        image: att?.thumb ?? dataUrl,
+        imageOrig: att?.orig ?? dataUrl,
+        imageSource: 'upload',
+      }
       const next = [...messages, userMsg]
       setHistory((prev) => ({ ...prev, [id]: next }))
       setMsgError((prev) => ({ ...prev, [id]: '' }))
       setStreaming(true)
       push(id, { role: 'assistant', content: '' })
+      void saveMessage(id, userMsg)
 
       const acc = { value: '' }
       const q = createSmartStream((t) => {
@@ -505,7 +667,9 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
           q.finish()
           setStreaming(false)
           const plain = finalizeAssistant(id, acc.value, active.kind === 'group')
-          if (autoSpeak && plain.trim()) speakText(plain, `${id}:auto`)
+          persistLast(id, plain)
+          if (autoSpeak && plain.content.trim()) speakText(plain.content, `${id}:auto`)
+          if (autoMemory) void autoExtract([...next, plain])
         },
         (msg) => {
           q.dispose()
@@ -515,7 +679,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
         },
       )
     },
-    [messages, streaming, active, push, config, autoSpeak, appendAssistantToken, appendAssistantError, speakText, finalizeAssistant],
+    [messages, streaming, active, push, config, autoSpeak, autoMemory, autoExtract, appendAssistantToken, appendAssistantError, speakText, finalizeAssistant, persistLast],
   )
 
   const onImport = useCallback((name: string) => {
@@ -560,6 +724,58 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
     }
   }, [genPrompt, genBusy, config])
 
+  // 「记住这条」（§9.3 手动记忆）：桶由会话类型决定 —— 私聊进 TA 的个人记忆，群聊进家记忆。
+  const rememberThis = useCallback(
+    async (key: string, content: string) => {
+      const text = (content || '').trim()
+      if (!text || !active) return
+      setRememberMsg('')
+      try {
+        await rememberMemory({
+          text,
+          session_kind: active.kind === 'single' ? 'single' : 'group',
+          character_ids: active.characterIds,
+        })
+        setRemembered((prev) => ({ ...prev, [key]: true }))
+      } catch (e) {
+        // 409 = 已经记过同样的内容；后端去重是按「同一桶 + 同一内容」，这里也照此标灰
+        const msg = e instanceof Error ? e.message : String(e)
+        if (msg.includes('重复') || msg.includes('已存在')) {
+          setRemembered((prev) => ({ ...prev, [key]: true }))
+        } else {
+          setRememberMsg(msg)
+        }
+      }
+    },
+    [active],
+  )
+
+  // 「⭐ 存入画廊」（§9.4）：把图片收进画廊；描述留空，等用户或 vision 模型补，
+  // 补好描述后才会作为照片记忆进 §9.2 的检索。
+  const starThis = useCallback(
+    async (key: string, m: ChatMessage) => {
+      const orig = m.imageOrig || m.image
+      if (!orig || !active) return
+      setStarring(key)
+      setErrorText('')
+      try {
+        await starImage({
+          orig,
+          session_id: active.id,
+          message_id: String(m.seq ?? ''),
+          in_memory: true,
+        })
+        setStarred((prev) => ({ ...prev, [key]: true }))
+        setGalleryOpen(true) // 顺手打开画廊，提示补一句描述
+      } catch (e) {
+        setErrorText(e instanceof Error ? e.message : String(e))
+      } finally {
+        setStarring('')
+      }
+    },
+    [active],
+  )
+
   const [sessionsExtra, setSessionsExtra] = useState<ChatSession[]>([])
   const allSessions = [...sessions, ...sessionsExtra]
 
@@ -601,6 +817,31 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
             </span>
           )}
           <span className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={() => setAutoMemory((v) => !v)}
+              className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
+                autoMemory
+                  ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
+                  : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-3)]'
+              }`}
+              title="自动记忆：聊到「记得/以后/约定」这类长期信息时自动提炼进记忆"
+            >
+              {autoMemory ? '🪄 自动记忆' : '🪄 自动记忆 关'}
+            </button>
+            <button
+              onClick={() => setGalleryOpen(true)}
+              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
+              title="画廊：你主动收藏的重要图片（§9.4）"
+            >
+              🖼 画廊
+            </button>
+            <button
+              onClick={() => setMemoryOpen(true)}
+              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
+              title="记忆：家记忆 / 各人的个人记忆"
+            >
+              🧠 记忆
+            </button>
             <button
               onClick={() => setGenOpen(true)}
               className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
@@ -698,8 +939,29 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
           </div>
         )}
 
+        {/* 记记忆失败时的轻提示（成功不用打扰） */}
+        {rememberMsg && (
+          <div className="mx-4 mt-2 flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1.5 text-[12px] text-[var(--text-2)]">
+            <span>⚠ 记不住这条：{rememberMsg}</span>
+            <button onClick={() => setRememberMsg('')} className="ml-auto opacity-70 hover:opacity-100">
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* 自动记忆提炼的轻提示（§9.3）：成功不打扰，只在提炼到东西时冒一下 */}
+        {autoMsg && (
+          <div className="mx-4 mt-2 flex items-center gap-2 rounded-xl border border-[color-mix(in_srgb,var(--pink)_35%,var(--border))] bg-[var(--pink-soft)] px-3 py-1.5 text-[12px] text-[var(--pink-deep)]">
+            <span className="min-w-0 flex-1 truncate">{autoMsg}</span>
+            <button onClick={() => setAutoMsg('')} className="shrink-0 opacity-70 hover:opacity-100">
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* 消息流 */}
-        <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div className="flex-1 overflow-y-auto px-5 py-4" onScroll={onScrollMessages}>
+          {loadingOlder && <div className="mb-2 text-center text-[12px] text-[var(--text-3)]">加载更早的消息…</div>}
           {messages.length === 0 && (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-[var(--text-3)]">
               <div className="rounded-full bg-[var(--pink-soft)] px-3 py-1 text-[var(--pink-deep)]">
@@ -745,6 +1007,10 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
                             >
                               {playingKey === segKey ? '⏹ 停止' : '🔈 朗读'}
                             </button>
+                            <RememberButton
+                              done={Boolean(remembered[segKey])}
+                              onClick={() => void rememberThis(segKey, segText)}
+                            />
                           </div>
                         )}
                       </div>
@@ -756,7 +1022,30 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
                       m.role === 'user' ? 'bg-[var(--pink)] text-white' : 'bg-[var(--surface)] text-[var(--text)]'
                     }`}
                   >
-                    {m.image && <img src={m.image} alt="upload" className="mb-2 max-h-48 rounded-lg" />}
+                    {m.image && (
+                      <div className="relative mb-2 block w-max">
+                        <button
+                          type="button"
+                          onClick={() => m.imageOrig && setLightbox(m.imageOrig)}
+                          title={m.imageOrig ? '点开看原图' : '原图已清理，仅存缩略图'}
+                        >
+                          <img src={m.image} alt="图片" className="max-h-48 rounded-lg" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void starThis(`${active.id}:${i}`, m)}
+                          disabled={starred[`${active.id}:${i}`] || starring === `${active.id}:${i}`}
+                          title="存入画廊"
+                          className={`absolute right-1 top-1 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]/85 px-1 py-0.5 text-[10px] leading-tight shadow backdrop-blur transition ${
+                            starred[`${active.id}:${i}`]
+                              ? 'border-[var(--pink)] text-[var(--pink-deep)]'
+                              : 'text-[var(--text-3)] hover:border-[var(--pink)] hover:text-[var(--pink-deep)]'
+                          }`}
+                        >
+                          ⭐
+                        </button>
+                      </div>
+                    )}
                     <div className="whitespace-pre-wrap">{m.content || (streaming && isLast ? '…' : '')}</div>
                     {m.role === 'assistant' && m.content.trim() && (
                       <div className="mt-1 flex items-center gap-2">
@@ -769,6 +1058,10 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
                         >
                           {playingKey === `${active.id}:${i}` ? '⏹ 停止' : '🔈 朗读'}
                         </button>
+                        <RememberButton
+                          done={Boolean(remembered[`${active.id}:${i}`])}
+                          onClick={() => void rememberThis(`${active.id}:${i}`, m.content)}
+                        />
                       </div>
                     )}
                   </div>
@@ -967,11 +1260,26 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
                 /images/generations 的中转地址 + 模型名。
               </p>
             )}
-            <div className="mt-3 flex items-center justify-end gap-2.5">
-              <button className="btn ghost sm" onClick={() => !genBusy && setGenOpen(false)}>取消</button>
-              <button className="btn sm" onClick={doGenerate} disabled={genBusy || !genPrompt.trim()}>
-                {genBusy ? '生成中…' : '生成'}
-              </button>
+            <div className="mt-3 flex items-center justify-between gap-2.5">
+              <span className="text-[11px] leading-snug text-[var(--text-3)]">
+                {stats
+                  ? `本地：原图 ${(stats.orig_bytes / 1024 / 1024).toFixed(1)} MB · 缩略图 ${(stats.thumb_bytes / 1024).toFixed(0)} KB`
+                  : '存储统计加载中…'}
+              </span>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  className="btn ghost sm"
+                  disabled={!stats?.orig_bytes}
+                  title="清掉本地原图，只留缩略图（省空间；想看高清再重新生成/发送）"
+                  onClick={() => void clearOriginals().then(() => attachmentStats().then(setStats))}
+                >
+                  清理原图
+                </button>
+                <button className="btn ghost sm" onClick={() => !genBusy && setGenOpen(false)}>取消</button>
+                <button className="btn sm" onClick={doGenerate} disabled={genBusy || !genPrompt.trim()}>
+                  {genBusy ? '生成中…' : '生成'}
+                </button>
+              </div>
             </div>
             {genImages.length > 0 && (
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -986,6 +1294,42 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* 记忆浮层（§9.2/§9.3）：家记忆 + 各人的个人记忆，可增可删可重建索引 */}
+      {memoryOpen && (
+        <MemoryPanel
+          characters={characters}
+          sessionKind={active.kind === 'single' ? 'single' : 'group'}
+          characterIds={active.characterIds}
+          onClose={() => setMemoryOpen(false)}
+        />
+      )}
+
+      {/* 画廊浮层（§9.4）：收藏的图片 + 描述；描述按 A 方案进记忆 */}
+      {galleryOpen && (
+        <GalleryPanel
+          baseUrl={config.baseUrl}
+          apiKey={config.apiKey}
+          visionModel={config.visionModel}
+          onClose={() => setGalleryOpen(false)}
+        />
+      )}
+
+      {/* 看原图浮层：点击任意处 / Esc 关闭 */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-6 backdrop-blur-sm"
+          onClick={() => setLightbox(null)}
+        >
+          <img src={lightbox} alt="原图" className="max-h-[88vh] max-w-[88vw] rounded-xl shadow-2xl" />
+          <button
+            onClick={() => setLightbox(null)}
+            className="absolute right-5 top-5 rounded-full bg-white/15 px-3 py-1.5 text-[13px] text-white hover:bg-white/25"
+          >
+            ✕ 关闭
+          </button>
         </div>
       )}
     </div>
