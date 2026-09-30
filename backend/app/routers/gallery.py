@@ -33,6 +33,7 @@ class DescribeIn(BaseModel):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
+    uncensored: bool = False  # 无审查通道：注入越狱提示，成人向图片才描述得出（§7）
 
 
 class UpdateIn(BaseModel):
@@ -79,6 +80,7 @@ async def describe(gallery_id: str, body: DescribeIn) -> dict:
             api_key=body.api_key or s.model_api_key,
             model=body.model or s.model_vision,
             hint=body.hint,
+            uncensored=body.uncensored,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"自动描述失败：{exc}") from exc

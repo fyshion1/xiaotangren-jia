@@ -51,7 +51,14 @@ export async function starImage(payload: {
 // 让 vision 模型看图写描述（save=true 时直接落库并同步那条照片记忆）
 export async function describeImage(
   id: string,
-  opts: { hint?: string; save?: boolean; base_url?: string; api_key?: string; model?: string } = {},
+  opts: {
+    hint?: string
+    save?: boolean
+    base_url?: string
+    api_key?: string
+    model?: string
+    uncensored?: boolean
+  } = {},
 ): Promise<{ description: string; saved: boolean; item?: GalleryItem }> {
   return asJson(`/api/gallery/${id}/describe`, {
     method: 'POST',

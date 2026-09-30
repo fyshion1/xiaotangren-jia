@@ -26,6 +26,8 @@ class VisionRequest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
+    # 无审查通道：追加无审查专属越狱块（§7），让模型配合成人向图片。
+    uncensored: bool = False
 
 
 def _sse(event: str, data: dict) -> str:
@@ -42,7 +44,9 @@ async def images_chat(req: VisionRequest) -> StreamingResponse:
     model = req.model or settings.model_vision
 
     system = build_system_prompt(
-        character_ids=req.character_ids, messages=[{"role": "user", "content": req.prompt}]
+        character_ids=req.character_ids,
+        messages=[{"role": "user", "content": req.prompt}],
+        uncensored=req.uncensored,
     )
     messages: list[dict] = []
     if system:

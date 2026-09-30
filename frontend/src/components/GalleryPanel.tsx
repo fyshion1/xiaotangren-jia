@@ -18,9 +18,18 @@ type Props = {
   baseUrl?: string
   apiKey?: string
   visionModel?: string
+  // 当前是否走无审查通道：决定自动描述是否注入越狱提示（§7）
+  uncensored?: boolean
 }
 
-export default function GalleryPanel({ onClose, onChanged, baseUrl, apiKey, visionModel }: Props) {
+export default function GalleryPanel({
+  onClose,
+  onChanged,
+  baseUrl,
+  apiKey,
+  visionModel,
+  uncensored,
+}: Props) {
   const [items, setItems] = useState<GalleryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState('')
@@ -63,6 +72,7 @@ export default function GalleryPanel({ onClose, onChanged, baseUrl, apiKey, visi
         base_url: baseUrl,
         api_key: apiKey,
         model: visionModel,
+        uncensored,
       })
       await reload()
       onChanged?.()

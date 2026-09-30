@@ -34,16 +34,20 @@ class ChatRequest(BaseModel):
     model: str | None = None
     # 单条回复的 token 上限（0 = 不限制）。前端「最大回复」面板可调。
     max_tokens: int | None = None
+    # 是否走无审查通道：为真时组装引擎额外追加「无审查专属」越狱块（§7）。
+    uncensored: bool = False
 
 
 def _role_of(role: str) -> str:
     return role if role in {"user", "assistant"} else "user"
 
 
-def _to_openai_messages(messages: list[ChatMessage], character_ids: list[str]) -> list[dict]:
+def _to_openai_messages(
+    messages: list[ChatMessage], character_ids: list[str], uncensored: bool = False
+) -> list[dict]:
     # 世界书需要原文消息，先转成 dict 再传给组装引擎。
     raw = [{"role": _role_of(m.role), "content": m.content} for m in messages]
-    system = build_system_prompt(character_ids=character_ids, messages=raw)
+    system = build_system_prompt(character_ids=character_ids, messages=raw, uncensored=uncensored)
     out: list[dict] = [{"role": "system", "content": system}] if system else []
     out.extend(raw)
     return out
@@ -61,7 +65,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     base_url = req.base_url or settings.model_base_url
     api_key = req.api_key or settings.model_api_key
     model = req.model or settings.model_chat
-    messages = _to_openai_messages(req.messages, req.character_ids)
+    messages = _to_openai_messages(req.messages, req.character_ids, req.uncensored)
     max_tokens = req.max_tokens if req.max_tokens and req.max_tokens > 0 else None
 
     async def gen() -> AsyncIterator[str]:

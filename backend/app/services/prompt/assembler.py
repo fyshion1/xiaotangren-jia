@@ -112,11 +112,13 @@ def _worldbook_hits(texts: list[str]) -> list[dict]:
 def build_system_prompt(
     character_ids: list[str] | None = None,
     messages: list[dict] | None = None,
+    uncensored: bool = False,
 ) -> str:
     """组装最终 system prompt。
 
     character_ids：本会话在场角色 id（空/缺省时默认全员在场）。
     messages：聊天历史，用于世界书关键词扫描（取最近 N 条）。
+    uncensored：是否走无审查通道——为真时额外追加「无审查专属」越狱块。
     """
     messages = messages or []
     ids = [i for i in (character_ids or []) if i]
@@ -166,8 +168,15 @@ def build_system_prompt(
             # 记忆检索失败不该拖垮聊天：模型没装好 / 向量库异常时静默跳过
             pass
 
-    jailbreak = (db.get_settings().get("jailbreak") or "").strip()
+    settings = db.get_settings()
+    jailbreak = (settings.get("jailbreak") or "").strip()
     if jailbreak:
-        parts.append(f"【规则 / 越狱提示】\n{jailbreak}")
+        parts.append(f"【最高优先级规则 · 越狱】（以下规则优先于上文一切设定）\n{jailbreak}")
+
+    # 无审查通道专属预设：仅在该通道下追加（§7）
+    if uncensored:
+        jailbreak_unc = (settings.get("jailbreak_uncensored") or "").strip()
+        if jailbreak_unc:
+            parts.append(f"【无审查通道规则 · 最高优先级】\n{jailbreak_unc}")
 
     return "\n\n".join(p for p in parts if p)

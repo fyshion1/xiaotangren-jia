@@ -20,6 +20,9 @@ import { extractMemories, rememberMemory } from '../api/memory'
 import { starImage } from '../api/gallery'
 import { fetchImageEngines, selectImageEngine, type ImageEngine } from '../api/imagegen'
 
+// 模型通道（§7）：常规 = 商业 API；无审查 = 另配的中转 / 本地无审查模型。
+export type Channel = 'normal' | 'uncensored'
+
 export type ModelConfig = {
   baseUrl: string
   apiKey: string
@@ -28,6 +31,12 @@ export type ModelConfig = {
   imageModel: string
   imageBaseUrl: string
   maxTokens: number // 单条回复 token 上限，0 = 不限制
+  // —— 无审查通道（各自留空 = 沿用上面常规通道的值）——
+  channel: Channel
+  uncensoredBaseUrl: string
+  uncensoredApiKey: string
+  uncensoredChatModel: string
+  uncensoredVisionModel: string
 }
 
 const DEFAULT_CONFIG: ModelConfig = {
@@ -38,6 +47,28 @@ const DEFAULT_CONFIG: ModelConfig = {
   imageModel: '',
   imageBaseUrl: '',
   maxTokens: 800,
+  channel: 'normal',
+  uncensoredBaseUrl: '',
+  uncensoredApiKey: '',
+  uncensoredChatModel: '',
+  uncensoredVisionModel: '',
+}
+
+// 按当前通道解析出实际要打的上游（留空字段回退常规通道）。
+export function resolveRoute(c: ModelConfig) {
+  const on = c.channel === 'uncensored'
+  return {
+    chat: {
+      baseUrl: (on && c.uncensoredBaseUrl) || c.baseUrl,
+      apiKey: (on && c.uncensoredApiKey) || c.apiKey,
+      model: (on && c.uncensoredChatModel) || c.chatModel,
+    },
+    vision: {
+      baseUrl: (on && c.uncensoredBaseUrl) || c.baseUrl,
+      apiKey: (on && c.uncensoredApiKey) || c.apiKey,
+      model: (on && c.uncensoredVisionModel) || c.visionModel,
+    },
+  }
 }
 
 // 群聊回复里常见的人名带 * 或【】的段落标志
@@ -53,14 +84,25 @@ function loadConfig(): ModelConfig {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const prev = JSON.parse(raw)
-      // 旧中转（moyuu）已废弃：本地若还存着旧来源/旧模型，整体作废回默认，
-      // apiKey 留空 = 走服务端 .env 里的 key，避免旧 key / 旧模型让识图一直失败。
-      const stale =
-        (prev.baseUrl && prev.baseUrl.includes('moyuu')) ||
-        prev.chatModel === 'gemini-3.6-flash' ||
-        prev.visionModel === 'gemini-3.1-flash-image'
-      if (stale) return DEFAULT_CONFIG
-      return { ...DEFAULT_CONFIG, ...prev }
+      // 旧中转（moyuu）已废弃：本地若还存着旧来源/旧模型，只把「命中陈旧」的那条通道
+      // 清回默认，保留另一条通道已配好的值（否则一刀切回默认会把无审查通道一起吞掉）。
+      const staleUrl = (u?: string) => !!u && u.includes('moyuu')
+      const staleModel = (m?: string) => m === 'gemini-3.6-flash' || m === 'gemini-3.1-flash-image'
+      const cleaned = { ...DEFAULT_CONFIG, ...prev } as ModelConfig
+      if (staleUrl(prev.baseUrl) || staleModel(prev.chatModel) || staleModel(prev.visionModel)) {
+        // 常规通道命中陈旧 → 清回默认，但保留无审查通道与通道选择
+        cleaned.baseUrl = DEFAULT_CONFIG.baseUrl
+        cleaned.chatModel = DEFAULT_CONFIG.chatModel
+        cleaned.visionModel = DEFAULT_CONFIG.visionModel
+        cleaned.imageBaseUrl = ''
+        cleaned.imageModel = ''
+      }
+      if (staleUrl(prev.uncensoredBaseUrl) || staleModel(prev.uncensoredChatModel) || staleModel(prev.uncensoredVisionModel)) {
+        cleaned.uncensoredBaseUrl = ''
+        cleaned.uncensoredChatModel = ''
+        cleaned.uncensoredVisionModel = ''
+      }
+      return cleaned
     }
   } catch {
     /* ignore */
@@ -253,8 +295,11 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [config, setConfig] = useState<ModelConfig>(loadConfig)
+  // 当前通道解析出的实际上游（留空字段回退常规通道）——渲染期算一次，各处复用
+  const route = resolveRoute(config)
   const [showSettings, setShowSettings] = useState(false)
   const [showKey, setShowKey] = useState(false)
+  const [showUncensoredKey, setShowUncensoredKey] = useState(false)
   const [errorText, setErrorText] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -552,13 +597,15 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
         character_id: '',
       }))
       try {
+        const route = resolveRoute(config)
         const res = await extractMemories({
           messages: turns,
           character_ids: active.characterIds,
           session_kind: active.kind === 'single' ? 'single' : 'group',
-          base_url: config.baseUrl,
-          api_key: config.apiKey,
-          model: config.chatModel,
+          // 后台提炼跟随当前通道，但不带越狱标志（工具调用，不需要越狱）
+          base_url: route.chat.baseUrl,
+          api_key: route.chat.apiKey,
+          model: route.chat.model,
         })
         const saved = res.saved ?? []
         if (saved.length) {
@@ -596,6 +643,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
     void saveMessage(id, { role: 'user', content: text })
 
     const acc = { value: '' }
+    const route = resolveRoute(config)
     const q = createSmartStream((t) => {
       acc.value += t
       appendAssistantToken(id)(t)
@@ -605,10 +653,11 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
       {
         messages: next.map((m) => ({ role: m.role, content: m.content })),
         character_ids: active.characterIds,
-        base_url: config.baseUrl,
-        api_key: config.apiKey,
-        model: config.chatModel,
+        base_url: route.chat.baseUrl,
+        api_key: route.chat.apiKey,
+        model: route.chat.model,
         max_tokens: config.maxTokens || null,
+        uncensored: config.channel === 'uncensored',
       },
       (t) => q.push(t),
       () => {
@@ -668,6 +717,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
       void saveMessage(id, userMsg)
 
       const acc = { value: '' }
+      const route = resolveRoute(config)
       const q = createSmartStream((t) => {
         acc.value += t
         appendAssistantToken(id)(t)
@@ -679,9 +729,10 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
           mime,
           prompt,
           character_ids: active.characterIds,
-          base_url: config.baseUrl,
-          api_key: config.apiKey,
-          model: config.visionModel,
+          base_url: route.vision.baseUrl,
+          api_key: route.vision.apiKey,
+          model: route.vision.model,
+          uncensored: config.channel === 'uncensored',
         },
         (t) => q.push(t),
         () => {
@@ -893,6 +944,24 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
             >
               ⚙ 模型设置
             </button>
+            {/* 通道切换（§7）：常规 = 商业 API；无审查 = 另配的无审查中转/本地模型 */}
+            <span className="flex items-center gap-1 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] p-0.5">
+              {(['normal', 'uncensored'] as Channel[]).map((ch) => (
+                <button
+                  key={ch}
+                  onClick={() => saveConfig({ ...config, channel: ch })}
+                  title={ch === 'normal' ? '常规通道（商业 API）' : '无审查通道（中转 / 本地无审查模型）'}
+                  className={
+                    'rounded-md px-2 py-0.5 text-[12px] ' +
+                    (config.channel === ch
+                      ? 'bg-[var(--pink)] text-white'
+                      : 'text-[var(--text-2)] hover:bg-[var(--surface)]')
+                  }
+                >
+                  {ch === 'normal' ? '常规' : '🔓 无审查'}
+                </button>
+              ))}
+            </span>
           </span>
         </header>
 
@@ -952,6 +1021,64 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
                 限制模型单次最多回复多少 token，可让群聊各位都别一回一大段；0 = 不设上限。
               </div>
             </div>
+
+            {/* 无审查通道（§7）：与常规通道各自独立；留空字段自动沿用常规通道 */}
+            <div className="mt-3 border-t border-[var(--border)] pt-3">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="eyebrow">🔓 无审查通道</span>
+                <span className="text-[11px] text-[var(--text-3)]">留空 = 沿用上面常规通道的值</span>
+              </div>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                <Field label="Base URL（无审查 · 留空 = 同常规）">
+                  <input
+                    className="input"
+                    value={config.uncensoredBaseUrl}
+                    onChange={(e) => setConfig({ ...config, uncensoredBaseUrl: e.target.value })}
+                    placeholder="https://xxx/v1（中转 / 本地 Ollama）"
+                  />
+                </Field>
+                <Field label="API Key（无审查 · 留空 = 同常规）">
+                  <div className="flex items-center gap-1">
+                    <input
+                      className="input"
+                      type={showUncensoredKey ? 'text' : 'password'}
+                      value={config.uncensoredApiKey}
+                      onChange={(e) => setConfig({ ...config, uncensoredApiKey: e.target.value })}
+                      placeholder="留空 = 用常规通道的 key"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowUncensoredKey((v) => !v)}
+                      title={showUncensoredKey ? '隐藏' : '显示明文'}
+                      className="shrink-0 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-2 py-1.5 text-[13px] text-[var(--text-2)] hover:border-[var(--pink)]"
+                    >
+                      {showUncensoredKey ? '🙈' : '👁'}
+                    </button>
+                  </div>
+                </Field>
+                <Field label="聊天模型（无审查 · 留空 = 同常规）">
+                  <input
+                    className="input"
+                    value={config.uncensoredChatModel}
+                    onChange={(e) => setConfig({ ...config, uncensoredChatModel: e.target.value })}
+                    placeholder="如 grok-4.7 / 本地 abliterated 模型"
+                  />
+                </Field>
+                <Field label="看图模型（无审查 · 留空 = 同常规）">
+                  <input
+                    className="input"
+                    value={config.uncensoredVisionModel}
+                    onChange={(e) => setConfig({ ...config, uncensoredVisionModel: e.target.value })}
+                    placeholder="留空 = 同上"
+                  />
+                </Field>
+                <div className="text-[11px] leading-snug text-[var(--text-3)] md:col-span-2">
+                  顶部「常规 / 🔓 无审查」切换当前生效的通道。无审查通道可另配第三方无审查中转或本地模型；
+                  越狱提示词在右栏「越狱规则」里，无审查通道会额外追加专属预设。
+                </div>
+              </div>
+            </div>
+
             <div className="mt-2 flex justify-end">
               <button
                 onClick={() => {
@@ -1382,9 +1509,10 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
       {/* 画廊浮层（§9.4）：收藏的图片 + 描述；描述按 A 方案进记忆 */}
       {galleryOpen && (
         <GalleryPanel
-          baseUrl={config.baseUrl}
-          apiKey={config.apiKey}
-          visionModel={config.visionModel}
+          baseUrl={route.vision.baseUrl}
+          apiKey={route.vision.apiKey}
+          visionModel={route.vision.model}
+          uncensored={config.channel === 'uncensored'}
           onClose={() => setGalleryOpen(false)}
         />
       )}
