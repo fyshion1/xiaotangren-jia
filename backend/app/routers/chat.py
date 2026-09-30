@@ -2,6 +2,8 @@
 
 前端传入显式的模型来源（base_url/api_key/model），后端只做代理转发 + SSE 封装。
 不在后端持久化任何可切换的 key —— 符合「前端自己填、后端无状态」的诉求。
+
+事件：token（正文增量）/ done / error（带上游真实错误信息）。
 """
 
 import json
@@ -30,6 +32,8 @@ class ChatRequest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
+    # 单条回复的 token 上限（0 = 不限制）。前端「最大回复」面板可调。
+    max_tokens: int | None = None
 
 
 def _role_of(role: str) -> str:
@@ -55,15 +59,22 @@ async def chat(req: ChatRequest) -> StreamingResponse:
 
     settings = get_settings()
     base_url = req.base_url or settings.model_base_url
-    api_key = req.api_key if req.api_key is not None else settings.model_api_key
+    api_key = req.api_key or settings.model_api_key
     model = req.model or settings.model_chat
     messages = _to_openai_messages(req.messages, req.character_ids)
+    max_tokens = req.max_tokens if req.max_tokens and req.max_tokens > 0 else None
 
     async def gen() -> AsyncIterator[str]:
         try:
-            async for delta in openai.stream_chat(messages, model, base_url, api_key):
-                yield _sse("token", {"text": delta})
-            yield _sse("done", {})
+            async for ev in openai.stream_chat_retry(
+                messages, model, base_url, api_key, max_tokens=max_tokens
+            ):
+                if ev["type"] == "text":
+                    yield _sse("token", {"text": ev["text"]})
+                elif ev["type"] == "done":
+                    yield _sse("done", {})
+                else:
+                    yield _sse("error", {"message": ev["message"]})
         except Exception as exc:  # noqa: BLE001
             yield _sse("error", {"message": str(exc)})
 

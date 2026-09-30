@@ -5,9 +5,28 @@ import { DEFAULT_STATUS } from '../data/chats'
 type Props = {
   session: ChatSession
   characters: CharacterProfile[]
+  autoSpeak: boolean
+  voiceName: string
+  speaking: boolean
+  onToggleAutoSpeak: () => void
+  onSpeak: () => void
+  onStop: () => void
+  onPickVoice: () => void
+  onGeneratePhoto: () => void
 }
 
-export default function StatusSidebar({ session, characters }: Props) {
+export default function StatusSidebar({
+  session,
+  characters,
+  autoSpeak,
+  voiceName,
+  speaking,
+  onToggleAutoSpeak,
+  onSpeak,
+  onStop,
+  onPickVoice,
+  onGeneratePhoto,
+}: Props) {
   const members = session.characterIds
     .map((id) => characters.find((c) => c.id === id))
     .filter((c): c is CharacterProfile => Boolean(c))
@@ -18,16 +37,31 @@ export default function StatusSidebar({ session, characters }: Props) {
     <div className="flex h-full flex-col">
       <div className="px-4 pb-2 pt-3 text-[12px] font-semibold tracking-wide text-[var(--text-3)]">状态</div>
 
-      {/* 操作空壳：打电话 / 生成照片 / 播放语音 */}
+      {/* 操作：生成照片 / 朗读·停止 / 自动朗读 */}
       <div className="grid grid-cols-3 gap-2 px-4">
-        <button className="status-action" title="空壳功能（阶段 3）">
-          <span className="text-[16px]">📞</span>打电话
-        </button>
-        <button className="status-action" title="空壳功能（阶段 3）">
+        <button className="status-action" onClick={onGeneratePhoto} title="生成照片">
           <span className="text-[16px]">🎨</span>生成照片
         </button>
-        <button className="status-action" title="空壳功能（阶段 3）">
-          <span className="text-[16px]">🔊</span>播放语音
+        <button
+          className={`status-action ${speaking ? 'on' : ''}`}
+          onClick={speaking ? onStop : onSpeak}
+          title={speaking ? '停止当前朗读' : '朗读最近一条回复'}
+        >
+          <span className="text-[16px]">{speaking ? '⏹' : '🔊'}</span>
+          {speaking ? '停止' : '朗读'}
+        </button>
+        <button className={`status-action ${autoSpeak ? 'on' : ''}`} onClick={onToggleAutoSpeak} title="自动朗读每条回复">
+          <span className="text-[16px]">🎙</span>{autoSpeak ? '自动中' : '自动朗读'}
+        </button>
+      </div>
+
+      {/* 引擎+音色切换 */}
+      <div className="mt-2 px-4">
+        <button
+          onClick={onPickVoice}
+          className="w-full rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
+        >
+          🗣 语音：{voiceName}
         </button>
       </div>
 

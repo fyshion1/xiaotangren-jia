@@ -33,6 +33,8 @@ function Chips({ items }: { items: string[] }) {
 
 export default function CharacterProfileCard({ p, onEdit, onEnterChat }: Props) {
   const [showPriv, setShowPriv] = useState(false)
+  // 立绘三态循环：静态图片/GIF → Live2D（2D）→ 3D（VRM）→ 回到静态。模型后续替换，现在只占位。
+  const [portraitMode, setPortraitMode] = useState<'image' | 'live2d' | 'vrm'>('image')
 
   const priv: [string, string][] = [
     ['体重', p.weight],
@@ -42,19 +44,42 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat }: Props) 
     ['私密小愿望', p.privateWish],
   ]
 
+  const cyclePortrait = () => {
+    setPortraitMode((m) => (m === 'image' ? 'live2d' : m === 'live2d' ? 'vrm' : 'image'))
+  }
+
+  const modeBadge =
+    portraitMode === 'image' ? '静态图片 / GIF 占位' : portraitMode === 'live2d' ? 'Live2D（2D）占位' : '3D（VRM）占位'
+
   return (
     <section
       className="grid overflow-hidden rounded-[22px] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow)] md:grid-cols-[320px_1fr]"
       style={{ gridAutoRows: 'auto' }}
     >
       {/* 左：立绘占位 */}
-      <div className="portrait flex min-h-[280px] items-end justify-center md:min-h-0">
+      <button type="button" onClick={cyclePortrait} className="portrait relative flex min-h-[280px] items-center justify-center overflow-hidden md:min-h-0" title="点击切换立绘：静态/GIF → Live2D → 3D">
         <span className="absolute left-3.5 top-3.5 rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_80%,transparent)] px-2.5 py-0.5 text-[11px] text-[var(--text-2)]">
-          Live2D 立绘占位
+          {modeBadge}
         </span>
-        <span className="absolute bottom-2.5 right-3 text-[11px] text-[var(--text-3)]">兽耳科技风 · 待替换实机模型</span>
-        <div className="mb-7 text-[130px] leading-none drop-shadow-[0_14px_20px_rgba(140,96,58,0.18)]">{p.emoji}</div>
-      </div>
+        <span className="absolute bottom-2.5 right-3 text-[11px] text-[var(--text-3)]">点击切换 · 待替换实机模型</span>
+        {portraitMode === 'image' ? (
+          p.portrait ? (
+            <img src={p.portrait} alt={p.name} className="pointer-events-none h-full w-full object-contain" />
+          ) : (
+            <div className="mb-4 text-[130px] leading-none drop-shadow-[0_14px_20px_rgba(140,96,58,0.18)]">{p.emoji}</div>
+          )
+        ) : portraitMode === 'live2d' ? (
+          <div className="flex flex-col items-center gap-2 text-[var(--text-3)]">
+            <span className="text-[64px] leading-none">🧍‍♀️</span>
+            <span className="text-[12px]">Live2D 模型占位 · 后续接入 pixi-live2d-display</span>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-2 text-[var(--text-3)]">
+            <span className="text-[64px] leading-none">🧊</span>
+            <span className="text-[12px]">VRM 3D 模型占位 · 后续 three.js + three-vrm</span>
+          </div>
+        )}
+      </button>
 
       {/* 右：信息 */}
       <div className="flex flex-col p-6 md:p-7 md:pl-3">

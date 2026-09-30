@@ -288,6 +288,11 @@ body {
   color: var(--pink-deep);
   transform: translateY(-1px);
 }
+.status-action.on {
+  border-color: var(--pink);
+  background: var(--pink-soft);
+  color: var(--pink-deep);
+}
 .status-box {
   border: 1px solid var(--border);
   border-radius: 14px;

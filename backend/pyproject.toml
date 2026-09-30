@@ -10,6 +10,8 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-multipart>=0.0.9",
+    "edge-tts>=7.2",
+    "piper-tts>=1.8",
 ]
 
 [project.optional-dependencies]

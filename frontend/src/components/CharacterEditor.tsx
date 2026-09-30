@@ -21,6 +21,7 @@ const TEXT_FIELDS: { label: string; key: keyof CharacterProfile }[] = [
   ['名字', 'name'],
   ['日文假名', 'jp'],
   ['别名 / 称号', 'alias'],
+  ['立绘图片 URL（静态/GIF，留空用 emoji）', 'portrait'],
   ['生日', 'birthday'],
   ['年龄', 'age'],
   ['身高', 'height'],

@@ -22,6 +22,9 @@ frontend/.vite/
 *.sqlite3
 data/
 
+# TTS voice models (large files — download on demand)
+backend/data/tts/piper/
+
 # Models (large binary files — keep local only)
 models/*.vrm
 models/**/*.moc3

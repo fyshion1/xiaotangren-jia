@@ -75,11 +75,16 @@ docker compose up --build
 后端配置在 `backend/.env`（本地敏感信息，已被 .gitignore 忽略，不会提交）：
 
 ```
-MODEL_BASE_URL=https://api.openai.com/v1   # OpenAI 兼容端点（/v1）
-MODEL_API_KEY=sk-...                        # 你的 key；本地 Ollama 填 ollama
-MODEL_CHAT=gpt-4o-mini                      # 文字聊天模型
-MODEL_VISION=gpt-4o-mini                    # 看图模型
+MODEL_BASE_URL=https://vsllm.cc/v1   # OpenAI 兼容端点（/v1）
+MODEL_API_KEY=sk-...                  # 你的 key；本地 Ollama 填 ollama
+MODEL_CHAT=gemini-3.8-flash           # 文字聊天模型
+MODEL_VISION=gemini-3.8-flash         # 看图模型
+MODEL_IMAGE=                          # 生图模型（vsllm 无生图通道，需另配中转）
+IMAGE_BASE_URL=                       # 生图中转地址（留空 = 用 MODEL_BASE_URL）
 ```
+
+聊天页「⚙ 模型设置」也可在浏览器里直接填（base_url / key / chat / vision / 生图模型），
+存入本地浏览器；Key 留空 = 走服务端 `.env` 里的 key。
 
 支持任意 OpenAI 兼容来源：
 
@@ -91,11 +96,51 @@ MODEL_VISION=gpt-4o-mini                    # 看图模型
 
 ---
 
-## 已实现（MVP）
+## 语音（TTS）
 
-- [x] 文字聊天（SSE 流式、打字机效果）
+多引擎 TTS，**先选引擎、后选音色**（聊天页右栏「🗣 语音」）：
+
+| 引擎 | 说明 | 音色 |
+|---|---|---|
+| `edge` | 微软在线 Neural TTS（edge-tts，免费、需网络） | 晓晓（默认） |
+| `piper` | 本地离线轻量合成（piper-tts + onnx，无需网络、低算力友好） | 华燕 / 小雅 / 超文 |
+| `sovits` | GPT-SoVITS 专属音色（**留按钮、尚未安装**） | —— |
+
+- `GET  /api/voice/engines` —— 引擎列表
+- `GET  /api/voice/voices?engine=xx` —— 某引擎的音色
+- `POST /api/voice/tts` —— `{text, engine, voice}` → 音频（edge=audio/mpeg，piper=audio/wav）
+
+右栏开关：「🔊 朗读/停止」（最近一条）、「🎙 自动朗读」（每条回复自动播）。
+同一时刻只会有一条语音：新朗读会作废在途旧请求并停掉上一条，「⏹ 停止」可立即停下。
+
+piper 音色文件放在 `backend/data/tts/piper/*.onnx`（约 60MB/个，已 gitignore，不随仓库提交）。
+**换机器 / 新 clone 后需先下载一次**：
+
+- Windows：双击 [`download_piper_voices.bat`](./download_piper_voices.bat)
+- Linux / macOS：`./download_piper_voices.sh`
+
+脚本默认走国内镜像 hf-mirror（可设 `PIPER_MIRROR` 换源）。下好后 `GET /api/voice/voices?engine=piper` 才会列出对应音色。
+
+---
+
+## 生图
+
+`POST /api/images/generate` —— 转发 OpenAI 兼容 `/images/generations`（`{prompt, size, n}`）。
+**当前 vsllm 中转没有生图通道**，需在「模型设置」里另填一个支持生图的中转地址 + 模型名；
+本地 ComfyUI / SD WebUI 的接入按《项目要求》§7 后续补。
+
+---
+
+## 已实现（MVP + 第二阶段部分）
+
+- [x] 文字聊天（SSE 流式、平滑打字机、错误透明化）
 - [x] 看图（`POST /api/images/chat`，图片 Base64 → vision 模型）
-- [ ] 多模型切换界面 / 聊天记录持久化（下一阶段）
+- [x] 人设 / 世界书 / 越狱 Prompt 组装引擎（SQLite 存储，阶段 2）
+- [x] 语音 TTS（多引擎：edge 晓晓 / piper 本地 / sovits 占位，自动朗读 + 手动朗读/停止 + 音色切换）
+- [x] 语音 ASR（浏览器 Web Speech 占位，语音转文字）
+- [x] 生图接口（`/api/images/generate`，转发 OpenAI 兼容生图）
+- [ ] 记忆三层 RAG（下一阶段）
+- [ ] 语音 ASR / 唤醒词（下一阶段）
 
 ## 规划中
 

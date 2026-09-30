@@ -5,7 +5,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import init_db
-from .routers import characters, chat, images, settings as settings_router, worldbook
+from .routers import (
+    characters,
+    chat,
+    imagegen,
+    images,
+    voice,
+    worldbook,
+)
+from .routers import (
+    settings as settings_router,
+)
 
 settings = get_settings()
 
@@ -25,6 +35,8 @@ if settings.cors_origin_list:
 
 app.include_router(chat.router, prefix="/api")
 app.include_router(images.router, prefix="/api")
+app.include_router(imagegen.router, prefix="/api")
+app.include_router(voice.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
 app.include_router(worldbook.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
