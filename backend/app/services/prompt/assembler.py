@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ... import db
 from .. import memory as memory_service
+from . import forms as forms_service
 
 DEFAULT_PERSONA = (
     "你是小糖人之家的一员，一个温柔、可爱、贴心的伙伴。"
@@ -62,6 +63,8 @@ def _val(profile: dict, key: str) -> str:
 
 
 def _persona_block(profile: dict) -> str:
+    # 形态（§17）：先解析出当前形态的完整档案，再据此组装 —— 换形态即换人设 / 外貌 / 提示词
+    profile = forms_service.resolve_form(profile)
     name = profile.get("name") or "小糖人"
     lines = [f"【{name}】", ""]
     about = (profile.get("about") or "").strip()

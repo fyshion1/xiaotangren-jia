@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import type { ChatSession, ChatMessage } from '../data/chats'
 import { buildSessions, suggestionsFor } from '../data/chats'
+import { activeFormId, listForms } from '../lib/forms'
 import SessionList from './SessionList'
 import StatusSidebar from './StatusSidebar'
 import MemoryPanel from './MemoryPanel'
@@ -266,6 +267,8 @@ type Props = {
   characters: CharacterProfile[]
   initialSessionId?: string
   onOpenProfile: (charId: string) => void
+  /** 切换某角色的形态（§17）：写回后端，全局生效。 */
+  onSwitchForm: (charId: string, formId: string) => void
 }
 
 type VoiceOption = { id: string; name: string }
@@ -275,7 +278,7 @@ type GenImage = { url?: string; b64?: string }
 // 手机端底部 Tab（桌面端不用）
 type MobileTab = 'sessions' | 'chat' | 'status'
 
-export default function ChatView({ characters, initialSessionId, onOpenProfile }: Props) {
+export default function ChatView({ characters, initialSessionId, onOpenProfile, onSwitchForm }: Props) {
   const sessions = useMemo(() => buildSessions(characters), [characters])
   const [activeId, setActiveId] = useState<string>(initialSessionId ?? sessions[0]?.id ?? 'group')
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0]
@@ -905,6 +908,29 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile }
               {active.name}
             </span>
           )}
+          {/* 形态切换（§17）：私聊时可直接在聊天头部换她的形态，切换即写回后端、全局生效 */}
+          {active.characterIds.length === 1 &&
+            (() => {
+              const c = characters.find((x) => x.id === active.characterIds[0])
+              if (!c) return null
+              const forms = listForms(c)
+              if (forms.length < 2) return null
+              const curId = activeFormId(c)
+              return (
+                <span className="flex flex-wrap items-center gap-1">
+                  {forms.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => onSwitchForm(c.id, f.id)}
+                      className={`form-chip ${f.id === curId ? 'on' : ''}`}
+                      title={`切换到 ${f.name}`}
+                    >
+                      {f.id === curId ? `🎀 ${f.name}` : f.name}
+                    </button>
+                  ))}
+                </span>
+              )
+            })()}
           <span className="ml-auto hidden items-center gap-1.5 md:flex">
             <button
               onClick={() => setAutoMemory((v) => !v)}

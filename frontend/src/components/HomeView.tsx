@@ -41,6 +41,7 @@ export default function HomeView({ characters, initialCharId, onSaveChar, onEnte
           p={active}
           onEdit={() => setEditing(active)}
           onEnterChat={() => onEnterChat(`single-${active.id}`)}
+          onSwitchForm={(formId) => onSaveChar({ ...active, activeFormId: formId })}
         />
       )}
 

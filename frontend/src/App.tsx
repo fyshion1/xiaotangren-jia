@@ -57,6 +57,16 @@ export default function App() {
     setCharacters((list) => list.map((c) => (c.id === saved.id ? saved : c)))
   }, [])
 
+  // 形态切换（§17）：只改 activeFormId，写回后端 → 刷新 / 换设备 / 换会话都保持。
+  const onSwitchForm = useCallback(
+    async (charId: string, formId: string) => {
+      const cur = characters.find((c) => c.id === charId)
+      if (!cur) return
+      await onSaveChar({ ...cur, activeFormId: formId })
+    },
+    [characters, onSaveChar],
+  )
+
   const openProfile = useCallback((charId: string) => {
     setProfileCharId(charId)
     setView('home')
@@ -85,6 +95,7 @@ export default function App() {
             characters={characters}
             initialSessionId={chatSessionId}
             onOpenProfile={openProfile}
+            onSwitchForm={onSwitchForm}
           />
         )}
       </div>

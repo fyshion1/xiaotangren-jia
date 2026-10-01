@@ -4,6 +4,25 @@
 // 本文件只保留类型 + 一个后端不可用时的应急兜底，不再维护第二份人设副本
 // （否则改一处漏一处，会出现「种子已更新、界面还是旧人设」的漂移）。
 
+/** 形态覆盖的词条范围：除身份字段（id / name）与形态自身字段外，全部可覆盖。 */
+type FormFields = Partial<Omit<CharacterProfile, 'id' | 'name' | 'forms' | 'activeFormId' | 'baseFormName'>>
+
+/**
+ * 形态（§17）：一个人物可以有多套「形态」模板 —— 换形态 = 换掉外貌 / 性格 / 提示词等词条，
+ * 但 **角色 id 不变**（否则会孤立 `single-<charId>` 的会话历史与以 char_id 为键的个人记忆）。
+ *
+ * 存储上：基础形态（现有那份档案）直接用顶层平铺字段，其余形态只存「覆盖项」，
+ * 未出现的键自动沿用基础形态 —— 因此加形态不必复制整份档案，也不会出现两份数据打架。
+ */
+export type CharacterForm = {
+  id: string
+  name: string
+  /** 对顶层词条的覆盖；基础形态恒为 {}。 */
+  fields: FormFields
+}
+
+export const BASE_FORM_ID = 'base'
+
 export type CharacterProfile = {
   id: string
   // 头部
@@ -42,6 +61,10 @@ export type CharacterProfile = {
   secret: string
   weakPoint: string
   privateWish: string
+  // 形态（§17）：可选，缺省 = 只有基础形态、卡片不显示形态 chip
+  baseFormName?: string // 基础形态的显示名（如「第一形态 · 粉发」），未填则用默认名
+  forms?: CharacterForm[] // 其余形态（只存覆盖项）
+  activeFormId?: string // 当前激活形态；缺省 = BASE_FORM_ID
 }
 
 /** 后端拉不到人设时的应急占位（正常路径见 api/client.ts 的 fetchCharacters）。 */

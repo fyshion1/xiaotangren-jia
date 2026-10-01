@@ -200,6 +200,29 @@ body {
   border-color: transparent;
 }
 
+/* ===== 形态 chip（§17）：卡片 / 编辑器 / 聊天头部共用 ===== */
+.form-chip {
+  cursor: pointer;
+  padding: 3px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.form-chip:hover {
+  border-color: var(--pink);
+  color: var(--pink-deep);
+}
+.form-chip.on {
+  background: var(--pink-soft);
+  border-color: var(--pink);
+  color: var(--pink-deep);
+  font-weight: 600;
+}
+
 /* ===== 立绘占位区 ===== */
 .portrait {
   position: relative;

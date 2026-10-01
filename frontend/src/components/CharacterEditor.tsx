@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import type { CharacterProfile } from '../data/characters'
+import type { CharacterForm, CharacterProfile } from '../data/characters'
 import { LABEL_OF, PROFILE_FIELD_LABELS, parseProfileText, type FieldKey, type ParseResult } from '../lib/parseProfile'
+import { BASE_FORM_ID, activeFormId, listForms, resolveForm } from '../lib/forms'
 
 type Props = {
   initial: CharacterProfile
@@ -55,6 +56,194 @@ const LONG_FIELDS: { label: string; key: keyof CharacterProfile }[] = [
   { label: '秘密', key: 'secret' },
   { label: '私密小愿望', key: 'privateWish' },
 ]
+
+/** 形态管理分区（§17）：在编辑器下方，折叠面板形式。 */
+function FormManager({
+  form,
+  setForm,
+}: {
+  form: CharacterProfile
+  setForm: React.Dispatch<React.SetStateAction<CharacterProfile>>
+}) {
+  const [newFormName, setNewFormName] = useState('')
+  const forms = listForms(form)
+  const curId = activeFormId(form)
+
+  const setField = (key: keyof CharacterProfile, value: string | string[]) =>
+    setForm((f) => ({ ...f, [key]: value }))
+
+  const ensureForm = (id: string, name: string) => {
+    setForm((f) => ({
+      ...f,
+      forms: [...(f.forms ?? []).filter((fm) => fm.id !== id), { id, name, fields: {} }],
+      activeFormId: id,
+    }))
+  }
+
+  const delForm = (id: string) => {
+    if (id === BASE_FORM_ID) return
+    setForm((f) => ({
+      ...f,
+      forms: (f.forms ?? []).filter((fm) => fm.id !== id),
+      activeFormId: f.activeFormId === id ? BASE_FORM_ID : f.activeFormId,
+    }))
+  }
+
+  const curForm = forms.find((f) => f.id === curId) ?? forms[0]
+  const isBase = curId === BASE_FORM_ID
+
+  // 当前形态下，编辑器显示的完整档案（基础 + 覆盖合并）
+  const resolved = resolveForm(form)
+  const view = resolved.profile
+
+  // 覆盖形态下，被勾选的词条 → 它们在 forms 里的当前值
+  const curFields = (curForm.fields ?? {}) as Record<string, unknown>
+
+  const toggleProp = (key: string) => {
+    if (isBase) return // 基础形态顶层字段由主表单编辑，不走形态覆盖
+    const next: Record<string, unknown> = { ...curFields }
+    if (key in next) delete next[key]
+    else next[key] = view[key as keyof CharacterProfile]
+    setForm((f) => ({
+      ...f,
+      forms: (f.forms ?? []).map((fm) =>
+        fm.id === curId ? { ...fm, fields: next as CharacterForm['fields'] } : fm,
+      ),
+    }))
+  }
+
+  const updateProp = (key: string, value: string | string[]) => {
+    const next: Record<string, unknown> = { ...curFields, [key]: value }
+    setForm((f) => ({
+      ...f,
+      forms: (f.forms ?? []).map((fm) =>
+        fm.id === curId ? { ...fm, fields: next as CharacterForm['fields'] } : fm,
+      ),
+    }))
+  }
+
+  return (
+    <div className="mt-5 border-t border-[var(--border-strong)] pt-4">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="eyebrow">形态管理（§17）</span>
+        <span className="text-[12px] text-[var(--text-3)]">
+          当前：{curForm.name}（{isBase ? '基础形态' : '覆盖形态'}）
+        </span>
+      </div>
+
+      {/* 形态切换 */}
+      <div className="mb-3 flex flex-wrap gap-2">
+        {forms.map((f) => (
+          <button
+            key={f.id}
+            onClick={() => setField('activeFormId', f.id)}
+            className={`form-chip ${f.id === curId ? 'on' : ''}`}
+            title={f.name}
+          >
+            {f.id === curId ? `🎀 ${f.name}` : f.name}
+          </button>
+        ))}
+      </div>
+
+      {/* 基础形态名 / 新形态 */}
+      <div className="mb-3 flex items-end gap-2">
+        {isBase ? (
+          <div className="flex-1">
+            <span className="eyebrow mb-1 block">基础形态名称</span>
+            <input
+              className="input"
+              value={form.baseFormName ?? ''}
+              onChange={(e) => setField('baseFormName', e.target.value)}
+              placeholder="如：第一形态 · 粉发"
+            />
+          </div>
+        ) : (
+          <div className="flex-1">
+            <span className="eyebrow mb-1 block">新增形态</span>
+            <input
+              className="input"
+              value={newFormName}
+              onChange={(e) => setNewFormName(e.target.value)}
+              placeholder="如：第二形态 · 紫发"
+            />
+          </div>
+        )}
+        {!isBase && (
+          <>
+            <button
+              className="btn sm"
+              onClick={() => {
+                if (!newFormName.trim()) return
+                ensureForm(`form_${Date.now()}`, newFormName.trim())
+                setNewFormName('')
+              }}
+            >
+              + 新增
+            </button>
+            <button
+              className="btn ghost sm"
+              onClick={() => delForm(curId)}
+              disabled={forms.length <= 1}
+            >
+              删除形态
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* 覆盖字段：基础形态下编辑顶层表单；覆盖形态下逐词条打勾选填 */}
+      {!isBase && (
+        <div className="mb-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] p-2.5">
+          <div className="eyebrow mb-1.5">
+            本形态覆盖以下词条（勾选 = 覆盖，未勾 = 沿用基础形态）
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {PROFILE_FIELD_LABELS.filter((f) => !['id', 'name'].includes(f.key)).map((f) => {
+              const key = f.key as string
+              const on = key in curFields
+              return (
+                <label key={f.key} className="flex items-center gap-1.5 text-[12px]">
+                  <input type="checkbox" checked={on} onChange={() => toggleProp(key)} />
+                  <span className="text-[var(--text-2)]">{f.label}</span>
+                </label>
+              )
+            })}
+          </div>
+
+          {/* 已勾选的词条：在本形态下显示为可编辑输入 */}
+          {Object.keys(curFields).length > 0 && (
+            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              {PROFILE_FIELD_LABELS.filter((f) => f.key in curFields).map((f) => {
+                const key = f.key
+                const val = curFields[key]
+                const isList = ['personality', 'likes', 'dislikes'].includes(key)
+                return (
+                  <Row key={key} label={f.label}>
+                    {isList ? (
+                      <input
+                        className="input"
+                        value={(val as string[] | undefined)?.join('，') ?? ''}
+                        onChange={(e) =>
+                          updateProp(key, e.target.value.split(/[,，、]/).map((s) => s.trim()).filter(Boolean))
+                        }
+                      />
+                    ) : (
+                      <input
+                        className="input"
+                        value={(val as string | undefined) ?? ''}
+                        onChange={(e) => updateProp(key, e.target.value)}
+                      />
+                    )}
+                  </Row>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function CharacterEditor({ initial, onSave, onClose }: Props) {
   const [form, setForm] = useState<CharacterProfile>({ ...initial })
@@ -239,6 +428,9 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
               />
             </Row>
           ))}
+
+          {/* 形态管理（§17）：基础形态在此编辑顶层词条，其余形态在上方切 chip 后逐条覆盖 */}
+          <FormManager form={form} setForm={setForm} />
         </div>
 
         <div className="mt-5 flex justify-end gap-2.5">

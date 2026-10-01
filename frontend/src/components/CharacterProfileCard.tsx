@@ -1,10 +1,13 @@
 import { useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
+import { activeFormId, listForms, resolveForm } from '../lib/forms'
 
 type Props = {
   p: CharacterProfile
   onEdit: () => void
   onEnterChat: () => void
+  /** 切换形态（§17）。缺省时不渲染形态 chip —— 没配形态的角色卡片保持原样。 */
+  onSwitchForm?: (formId: string) => void
 }
 
 function Attr({ k, children, priv }: { k: string; children: React.ReactNode; priv?: boolean }) {
@@ -31,17 +34,23 @@ function Chips({ items }: { items: string[] }) {
   )
 }
 
-export default function CharacterProfileCard({ p, onEdit, onEnterChat }: Props) {
+export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchForm }: Props) {
   const [showPriv, setShowPriv] = useState(false)
   // 立绘三态循环：静态图片/GIF → Live2D（2D）→ 3D（VRM）→ 回到静态。模型后续替换，现在只占位。
   const [portraitMode, setPortraitMode] = useState<'image' | 'live2d' | 'vrm'>('image')
 
+  // 形态（§17）：没配形态的角色 = 只有基础形态，chip 不渲染，页面与从前一模一样。
+  const forms = listForms(p)
+  const hasForms = forms.length > 1
+  const curFormId = activeFormId(p)
+  const view = resolveForm(p).profile
+
   const priv: [string, string][] = [
-    ['体重', p.weight],
-    ['三围', p.measurements],
-    ['秘密', p.secret],
-    ['弱点', p.weakPoint],
-    ['私密小愿望', p.privateWish],
+    ['体重', view.weight],
+    ['三围', view.measurements],
+    ['秘密', view.secret],
+    ['弱点', view.weakPoint],
+    ['私密小愿望', view.privateWish],
   ]
 
   const cyclePortrait = () => {
@@ -63,10 +72,10 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat }: Props) 
         </span>
         <span className="absolute bottom-2.5 right-3 text-[11px] text-[var(--text-3)]">点击切换 · 待替换实机模型</span>
         {portraitMode === 'image' ? (
-          p.portrait ? (
-            <img src={p.portrait} alt={p.name} className="pointer-events-none h-full w-full object-contain" />
+          view.portrait ? (
+            <img src={view.portrait} alt={view.name} className="pointer-events-none h-full w-full object-contain" />
           ) : (
-            <div className="mb-4 text-[130px] leading-none drop-shadow-[0_14px_20px_rgba(140,96,58,0.18)]">{p.emoji}</div>
+            <div className="mb-4 text-[130px] leading-none drop-shadow-[0_14px_20px_rgba(140,96,58,0.18)]">{view.emoji}</div>
           )
         ) : portraitMode === 'live2d' ? (
           <div className="flex flex-col items-center gap-2 text-[var(--text-3)]">
@@ -85,39 +94,57 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat }: Props) 
       <div className="flex flex-col p-6 md:p-7 md:pl-3">
         <div className="mb-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span className="text-[28px] font-extrabold tracking-wide">
-            {p.name}
-            <span className="ml-2 text-[15px] font-medium text-[var(--text-3)]">{p.jp}</span>
+            {view.name}
+            <span className="ml-2 text-[15px] font-medium text-[var(--text-3)]">{view.jp}</span>
           </span>
-          <span className="text-[14px] font-semibold text-[var(--pink-deep)]">{p.alias}</span>
+          <span className="text-[14px] font-semibold text-[var(--pink-deep)]">{view.alias}</span>
+          {/* 形态 chip（§17）：有多形态时显示在名字栏右侧 */}
+          {hasForms && (
+            <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+              {forms.map((f) => {
+                const active = f.id === curFormId
+                return (
+                  <button
+                    key={f.id}
+                    onClick={() => onSwitchForm?.(f.id)}
+                    className={`form-chip ${active ? 'on' : ''}`}
+                    title={active ? `当前形态：${f.name}` : `切换到：${f.name}`}
+                  >
+                    {active ? `🎀 ${f.name}` : f.name}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {/* 关于 = 角色提示词 */}
-        <p className="mb-4 max-w-[620px] text-[15px] leading-relaxed text-[var(--text-2)]">{p.about}</p>
+        <p className="mb-4 max-w-[620px] text-[15px] leading-relaxed text-[var(--text-2)]">{view.about}</p>
 
         {/* 基本词条 */}
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-          <Attr k="生日 · 年龄">{`${p.birthday} · ${p.age}`}</Attr>
-          <Attr k="身高 / 血型 / 星座">{`${p.height} · ${p.bloodType} · ${p.constellation}`}</Attr>
-          <Attr k="职业">{p.occupation}</Attr>
+          <Attr k="生日 · 年龄">{`${view.birthday} · ${view.age}`}</Attr>
+          <Attr k="身高 / 血型 / 星座">{`${view.height} · ${view.bloodType} · ${view.constellation}`}</Attr>
+          <Attr k="职业">{view.occupation}</Attr>
           <Attr k="性格">
-            <Chips items={p.personality} />
+            <Chips items={view.personality} />
           </Attr>
           <Attr k="喜好">
-            <Chips items={p.likes} />
+            <Chips items={view.likes} />
           </Attr>
           <Attr k="讨厌">
-            <Chips items={p.dislikes} />
+            <Chips items={view.dislikes} />
           </Attr>
-          <Attr k="体型">{p.bodyType}</Attr>
-          <Attr k="瞳色">{p.eyeColor}</Attr>
-          <Attr k="发型">{p.hairstyle}</Attr>
-          <Attr k="发色">{p.hairColor}</Attr>
-          <Attr k="胸部">{p.bust}</Attr>
-          <Attr k="臀部">{p.hip}</Attr>
-          <Attr k="服装">{p.clothing}</Attr>
-          <Attr k="关系">{p.relationships}</Attr>
-          <Attr k="特殊特征">{p.specialFeatures}</Attr>
-          <Attr k="口头禅">{p.catchphrase}</Attr>
+          <Attr k="体型">{view.bodyType}</Attr>
+          <Attr k="瞳色">{view.eyeColor}</Attr>
+          <Attr k="发型">{view.hairstyle}</Attr>
+          <Attr k="发色">{view.hairColor}</Attr>
+          <Attr k="胸部">{view.bust}</Attr>
+          <Attr k="臀部">{view.hip}</Attr>
+          <Attr k="服装">{view.clothing}</Attr>
+          <Attr k="关系">{view.relationships}</Attr>
+          <Attr k="特殊特征">{view.specialFeatures}</Attr>
+          <Attr k="口头禅">{view.catchphrase}</Attr>
         </div>
 
         {/* 个人隐私词条 */}
