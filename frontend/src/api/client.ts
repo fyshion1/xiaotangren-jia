@@ -29,6 +29,15 @@ export async function saveCharacter(char: CharacterProfile): Promise<CharacterPr
   })
 }
 
+/** 新建角色。缺 id 时后端生成 `char-<hex>`，返回落库后的完整档案（含最终 id）。 */
+export async function createCharacter(char: Omit<CharacterProfile, 'id'> & { id?: string }): Promise<CharacterProfile> {
+  return asJson<CharacterProfile>('/api/characters', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(char),
+  })
+}
+
 export async function fetchWorldbook(): Promise<WorldbookEntry[]> {
   return asJson<WorldbookEntry[]>('/api/worldbook')
 }

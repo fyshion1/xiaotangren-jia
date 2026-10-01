@@ -34,6 +34,7 @@ export function toChatMessage(s: StoredMessage): ChatMessage {
     kind: s.kind === 'groups' ? 'groups' : 'text',
     segments: s.segments?.length ? s.segments : undefined,
     seq: s.seq,
+    dbId: s.id,
   }
 }
 
@@ -90,6 +91,39 @@ export async function loadMessages(sessionId: string, before?: number, limit = 3
 
 export async function clearMessages(sessionId: string): Promise<void> {
   await fetch(`/api/messages?session=${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).catch(() => {})
+}
+
+export type DeleteResult = { deleted: number; files_removed: number; gallery_removed: number }
+export type DeletePreview = { messages: number; images: number; gallery: number }
+
+/** 预演真删会连带删掉多少图 / 画廊收藏（不改数据，确认框用它写文案）。 */
+export async function previewDeleteMessages(ids: string[]): Promise<DeletePreview | null> {
+  try {
+    const resp = await fetch('/api/messages/delete-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    })
+    if (!resp.ok) return null
+    return (await resp.json()) as DeletePreview
+  } catch {
+    return null
+  }
+}
+
+/** 真删若干条消息（QQ 式右键多选）：消息 + 不再被引用的图片文件 + 画廊收藏 + 照片记忆。 */
+export async function deleteMessages(ids: string[]): Promise<DeleteResult | null> {
+  try {
+    const resp = await fetch('/api/messages/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    })
+    if (!resp.ok) return null
+    return (await resp.json()) as DeleteResult
+  } catch {
+    return null
+  }
 }
 
 // 把 dataURL 上传成附件，返回原图/缩略图引用 URL，失败返回 null（降级：直接塞 dataURL）

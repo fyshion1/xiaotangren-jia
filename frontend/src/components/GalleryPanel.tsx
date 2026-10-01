@@ -1,15 +1,19 @@
-// 画廊浮层（《项目要求》§9.4）：已收藏的重要图片 + 「照片记忆」开关。
-// 每条 = 图片 + 一段文字描述；描述按 A 方案进 §9.2 的 RAG（家记忆）。
+// 画廊浮层（《项目要求》§9.4）：已收藏的重要图片 + 「照片记忆」开关 + 归属分类。
+// 每条 = 图片 + 一段文字描述；描述按 A 方案进 §9.2 的 RAG。
+// 归属（owner）：'' = 家共用，<charId> = 该角色专属。私聊里 ⭐ / 上传会自动归属该角色，
+// 这里可以手动改（用户原话：「不用自动识别，我会自己手动分类」）。
 // B 方案（多模态 CLIP）在 backend/app/services/multimodal.py 留了接口占位，默认关闭。
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   deleteGallery,
   describeImage,
   fetchGallery,
   updateGallery,
+  uploadToGallery,
   type GalleryItem,
 } from '../api/gallery'
+import { ownerLabel, type Owner } from '../lib/owner'
 
 type Props = {
   onClose: () => void
@@ -20,6 +24,10 @@ type Props = {
   visionModel?: string
   // 当前是否走无审查通道：决定自动描述是否注入越狱提示（§7）
   uncensored?: boolean
+  /** 可选的归属对象（角色列表，由调用方传入，别硬编码中文名）。 */
+  characters?: { id: string; name: string }[]
+  /** 新建上传时的默认归属（= 当前会话推导出的 owner，见 lib/owner.ts）。 */
+  defaultOwner?: Owner
 }
 
 export default function GalleryPanel({
@@ -29,6 +37,8 @@ export default function GalleryPanel({
   apiKey,
   visionModel,
   uncensored,
+  characters = [],
+  defaultOwner = '',
 }: Props) {
   const [items, setItems] = useState<GalleryItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,6 +47,11 @@ export default function GalleryPanel({
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
+  // 归属筛选：'all' = 不看归属全列（默认，便于把一张图改到别的归属）
+  const [filter, setFilter] = useState<'all' | Owner>('all')
+  const [uploadOwner, setUploadOwner] = useState<Owner>(defaultOwner)
+  const [uploading, setUploading] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -47,6 +62,8 @@ export default function GalleryPanel({
   useEffect(() => {
     void reload()
   }, [reload])
+
+  const shown = filter === 'all' ? items : items.filter((g) => g.owner === filter)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -62,6 +79,37 @@ export default function GalleryPanel({
   function flash(msg: string) {
     setNotice(msg)
     setTimeout(() => setNotice(''), 4000)
+  }
+
+  async function pickAndUpload(file: File) {
+    setUploading(true)
+    setError('')
+    try {
+      await uploadToGallery(file, { owner: uploadOwner })
+      await reload()
+      onChanged?.()
+      flash(`已上传到「${ownerLabel(uploadOwner, characters)}」✓`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  async function setOwner(id: string, owner: Owner) {
+    setBusyId(id)
+    setError('')
+    try {
+      await updateGallery(id, { owner })
+      await reload()
+      onChanged?.()
+      flash(`归属已改为「${ownerLabel(owner, characters)}」（照片记忆跟着搬过去了）`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusyId('')
+    }
   }
 
   async function autoDescribe(id: string) {
@@ -141,11 +189,69 @@ export default function GalleryPanel({
         <div className="mb-3 flex items-center gap-2">
           <span className="text-[15px] font-semibold text-[var(--text)]">🖼 画廊</span>
           <span className="text-[11px] text-[var(--text-3)]">
-            你主动收藏的重要图片 · 描述按 A 方案进记忆（聊到相关话题时她会想起）
+            重要图片 · 按归属分类（私聊自动归属，这里可手改）· 描述按 A 方案进记忆
           </span>
           <button onClick={onClose} className="ml-auto text-[var(--text-3)] hover:text-[var(--text)]">
             ✕
           </button>
+        </div>
+
+        {/* 归属筛选 + 上传 */}
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(['all', '', ...characters.map((c) => c.id)] as ('all' | Owner)[]).map((o) => {
+              const active = filter === o
+              const count = o === 'all' ? items.length : items.filter((g) => g.owner === o).length
+              return (
+                <button
+                  key={o || 'home'}
+                  type="button"
+                  onClick={() => setFilter(o)}
+                  className={`rounded-full border px-2.5 py-1 text-[12px] transition ${
+                    active
+                      ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
+                      : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-2)] hover:border-[var(--pink)]'
+                  }`}
+                >
+                  {o === 'all' ? `全部 ${count}` : `${ownerLabel(o, characters)} ${count}`}
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="ml-auto flex items-center gap-1.5">
+            <select
+              className="input !w-auto !py-1 text-[12px]"
+              value={uploadOwner}
+              onChange={(e) => setUploadOwner(e.target.value)}
+              title="新上传的图片归到谁名下"
+            >
+              <option value="">家 · 共用</option>
+              {characters.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <button
+              className="btn sm"
+              disabled={uploading}
+              onClick={() => fileRef.current?.click()}
+              title="从本地选图上传进画廊（在别处生的图也能收进来）"
+            >
+              {uploading ? '上传中…' : '＋ 上传图片'}
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) void pickAndUpload(f)
+              }}
+            />
+          </div>
         </div>
 
         {(error || notice) && (
@@ -164,11 +270,16 @@ export default function GalleryPanel({
           <div className="py-10 text-center text-[12px] text-[var(--text-3)]">读取中…</div>
         ) : items.length === 0 ? (
           <div className="py-10 text-center text-[12px] text-[var(--text-3)]">
-            画廊还是空的。在聊天里对着图片气泡点 <b className="text-[var(--pink-deep)]">⭐</b> 就能收藏进来。
+            画廊还是空的。对着图片气泡点 <b className="text-[var(--pink-deep)]">⭐</b> 收藏，
+            或点右上角 <b>＋ 上传图片</b> 把在别处生的图也收进来。
+          </div>
+        ) : shown.length === 0 ? (
+          <div className="py-10 text-center text-[12px] text-[var(--text-3)]">
+            这个归属下还没有图。切到「全部」，或用「＋ 上传图片」往这里放一张。
           </div>
         ) : (
           <div className="space-y-3">
-            {items.map((g) => {
+            {shown.map((g) => {
               const thumb = g.thumb || g.orig
               const isEditing = editing?.id === g.id
               return (
@@ -249,6 +360,29 @@ export default function GalleryPanel({
                             />
                             进小糖人记忆
                           </label>
+                          <label
+                            className="flex items-center gap-1.5 text-[12px] text-[var(--text-2)]"
+                            title="这张图归谁 —— 决定它出现在谁的画廊里，以及照片记忆进谁的脑袋"
+                          >
+                            归属
+                            <select
+                              className="input !w-auto !py-1 text-[12px]"
+                              value={g.owner}
+                              disabled={busyId === g.id}
+                              onChange={(e) => void setOwner(g.id, e.target.value)}
+                            >
+                              <option value="">家 · 共用</option>
+                              {characters.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.name}
+                                </option>
+                              ))}
+                              {/* 归属指向了已不存在的角色时，别让它静默变成空白 */}
+                              {g.owner && !characters.some((c) => c.id === g.owner) && (
+                                <option value={g.owner}>{g.owner}（已不存在）</option>
+                              )}
+                            </select>
+                          </label>
                           <button
                             className="ml-auto text-[12px] text-[var(--text-3)] hover:text-[var(--pink-deep)]"
                             disabled={busyId === g.id}
@@ -267,7 +401,9 @@ export default function GalleryPanel({
         )}
 
         <p className="mt-4 text-[11px] leading-snug text-[var(--text-3)]">
-          照片记忆（A 方案）：描述会以「你有一张照片：…」的形式进 §9.2 的检索，只在话题相关时自然流露。
+          归属：私聊里 ⭐ / 上传的图自动归到对方名下，「家 · 共用」则是全家的共同回忆（见「糖人小窝」）。
+          改了归属，它的照片记忆会跟着搬 —— 专属归属的记忆只有那个人在场时才检索得到。
+          照片记忆（A 方案）：描述以「你有一张照片：…」的形式进 §9.2 的检索，只在话题相关时自然流露。
           多模态 CLIP 直检索（B 方案）已在后端留了 Provider 接口占位，默认不启用。
         </p>
       </div>

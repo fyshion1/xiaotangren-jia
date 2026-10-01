@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { CharacterForm, CharacterProfile } from '../data/characters'
 import { LABEL_OF, PROFILE_FIELD_LABELS, parseProfileText, type FieldKey, type ParseResult } from '../lib/parseProfile'
 import { BASE_FORM_ID, activeFormId, listForms, resolveForm } from '../lib/forms'
+import { uploadAttachment } from '../api/storage'
 
 type Props = {
   initial: CharacterProfile
@@ -18,12 +19,104 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-// 单行文本字段：路径 -> 标签
+/** 图片字段：本地上传落盘（§15.1 复用附件管道）或直接贴外链 URL，二选一。 */
+function ImageField({
+  label,
+  hint,
+  value,
+  onChange,
+  aspect = 'aspect-[3/4]',
+}: {
+  label: string
+  hint: string
+  value: string
+  onChange: (next: string) => void
+  aspect?: string
+}) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  async function pick(file: File) {
+    setBusy(true)
+    setErr('')
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader()
+        r.onload = () => resolve(String(r.result))
+        r.onerror = () => reject(new Error('读取文件失败'))
+        r.readAsDataURL(file)
+      })
+      const up = await uploadAttachment('characters', dataUrl)
+      if (!up) throw new Error('上传失败：后端没响应')
+      onChange(up.orig)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="eyebrow">{label}</span>
+        {value && (
+          <button
+            className="ml-auto text-[12px] text-[var(--text-3)] hover:text-[var(--pink-deep)]"
+            onClick={() => onChange('')}
+            title="清空（回到 emoji 占位）"
+          >
+            清空
+          </button>
+        )}
+      </div>
+      <div className="flex gap-3">
+        <div
+          className={`${aspect} w-[92px] shrink-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]`}
+        >
+          {value ? (
+            <img src={value} alt={label} className="h-full w-full object-cover" />
+          ) : (
+            <div className="flex h-full items-center justify-center text-[11px] text-[var(--text-3)]">预览</div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1 space-y-2">
+          <input
+            className="input"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="图片 URL（留空用 emoji 占位）"
+          />
+          <div className="flex items-center gap-2">
+            <button className="btn sm" disabled={busy} onClick={() => fileRef.current?.click()}>
+              {busy ? '上传中…' : '🖼 选择本地图片'}
+            </button>
+            <span className="text-[11px] text-[var(--text-3)]">{hint}</span>
+          </div>
+          {err && <div className="text-[11px] text-[var(--pink-deep)]">⚠ {err}</div>}
+        </div>
+      </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) void pick(f)
+        }}
+      />
+    </div>
+  )
+}
+
+// 单行文本字段：路径 -> 标签（立绘 / 头像走 ImageField，已从这里移出）
 const TEXT_FIELDS: { label: string; key: keyof CharacterProfile }[] = [
   ['名字', 'name'],
   ['日文假名', 'jp'],
   ['别名 / 称号', 'alias'],
-  ['立绘图片 URL（静态/GIF，留空用 emoji）', 'portrait'],
   ['生日', 'birthday'],
   ['年龄', 'age'],
   ['身高', 'height'],
@@ -397,6 +490,23 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
         )}
 
         <div className="max-h-[62vh] space-y-3.5 overflow-y-auto pr-1">
+          {/* 立绘 / 头像（item 4、5）：静态图或 GIF 都行，浏览器选图上传即落盘 */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <ImageField
+              label="立绘（静态 / GIF）"
+              hint="介绍页大图 · 支持 GIF"
+              value={form.portrait ?? ''}
+              onChange={(v) => set('portrait', v)}
+            />
+            <ImageField
+              label="头像"
+              hint="聊天气泡用 · 正方图最佳"
+              value={form.avatar ?? ''}
+              onChange={(v) => set('avatar', v)}
+              aspect="aspect-square"
+            />
+          </div>
+
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {TEXT_FIELDS.map((f) => (
               <Row key={f.key} label={f.label}>

@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .. import db
-from ..services import attachments
+from ..services import attachments, cleanup
 
 router = APIRouter()
 
@@ -30,6 +30,10 @@ class AttachmentIn(BaseModel):
     session_id: str
     data_url: str
     source: str = "upload"
+
+
+class DeleteIn(BaseModel):
+    ids: list[str] = Field(default_factory=list)
 
 
 @router.get("/messages")
@@ -73,6 +77,31 @@ async def create_message(body: MessageIn) -> dict:
 async def clear_messages(session: str = Query(..., min_length=1)) -> dict:
     removed = db.delete_messages(session)
     return {"removed": removed}
+
+
+@router.post("/messages/delete-preview")
+async def preview_messages(body: DeleteIn) -> dict:
+    """删除前预演：会连带删掉多少张图片文件 / 多少条画廊收藏（不改任何数据）。"""
+    return cleanup.preview_delete(body.ids)
+
+
+@router.post("/messages/delete")
+async def delete_messages(body: DeleteIn) -> dict:
+    """批量真删（QQ 式右键多选走这里）。
+
+    真删语义：消息行删掉；图片不再被任何幸存消息引用时，文件（原图 + 缩略图）真删；
+    画廊里这张图的收藏（所有归属下）连同照片记忆一起移除。
+    """
+    return cleanup.delete_messages(body.ids)
+
+
+@router.delete("/messages/{message_id}")
+async def delete_message(message_id: str) -> dict:
+    """单条真删（右键「删除这条」）。级联规则同上。"""
+    result = cleanup.delete_messages([message_id])
+    if not result["deleted"]:
+        raise HTTPException(status_code=404, detail="没有这条消息")
+    return result
 
 
 @router.post("/attachments")

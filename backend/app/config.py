@@ -21,9 +21,19 @@ class Settings(BaseSettings):
     # 生图：vsllm 无生图通道，默认留空（错填会报「没有配置生图模型」）。
     model_image: str = ""
     image_base_url: str = ""
-    # 生图方式切换器（§7）：tencent（默认占位）/ comfyui（本地 SD，未接入）/ thirdparty。
-    # 仅记录选择；实机接入前只作占位提示，不改变上游调用。
-    image_engine: str = "tencent"
+    # 生图方式切换器（§7）：local / cloud（都是 ComfyUI，同一个 HTTP 协议）/
+    # thirdparty（OpenAI 兼容 /images/generations）/ novelai（预留插槽，未实接）。
+    image_engine: str = "local"
+
+    # 通用 ComfyUI 客户端（§7）：本地与云端只是 base_url 不同，共用同一套实现。
+    # 协议：POST /prompt → 轮询 GET /history/{id} → GET /view?filename=...
+    comfyui_url: str = "http://127.0.0.1:8188"
+    comfyui_cloud_url: str = ""  # 云端（CNB / 其他转发地址）；填了它就能切到 cloud 引擎
+    comfyui_workflow: str = ""  # API 格式工作流 json 路径；留空 = 用 examples/comfyui/ 里的内置示例
+    comfyui_timeout: int = 180  # 单张图的总预算（秒）。轮询是短超时 + 外层累计，不靠长读超时。
+    # NovelAI 插槽：协议与 OpenAI 不兼容（POST /ai/generate-image），见 providers/novelai.py
+    novelai_url: str = ""
+    novelai_api_key: str = ""
 
     # Embedding（记忆 RAG，§9.2.1）：默认本地小模型，可切云端 /v1/embeddings。
     # ⚠ 两者向量口径不同，换 engine 后必须重建记忆索引（§16.6）。

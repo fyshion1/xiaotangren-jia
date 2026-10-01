@@ -139,6 +139,47 @@ def save_image(session_id: str, raw: bytes, mime: str, source: str = "upload") -
     }
 
 
+def _resolve_local(url: str) -> Path | None:
+    """把 /api/files/{sess}/{orig|thumb}/{name} 解析回本地路径；越界或格式不对返回 None。
+
+    防路径穿越：resolve() 后必须仍在 ATTACHMENTS_DIR 之内（与 services/gallery.py 同一套规则）。
+    """
+    prefix = f"{URL_PREFIX}/"
+    rel = (url or "").strip()
+    if not rel.startswith(prefix):
+        return None
+    try:
+        path = (ATTACHMENTS_DIR / rel[len(prefix):]).resolve()
+        if not path.is_relative_to(ATTACHMENTS_DIR.resolve()):
+            return None
+    except (OSError, ValueError):
+        return None
+    return path
+
+
+def delete_by_url(url: str) -> int:
+    """真删一张图的文件（§15 真删流程）。返回删除的文件数。
+
+    传入原图 URL 时连同它的缩略图一起删（缩略图恒为 .jpg，由 orig 的 hash 推导）；
+    只传缩略图 URL 时只删缩略图 —— 反向推不出原图扩展名，不猜。
+    """
+    path = _resolve_local(url)
+    if path is None:
+        return 0
+    targets = [path]
+    if "/orig/" in path.as_posix():
+        targets.append(path.parent.parent / "thumb" / f"{path.stem}.jpg")
+    removed = 0
+    for f in targets:
+        try:
+            if f.is_file():
+                f.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def clear_originals(session_id: str | None = None) -> int:
     """回收原图（缩略图永久保留，见 §15.3）。返回删除的文件数。"""
     ensure_dir()

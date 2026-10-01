@@ -31,6 +31,7 @@ export type CharacterProfile = {
   alias: string // 别名 / 称号
   emoji: string // 暂代立绘的 emoji（日后换成 Live2D / 立绘图）
   portrait?: string // 静态立绘 / GIF 图片 URL（未填则用 emoji 占位）
+  avatar?: string // 头像图片 URL：聊天气泡 / 会话列表用（未填则回退 emoji）
   // 提示词（喂给模型）
   about: string
   // 基本词条
@@ -69,6 +70,40 @@ export type CharacterProfile = {
 
 /** 后端拉不到人设时的应急占位（正常路径见 api/client.ts 的 fetchCharacters）。 */
 export const PROFILE_FALLBACK: CharacterProfile[] = [
+  {
+    // 大老大 = 用户本人（见 seed_characters.py 文件头 ⚠）。放在最前，介绍页第一张卡就是自己。
+    id: 'dalaoda',
+    name: '大老大',
+    jp: 'ビッグボス',
+    alias: '本家主人 · 小糖人们围着转的那个人',
+    emoji: '🐻',
+    about: '你是「大老大」，小糖人之家的主人 —— 这个家里唯一的人类。',
+    birthday: '1 月 1 日',
+    age: '秘密（被问会糊弄过去）',
+    height: '照着镜子自己填',
+    bloodType: '保密',
+    constellation: '摩羯座',
+    personality: [],
+    likes: [],
+    dislikes: [],
+    catchphrase: '',
+    bodyType: '',
+    eyeColor: '',
+    hairstyle: '',
+    hairColor: '',
+    bust: '—',
+    hip: '—',
+    clothing: '',
+    occupation: '',
+    relationships: '',
+    specialFeatures: '',
+    weight: '',
+    measurements: '—',
+    secret: '',
+    weakPoint: '',
+    privateWish: '',
+    baseFormName: '第一形态 · 日常',
+  },
   {
     id: 'dashiyin',
     name: '大诗音',

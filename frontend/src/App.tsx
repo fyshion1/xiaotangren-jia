@@ -2,12 +2,13 @@ import { useCallback, useEffect, useState } from 'react'
 import TopBar from './components/TopBar'
 import HomeView from './components/HomeView'
 import ChatView from './components/ChatView'
+import NestView from './components/NestView'
 import type { CharacterProfile } from './data/characters'
 import { PROFILE_FALLBACK } from './data/characters'
 import { fetchCharacters, saveCharacter } from './api/client'
 
 type Theme = 'light' | 'dark'
-type View = 'home' | 'chat'
+type View = 'home' | 'chat' | 'nest'
 
 const THEME_KEY = 'xtr.theme'
 
@@ -89,7 +90,10 @@ export default function App() {
             initialCharId={profileCharId}
             onSaveChar={onSaveChar}
             onEnterChat={openChat}
+            onOpenNest={() => setView('nest')}
           />
+        ) : view === 'nest' ? (
+          <NestView />
         ) : (
           <ChatView
             characters={characters}

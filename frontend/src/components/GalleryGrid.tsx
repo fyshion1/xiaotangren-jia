@@ -1,6 +1,8 @@
-// 个人介绍下方的画廊（《项目要求》§9.4）。
+// 个人介绍 / 糖人小窝下方的画廊（《项目要求》§9.4）。
 // 有真图就展示真实收藏（缩略图 + 描述），点开看大图；一张都没有时退回占位格子。
 // 收藏入口在聊天里：图片气泡右上角的 ⭐ 或顶栏的 🖼 画廊。
+// owner（§9.4 归属）：不传 = 全量（兼容旧调用）；'' = 家共用；<charId> = 该角色专属。
+// 介绍页传当前角色的 id，小窝传 ''。
 
 import { useEffect, useState } from 'react'
 import { fetchGallery, type GalleryItem } from '../api/gallery'
@@ -14,13 +16,20 @@ const CELLS = [
   { cls: 't6', emoji: '🧣', cap: '冬日 · 围巾' },
 ]
 
-export default function GalleryGrid() {
+type Props = {
+  /** 归属过滤：不传 = 全部；'' = 家共用；<charId> = 该角色专属。 */
+  owner?: string
+  /** 小窝的文案调子（家共用画廊）与角色介绍页不同。 */
+  variant?: 'character' | 'home'
+}
+
+export default function GalleryGrid({ owner, variant = 'character' }: Props) {
   const [items, setItems] = useState<GalleryItem[]>([])
   const [lightbox, setLightbox] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    fetchGallery()
+    fetchGallery(owner)
       .then((rows) => {
         if (!cancelled) setItems(rows.filter((g) => g.thumb || g.orig))
       })
@@ -30,7 +39,7 @@ export default function GalleryGrid() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [owner])
 
   useEffect(() => {
     if (!lightbox) return
@@ -42,13 +51,14 @@ export default function GalleryGrid() {
   }, [lightbox])
 
   const hasReal = items.length > 0
+  const isHome = variant === 'home'
 
   return (
     <section className="mt-10">
       <div className="mb-4 flex items-baseline gap-3">
-        <h2 className="text-[20px] font-extrabold tracking-wide">画廊</h2>
+        <h2 className="text-[20px] font-extrabold tracking-wide">{isHome ? '共同回忆 · 画廊' : '画廊'}</h2>
         <span className="text-[13px] text-[var(--text-3)]">
-          Gallery · {hasReal ? `已收藏 ${items.length} 张` : 'CG / 立绘 · 在个人介绍下方'}
+          {isHome ? 'Home Gallery' : 'Gallery'} · {hasReal ? `已收藏 ${items.length} 张` : isHome ? '全家的合照都放这儿' : 'CG / 立绘 · 在个人介绍下方'}
         </span>
       </div>
 
@@ -96,8 +106,12 @@ export default function GalleryGrid() {
 
       <p className="mt-3 text-[12px] text-[var(--text-3)]">
         {hasReal
-          ? '画廊里是你主动收藏的重要图片；描述可作为「照片记忆」被小糖人想起来。管理（自动描述 / 删除 / 进不进记忆）在聊天的 🖼 画廊里。'
-          : '画廊还是空的 —— 在聊天里对图片气泡点 ⭐ 存入画廊，这里就会长出真图（现在是占位格）。'}
+          ? isHome
+            ? '这里是全家的共同回忆（归属「家 · 共用」的图）。每张的描述会作为「照片记忆」被小糖人们想起来；管理在聊天的 🖼 画廊里。'
+            : '这是这位小糖人的专属画廊 —— 你和她之间的图都在这。描述可作为「照片记忆」被她想起来。管理（上传 / 自动描述 / 删除 / 改归属）在聊天的 🖼 画廊里。'
+          : isHome
+            ? '小窝的画廊还空着 —— 在聊天的 🖼 画廊里上传图片并把归属设为「家 · 共用」，全家共同的回忆就会在这里长出来。'
+            : '画廊还是空的 —— 和她的私聊里对图片气泡点 ⭐，或在 🖼 画廊里上传图片，都会自动归到她名下。'}
       </p>
 
       {lightbox && (

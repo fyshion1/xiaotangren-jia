@@ -1,15 +1,27 @@
 import { useRef } from 'react'
 import type { ChatSession } from '../data/chats'
+import type { CharacterProfile } from '../data/characters'
+import Avatar from './Avatar'
 
 type Props = {
   sessions: ChatSession[]
   activeId: string
   onSelect: (id: string) => void
   onImport: (name: string) => void
+  /** 角色列表：单聊会话按 characterIds[0] 反查头像（未传则退回 emoji）。 */
+  characters?: CharacterProfile[]
 }
 
-export default function SessionList({ sessions, activeId, onSelect, onImport }: Props) {
+export default function SessionList({ sessions, activeId, onSelect, onImport, characters = [] }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // 单聊用对方头像（QQ 式）；群聊 / 导入会话没有单一角色，保留 emoji 图标。
+  const faceOf = (s: ChatSession) => {
+    if (s.kind !== 'single') return null
+    const c = characters.find((x) => x.id === s.characterIds[0])
+    if (!c) return null
+    return <Avatar name={c.name} avatar={c.avatar} emoji={c.emoji} size={34} />
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -22,7 +34,7 @@ export default function SessionList({ sessions, activeId, onSelect, onImport }: 
             onClick={() => onSelect(s.id)}
             className={`session-item ${s.id === activeId ? 'on' : ''}`}
           >
-            <span className="session-emoji">{s.emoji}</span>
+            {faceOf(s) ?? <span className="session-emoji">{s.emoji}</span>}
             <span className="min-w-0 flex-1 text-left">
               <span className="block truncate text-[14px] font-medium text-[var(--text)]">{s.name}</span>
               <span className="block truncate text-[12px] text-[var(--text-3)]">{s.subtitle}</span>

@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS gallery (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL DEFAULT '',
     message_id TEXT NOT NULL DEFAULT '',
+    owner TEXT NOT NULL DEFAULT '',
     orig TEXT NOT NULL DEFAULT '',
     thumb TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
@@ -79,8 +80,14 @@ CREATE TABLE IF NOT EXISTS gallery (
     memory_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_orig ON gallery (orig);
 """
+
+# gallery 的索引单列出来、由 _migrate 统一建：老库还没有 owner 列时，必须先 ALTER 补列
+# 再建索引，写在 _SCHEMA 里会在建索引那一步就炸（no such column: owner）。
+_GALLERY_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_gallery_owner ON gallery (owner)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_orig_owner ON gallery (orig, owner)",
+)
 
 
 @contextmanager
@@ -97,17 +104,33 @@ def _tx() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """老库补列（幂等）。新库走 _SCHEMA 已有这些列，这里只兜底。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(gallery)")}
+    if "owner" not in cols:
+        # SQLite 的 ADD COLUMN 不接受「NOT NULL 且无默认值」，必须带 DEFAULT。
+        # 老行全部落成 ''（= 家共用），不丢数据。
+        conn.execute("ALTER TABLE gallery ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
+    # 补列之后才建索引（老库的旧唯一索引 idx_gallery_orig 会让「同图进多个归属」失败）
+    for sql in _GALLERY_INDEXES:
+        conn.execute(sql)
+    conn.execute("DROP INDEX IF EXISTS idx_gallery_orig")
+
+
 def init_db() -> None:
-    """建表 + 首次写入种子数据（幂等）。在启动时调用一次。"""
+    """建表 + 迁移 + 逐条幂等补种。在启动时调用一次。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
-        if conn.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 0:
-            conn.executemany(
-                "INSERT INTO characters (id, data) VALUES (?, ?)",
-                [(c["id"], json.dumps(c, ensure_ascii=False)) for c in SEED_CHARACTERS],
-            )
+        _migrate(conn)
+        # 逐条补种：老库也能长出新增的角色（如大老大），但已存在的一律不覆盖 ——
+        # 用户可能在编辑器里改过，种子不该把改动冲掉。
+        conn.executemany(
+            "INSERT INTO characters (id, data) VALUES (?, ?) ON CONFLICT(id) DO NOTHING",
+            [(c["id"], json.dumps(c, ensure_ascii=False)) for c in SEED_CHARACTERS],
+        )
         if conn.execute("SELECT COUNT(*) FROM worldbook").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO worldbook (id, title, keywords, content, enabled, priority) "
@@ -335,6 +358,53 @@ def delete_messages(session_id: str) -> int:
         return int(cur.rowcount or 0)
 
 
+def get_message(msg_id: str) -> dict | None:
+    with _tx() as conn:
+        row = conn.execute("SELECT rowid, * FROM messages WHERE id = ?", (msg_id,)).fetchone()
+    return _row_to_message(row) if row else None
+
+
+def delete_message(msg_id: str) -> dict | None:
+    """删一条消息，返回被删的整行（供调用方回收附件 / 级联画廊）。没有则 None。"""
+    with _tx() as conn:
+        row = conn.execute("SELECT rowid, * FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        if row is None:
+            return None
+        deleted = _row_to_message(row)
+        conn.execute("DELETE FROM messages WHERE id = ?", (msg_id,))
+    return deleted
+
+
+def delete_messages_by_ids(ids: list[str]) -> list[dict]:
+    """批量删消息（QQ 式多选删除）。一次查一次删，返回被删的行。"""
+    clean = [i for i in (ids or []) if i]
+    if not clean:
+        return []
+    placeholders = ",".join("?" * len(clean))
+    with _tx() as conn:
+        rows = conn.execute(
+            f"SELECT rowid, * FROM messages WHERE id IN ({placeholders})", clean
+        ).fetchall()
+        deleted = [_row_to_message(r) for r in rows]
+        if deleted:
+            conn.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", clean)
+    return deleted
+
+
+def list_messages_by_image(orig: str, exclude_ids: list[str] | None = None) -> list[str]:
+    """这张图片 URL 还被哪些**幸存**消息引用（用于决定文件能否真删）。"""
+    if not (orig or "").strip():
+        return []
+    sql = "SELECT id FROM messages WHERE image = ?"
+    args: list = [orig]
+    clean = [i for i in (exclude_ids or []) if i]
+    if clean:
+        sql += f" AND id NOT IN ({','.join('?' * len(clean))})"
+        args.extend(clean)
+    with _tx() as conn:
+        return [r["id"] for r in conn.execute(sql, args).fetchall()]
+
+
 # ---- 记忆（memories，对应《项目要求》§9.2）----
 #
 # 分桶规则（§9.2.2）：
@@ -510,6 +580,7 @@ def _row_to_gallery(row: sqlite3.Row) -> dict:
         "id": row["id"],
         "session_id": row["session_id"],
         "message_id": row["message_id"],
+        "owner": row["owner"],
         "orig": row["orig"],
         "thumb": row["thumb"],
         "description": row["description"],
@@ -525,29 +596,40 @@ def add_gallery(
     description: str = "",
     session_id: str = "",
     message_id: str = "",
+    owner: str = "",
     in_memory: bool = True,
     memory_id: str = "",
 ) -> dict | None:
-    """收藏一张图。同一张原图（同一 URL）重复收藏 → 返回 None（幂等）。"""
+    """收藏一张图。同一归属下同一张原图重复收藏 → 返回 None（幂等）。
+
+    owner：'' = 家共用，<charId> = 该角色专属。同一张图可以分别存进多个归属。
+    """
     with _tx() as conn:
-        existing = conn.execute("SELECT id FROM gallery WHERE orig = ?", (orig,)).fetchone()
+        existing = conn.execute(
+            "SELECT id FROM gallery WHERE orig = ? AND owner = ?", (orig, owner)
+        ).fetchone()
         if existing:
             return None
         gid = f"gal-{uuid.uuid4().hex[:12]}"
         conn.execute(
-            "INSERT INTO gallery (id, session_id, message_id, orig, thumb, description, "
-            "in_memory, memory_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (gid, session_id, message_id, orig, thumb, description, int(in_memory), memory_id),
+            "INSERT INTO gallery (id, session_id, message_id, owner, orig, thumb, description, "
+            "in_memory, memory_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (gid, session_id, message_id, owner, orig, thumb, description, int(in_memory), memory_id),
         )
     return get_gallery(gid)
 
 
-def list_gallery(limit: int = 200) -> list[dict]:
+def list_gallery(limit: int = 200, owner: str | None = None) -> list[dict]:
+    """owner=None = 全量；owner='' / <charId> = 按归属过滤（空串是合法筛选值）。"""
+    sql = "SELECT * FROM gallery"
+    args: list = []
+    if owner is not None:
+        sql += " WHERE owner = ?"
+        args.append(owner)
+    sql += " ORDER BY rowid DESC LIMIT ?"
+    args.append(max(1, min(int(limit or 200), 1000)))
     with _tx() as conn:
-        rows = conn.execute(
-            "SELECT * FROM gallery ORDER BY rowid DESC LIMIT ?",
-            (max(1, min(int(limit or 200), 1000)),),
-        ).fetchall()
+        rows = conn.execute(sql, args).fetchall()
     return [_row_to_gallery(r) for r in rows]
 
 
@@ -557,10 +639,24 @@ def get_gallery(gallery_id: str) -> dict | None:
     return _row_to_gallery(row) if row else None
 
 
-def get_gallery_by_orig(orig: str) -> dict | None:
+def get_gallery_by_orig(orig: str, owner: str | None = None) -> dict | None:
     with _tx() as conn:
-        row = conn.execute("SELECT * FROM gallery WHERE orig = ?", (orig,)).fetchone()
+        if owner is None:
+            row = conn.execute(
+                "SELECT * FROM gallery WHERE orig = ? ORDER BY rowid", (orig,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM gallery WHERE orig = ? AND owner = ?", (orig, owner)
+            ).fetchone()
     return _row_to_gallery(row) if row else None
+
+
+def list_gallery_by_orig(orig: str) -> list[dict]:
+    """这张图在所有归属下的画廊记录（真删时逐条清理）。"""
+    with _tx() as conn:
+        rows = conn.execute("SELECT * FROM gallery WHERE orig = ?", (orig,)).fetchall()
+    return [_row_to_gallery(r) for r in rows]
 
 
 def update_gallery(
@@ -568,6 +664,7 @@ def update_gallery(
     description: str | None = None,
     in_memory: bool | None = None,
     memory_id: str | None = None,
+    owner: str | None = None,
 ) -> None:
     sets: list[str] = []
     args: list = []
@@ -580,6 +677,9 @@ def update_gallery(
     if memory_id is not None:
         sets.append("memory_id = ?")
         args.append(memory_id)
+    if owner is not None:
+        sets.append("owner = ?")
+        args.append(owner)
     if not sets:
         return
     args.append(gallery_id)
@@ -593,6 +693,10 @@ def delete_gallery(gallery_id: str) -> bool:
         return bool(cur.rowcount)
 
 
-def count_gallery() -> int:
+def count_gallery(owner: str | None = None) -> int:
     with _tx() as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM gallery").fetchone()[0])
+        if owner is None:
+            row = conn.execute("SELECT COUNT(*) FROM gallery").fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM gallery WHERE owner = ?", (owner,)).fetchone()
+    return int(row[0])

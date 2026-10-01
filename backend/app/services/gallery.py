@@ -3,12 +3,13 @@
 画廊 = 用户主动收藏的重要图片：图片文件仍走 §15.1 的 attachments 落盘，
 这里只管「这张图的文字描述」以及它是否进小糖人的长期记忆。
 
-照片记忆（A 方案，默认）：把描述当作一条**家记忆**写进 §9.2 的记忆层，
+照片记忆（A 方案，默认）：把描述当作一条记忆写进 §9.2 的记忆层，
 检索时以「你有一张照片：<描述>」的形式注入。关闭某条的「进记忆」勾选时，
 连带删掉它对应的那条记忆 —— 图片本身仍留在画廊里。
 
-分桶说明：§9.4 只要求「照片记忆」，没要求按角色分。默认进家记忆（大家都能想起
-这张照片），需要私密时用户可在记忆面板里删掉这条、或把描述写得更含蓄。
+分桶说明：照片记忆**跟着画廊归属走** —— owner=''（家共用）进家记忆（bucket=home,
+char_id=''，大家都能想起）；owner=<charId>（角色专属）进该角色的个人记忆
+（bucket=personal, char_id=<charId>），只有她自己在场时才检索得到。
 """
 
 from __future__ import annotations
@@ -28,6 +29,11 @@ def _norm(text: str) -> str:
 
 def _memory_text(description: str) -> str:
     return f"{PHOTO_PREFIX}{_norm(description)}"
+
+
+def _bucket_of(owner: str) -> tuple[str, str]:
+    """画廊归属 → 记忆桶：家共用 → (home, '')；角色专属 → (personal, <charId>)。"""
+    return (mem.HOME, "") if not owner else (mem.PERSONAL, owner)
 
 
 async def describe_image(
@@ -84,26 +90,21 @@ async def describe_image(
 
 def _read_local(url: str) -> bytes | None:
     """把 /api/files/{sess}/{orig|thumb}/{name} 读回本地字节；找不到返回 None。"""
-    prefix = f"{attachments.URL_PREFIX}/"
-    rel = (url or "").strip()
-    if not rel.startswith(prefix):
+    path = attachments._resolve_local(url)
+    if path is None:
         return None
-    path = attachments.ATTACHMENTS_DIR / rel[len(prefix):]
     try:
-        # 防路径穿越：解析后必须在附件根目录内
-        path = path.resolve()
-        if not path.is_relative_to(attachments.ATTACHMENTS_DIR.resolve()):
-            return None
         return path.read_bytes() if path.is_file() else None
-    except (OSError, ValueError):
+    except OSError:
         return None
 
 
 def attach_memory(gallery_id: str, description: str = "") -> dict | None:
-    """把一条画廊描述挂成家记忆（§9.4 A 方案）。返回落库后的画廊记录。"""
+    """把一条画廊描述挂成记忆（§9.4 A 方案）。桶由归属决定。返回落库后的画廊记录。"""
     g = db.get_gallery(gallery_id)
     if g is None:
         return None
+    bucket, char_id = _bucket_of(g["owner"])
     desc = _norm(description or g["description"])
     if not desc:
         # 没有描述就没有可检索的正文 —— 保留「想进记忆」的意向，等补上描述再真正建记忆
@@ -114,22 +115,28 @@ def attach_memory(gallery_id: str, description: str = "") -> dict | None:
     # 已经为这条画廊记过（内容未变）→ 复用，不重复写
     if g["memory_id"]:
         existing = db.get_memory(g["memory_id"])
-        if existing and existing["text"] == text:
+        same_bucket = existing and existing["bucket"] == bucket and existing["char_id"] == char_id
+        if same_bucket and existing["text"] == text:
             db.update_gallery(gallery_id, description=desc, in_memory=True)
             return db.get_gallery(gallery_id)
-        db.delete_memory(g["memory_id"])  # 描述改过 → 旧记忆作废，下面重建
+        db.delete_memory(g["memory_id"])  # 描述或归属改过 → 旧记忆作废，下面重建
 
     record = mem.remember(
         text=text,
-        bucket=mem.HOME,
-        char_id="",
+        bucket=bucket,
+        char_id=char_id,
         source="gallery",
-        meta={"gallery_id": gallery_id, "kind": "photo", "orig": g["orig"], "thumb": g["thumb"]},
+        meta={
+            "gallery_id": gallery_id,
+            "kind": "photo",
+            "owner": g["owner"],
+            "orig": g["orig"],
+            "thumb": g["thumb"],
+        },
     )
     if record is None:
         # 幂等去重命中 → 取回已存在的那条
-        existing = db.get_memory_by_fingerprint(mem.HOME, "", mem.emb.text_fingerprint(text))
-        record = existing
+        record = db.get_memory_by_fingerprint(bucket, char_id, mem.emb.text_fingerprint(text))
     db.update_gallery(
         gallery_id, description=desc, in_memory=True, memory_id=(record["id"] if record else "")
     )
@@ -158,8 +165,23 @@ def update_description(gallery_id: str, description: str) -> dict | None:
     return db.get_gallery(gallery_id)
 
 
+def set_owner(gallery_id: str, owner: str) -> dict | None:
+    """改归属（画廊里手动分类）：照片记忆要跟着搬到新桶。"""
+    g = db.get_gallery(gallery_id)
+    if g is None:
+        return None
+    owner = (owner or "").strip()
+    if owner == g["owner"]:
+        return g
+    db.update_gallery(gallery_id, owner=owner)
+    # 归属变了 → 记忆的桶也变了（家 ↔ 某角色个人），走重建路径
+    if g["in_memory"]:
+        return attach_memory(gallery_id)
+    return db.get_gallery(gallery_id)
+
+
 def remove(gallery_id: str) -> bool:
-    """从画廊移除：连带删掉它的照片记忆（图文件由 §15.3 的清理流程回收）。"""
+    """从画廊移除：连带删掉它的照片记忆（图文件由 §15 的清理流程回收）。"""
     g = db.get_gallery(gallery_id)
     if g is None:
         return False
@@ -174,10 +196,12 @@ def star(
     session_id: str = "",
     message_id: str = "",
     description: str = "",
+    owner: str = "",
     in_memory: bool = True,
 ) -> dict | None:
-    """「⭐ 存入画廊」：同一张原图重复收藏 → 返回已存在的那条（幂等）。"""
-    existing = db.get_gallery_by_orig(orig)
+    """「⭐ 存入画廊」：同一归属下同一张原图重复收藏 → 返回已存在的那条（幂等）。"""
+    owner = (owner or "").strip()
+    existing = db.get_gallery_by_orig(orig, owner=owner)
     if existing:
         return existing
     created = db.add_gallery(
@@ -186,12 +210,32 @@ def star(
         description=_norm(description),
         session_id=session_id,
         message_id=message_id,
+        owner=owner,
         # 先记下「要不要进记忆」的意向；描述为空时暂不建记忆（避免留一条空正文的孤儿记忆），
         # 等描述补上（用户手写或自动描述）再真正建。
         in_memory=in_memory,
     )
     if created is None:
-        return db.get_gallery_by_orig(orig)
+        return db.get_gallery_by_orig(orig, owner=owner)
     if in_memory and created["description"]:
         return attach_memory(created["id"], created["description"])
     return created
+
+
+# ---- 真删级联（§15）：消息删掉时，图片文件 / 画廊收藏 / 照片记忆一起走 ----
+
+
+def purge_for_images(images: list[str]) -> dict:
+    """对一批「即将失去最后引用」的图片 URL 做真删级联。
+
+    调用方（services.cleanup）已经确认这些 URL 不再被任何幸存消息引用。
+    返回 {gallery_removed, files_removed}。
+    """
+    gallery_removed = 0
+    files_removed = 0
+    for orig in dict.fromkeys(i for i in images if i):
+        for g in db.list_gallery_by_orig(orig):
+            if remove(g["id"]):
+                gallery_removed += 1
+        files_removed += attachments.delete_by_url(orig)
+    return {"gallery_removed": gallery_removed, "files_removed": files_removed}

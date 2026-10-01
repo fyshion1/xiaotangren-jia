@@ -7,11 +7,14 @@ import SessionList from './SessionList'
 import StatusSidebar from './StatusSidebar'
 import MemoryPanel from './MemoryPanel'
 import GalleryPanel from './GalleryPanel'
+import Avatar from './Avatar'
 import { useSpeechToText } from '../hooks/useSpeechToText'
 import {
   attachmentStats,
   clearOriginals,
+  deleteMessages,
   loadMessages,
+  previewDeleteMessages,
   saveMessage,
   toChatMessage,
   uploadAttachment,
@@ -19,7 +22,9 @@ import {
 } from '../api/storage'
 import { extractMemories, rememberMemory } from '../api/memory'
 import { starImage } from '../api/gallery'
-import { fetchImageEngines, selectImageEngine, type ImageEngine } from '../api/imagegen'
+import { fetchImageEngines, generateImages, selectImageEngine, type GeneratedImage, type ImageEngine } from '../api/imagegen'
+import { buildAppearancePrompt, formKey } from '../lib/comfyPrompt'
+import { ownerOf } from '../lib/owner'
 
 // 模型通道（§7）：常规 = 商业 API；无审查 = 另配的中转 / 本地无审查模型。
 export type Channel = 'normal' | 'uncensored'
@@ -273,7 +278,6 @@ type Props = {
 
 type VoiceOption = { id: string; name: string }
 type EngineOption = { id: string; name: string; desc?: string; available: boolean }
-type GenImage = { url?: string; b64?: string }
 
 // 手机端底部 Tab（桌面端不用）
 type MobileTab = 'sessions' | 'chat' | 'status'
@@ -331,10 +335,26 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
   const [genOpen, setGenOpen] = useState(false)
   const [genPrompt, setGenPrompt] = useState('')
   const [genBusy, setGenBusy] = useState(false)
-  const [genImages, setGenImages] = useState<GenImage[]>([])
-  // 生图方式切换器（§7）：默认腾讯云占位；仅第三方 API 现在就接得通
+  const [genImages, setGenImages] = useState<GeneratedImage[]>([])
+  // 生图参数：尺寸 / 张数 / 负向 / 步数 / CFG / seed。留空 = 交给工作流自带的值。
+  // 张数上限 4 —— ComfyUI 对同一 seed+prompt 返回同一张图，批量得逐个改 seed 重跑（见 services/comfyui.py）。
+  const [genSize, setGenSize] = useState('512x768')
+  const [genN, setGenN] = useState(1)
+  const [genNegative, setGenNegative] = useState('')
+  const [genSteps, setGenSteps] = useState('')
+  const [genCfg, setGenCfg] = useState('')
+  const [genSeed, setGenSeed] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  // 外观提示词拼装（§7）：从当前形态取外貌词条自动填进提示词框。
+  // dirtyKeyRef 是脏跟踪键 `${charId}:${formId}` —— 换角色/换形态才重拼，
+  // 否则用户手改的内容会被覆盖（§16.10：兜底要按字段做）。
+  const [autoAppend, setAutoAppend] = useState(true)
+  const [appearForm, setAppearForm] = useState('')
+  const dirtyKeyRef = useRef('')
+  const lastAutoRef = useRef('')
+  // 生图方式切换器（§7）：四个插槽。默认 local；具体哪个可用由后端探测决定（ready）。
   const [enginesList, setEnginesList] = useState<ImageEngine[]>([])
-  const [genEngine, setGenEngine] = useState('tencent')
+  const [genEngine, setGenEngine] = useState('local')
 
   // 记忆（§9.2/§9.3）：管理浮层 + 消息旁的「记住这条」快捷按钮
   const [memoryOpen, setMemoryOpen] = useState(false)
@@ -347,6 +367,36 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
   const [galleryOpen, setGalleryOpen] = useState(false)
   const [starred, setStarred] = useState<Record<string, true>>({})
   const [starring, setStarring] = useState('')
+
+  // 真删 / QQ 式右键多选（§15.2）：右键菜单 + 多选模式 + 顶部操作条。
+  // 只对 user 角色开放（用户原话「删除自己的对话」）；助手回复不提供删除入口。
+  const [menu, setMenu] = useState<{ x: number; y: number; seq: number; dbId: string } | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set())
+  const [deleting, setDeleting] = useState(false)
+
+  // 切会话 / 关掉菜单时的清理
+  useEffect(() => {
+    setMenu(null)
+  }, [activeId])
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    window.addEventListener('click', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [menu])
+  // 离开多选模式就清空已选（切会话也清）
+  useEffect(() => {
+    if (!selectMode) setSelectedSeqs(new Set())
+  }, [selectMode])
+  useEffect(() => {
+    setSelectMode(false)
+    setSelectedSeqs(new Set())
+  }, [activeId])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -366,6 +416,28 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       setGenEngine(selected)
     })
   }, [genOpen])
+
+  // 生图浮层打开时，按「在场的第一位角色 + 她的当前形态」拼装外观提示词。
+  // 群聊取第一位：真要画别人，改提示词框里的名字比换角色更省事。
+  useEffect(() => {
+    if (!genOpen || !autoAppend || !active) return
+    const char = characters.find((c) => c.id === active.characterIds[0])
+    if (!char) {
+      setAppearForm('')
+      return
+    }
+    const key = formKey(char.id, activeFormId(char))
+    setAppearForm(listForms(char).find((f) => f.id === activeFormId(char))?.name ?? '')
+    if (dirtyKeyRef.current === key) return // 键没变 → 用户手改的内容一个字都不动
+    const appearance = buildAppearancePrompt(char)
+    if (appearance) {
+      // 换角色/换形态要重拼，但只在「框里还是上一次自动拼的内容（或空的）」时才覆盖，
+      // 用户自己写的东西留着 —— 想回到自动拼的版本可以点「↺ 重置」。
+      setGenPrompt((prev) => (prev.trim() && prev !== lastAutoRef.current ? prev : appearance))
+      lastAutoRef.current = appearance
+    }
+    dirtyKeyRef.current = key
+  }, [genOpen, autoAppend, active, characters])
 
   // 看原图浮层：Esc 关闭
   useEffect(() => {
@@ -776,20 +848,23 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
     setGenBusy(true)
     setGenImages([])
     setErrorText('')
+    // 数字框留空就别传，让工作流自带的步数/CFG/随机 seed 生效
+    const num = (v: string) => (v.trim() ? Number(v) : null)
     try {
-      const resp = await fetch('/api/images/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt,
-          base_url: config.imageBaseUrl || (config.imageModel ? config.baseUrl : ''),
-          api_key: config.apiKey,
-          model: config.imageModel,
-        }),
+      const imgs = await generateImages({
+        prompt,
+        session_id: active?.id ?? 'single-default', // 落在当前会话的附件目录里
+        size: genSize,
+        n: genN,
+        seed: num(genSeed),
+        negative: genNegative.trim(),
+        steps: num(genSteps),
+        cfg: num(genCfg),
+        // thirdparty 才用得上：走「模型设置」里的生图覆盖；其余引擎后端不看这三个字段
+        base_url: config.imageBaseUrl || (config.imageModel ? config.baseUrl : ''),
+        api_key: config.apiKey,
+        model: config.imageModel,
       })
-      const data = await resp.json().catch(() => null)
-      if (!resp.ok) throw new Error(data?.detail ?? `生图 HTTP ${resp.status}`)
-      const imgs = (data?.images ?? []) as GenImage[]
       if (!imgs.length) throw new Error('生图接口返回为空')
       setGenImages(imgs)
     } catch (e) {
@@ -797,7 +872,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
     } finally {
       setGenBusy(false)
     }
-  }, [genPrompt, genBusy, config])
+  }, [genPrompt, genBusy, active, config, genSize, genN, genSeed, genNegative, genSteps, genCfg])
 
   // 「记住这条」（§9.3 手动记忆）：桶由会话类型决定 —— 私聊进 TA 的个人记忆，群聊进家记忆。
   const rememberThis = useCallback(
@@ -827,6 +902,9 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
 
   // 「⭐ 存入画廊」（§9.4）：把图片收进画廊；描述留空，等用户或 vision 模型补，
   // 补好描述后才会作为照片记忆进 §9.2 的检索。
+  // 归属：私聊自动归属该角色（ownerOf），群聊 / 导入会话算「家 · 共用」；画廊里可手改。
+  // message_id 必须传落库行 id（m.dbId），不能传 seq —— 库里 messages.id 是 'm-<hex>'，
+  // 传 seq 会让「删消息 → 级联画廊」这条链断掉（老数据仍按 orig 兜底匹配）。
   const starThis = useCallback(
     async (key: string, m: ChatMessage) => {
       const orig = m.imageOrig || m.image
@@ -837,7 +915,8 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         await starImage({
           orig,
           session_id: active.id,
-          message_id: String(m.seq ?? ''),
+          message_id: m.dbId ?? '',
+          owner: ownerOf(active),
           in_memory: true,
         })
         setStarred((prev) => ({ ...prev, [key]: true }))
@@ -851,6 +930,79 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
     [active],
   )
 
+  // 生图结果「⭐ 存入画廊」：图已经在附件库里了（§7 生图直接落盘），
+  // 这里只是把它登记进画廊 / 照片记忆，和聊天图片走的是同一个 starImage。
+  const starGenerated = useCallback(
+    async (g: GeneratedImage) => {
+      if (!active) return
+      setErrorText('')
+      try {
+        await starImage({
+          orig: g.orig,
+          session_id: active.id,
+          message_id: '',
+          owner: ownerOf(active),
+          in_memory: true,
+        })
+        setGalleryOpen(true) // 顺手打开画廊，提示补一句描述
+      } catch (e) {
+        setErrorText(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [active],
+  )
+
+  // 真删（§15.2）：先向后台预演一次「会连带走多少」，如实写进确认框，再真删。
+  // 只有落库消息（dbId）删得了库；还没落库的临时消息直接本地剔除即可。
+  // 图片文件是否真删由后端做「幸存引用」判断，前端只如实告知数量。
+  const doDelete = useCallback(
+    async (keys: number[]) => {
+      if (!active || keys.length === 0) return
+      const rows = keys.map((k) => ({ key: k, m: messages[k] })).filter((r) => r.m)
+      const ids = rows.map((r) => r.m.dbId).filter((v): v is string => Boolean(v))
+      const preview = ids.length ? await previewDeleteMessages(ids) : null
+      const extra =
+        preview && (preview.images > 0 || preview.gallery > 0)
+          ? `\n连带删除：图片 ${preview.images} 张、画廊收藏 ${preview.gallery} 张（含它们的照片记忆）。`
+          : ''
+      const ok = window.confirm(
+        `确认删除这 ${rows.length} 条消息？这是真删，删掉找不回来。${extra}\n（图片若仍被别的消息引用，文件会保留。）`,
+      )
+      if (!ok) return
+
+      setDeleting(true)
+      setErrorText('')
+      try {
+        if (ids.length) {
+          const r = await deleteMessages(ids)
+          if (!r) throw new Error('删除失败：后端没响应')
+        }
+        const dead = new Set(rows.map((r) => r.key))
+        setHistory((prev) => ({
+          ...prev,
+          [active.id]: (prev[active.id] ?? []).filter((_, i) => !dead.has(i)),
+        }))
+        // ⭐ 是按「会话:下标」记的，删完下标整体前移，整段清掉最稳
+        setStarred((prev) => {
+          const next: Record<string, true> = {}
+          for (const [k, v] of Object.entries(prev)) {
+            if (!k.startsWith(`${active.id}:`)) next[k] = v
+          }
+          return next
+        })
+      } catch (e) {
+        setErrorText(e instanceof Error ? e.message : String(e))
+      } finally {
+        setDeleting(false)
+        setSelectMode(false)
+        setSelectedSeqs(new Set())
+        setMenu(null)
+      }
+    },
+    [active, messages],
+  )
+
+  // 导入的角色卡（阶段 2 才解析）；先挂在会话列表尾部，让 UI 走通
   const [sessionsExtra, setSessionsExtra] = useState<ChatSession[]>([])
   const allSessions = [...sessions, ...sessionsExtra]
 
@@ -873,6 +1025,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       >
         <SessionList
           sessions={allSessions}
+          characters={characters}
           activeId={active.id}
           onSelect={(id) => {
             setActiveId(id)
@@ -897,7 +1050,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                   className="group flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-2)] py-1 pl-1 pr-3 transition hover:border-[var(--pink)]"
                   title={`查看 ${c.name} 的个人介绍`}
                 >
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-[13px]">{c.emoji}</span>
+                  <Avatar name={c.name} avatar={c.avatar} emoji={c.emoji} size={24} className="bg-white" />
                   <span className="text-[12px] text-[var(--text-2)] group-hover:text-[var(--pink-deep)]">{c.name}</span>
                 </button>
               )
@@ -949,6 +1102,18 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
               title="画廊：你主动收藏的重要图片（§9.4）"
             >
               🖼 画廊
+            </button>
+            <button
+              onClick={() => setSelectMode((v) => !v)}
+              disabled={streaming || !messages.some((m) => m.role === 'user')}
+              className={`rounded-lg border px-2.5 py-1 text-[12px] transition disabled:opacity-40 ${
+                selectMode
+                  ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
+                  : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-2)] hover:border-[var(--pink)]'
+              }`}
+              title="多选删除：勾选自己发过的消息，真删（连带图片文件 / 画廊收藏 / 照片记忆）"
+            >
+              🗑 删除
             </button>
             <button
               onClick={() => setMemoryOpen(true)}
@@ -1150,6 +1315,36 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
           </div>
         )}
 
+        {/* 多选删除操作条（§15.2）：勾够了几条就删；取消 / 退出多选都清空已选 */}
+        {(selectMode || selectedSeqs.size > 0) && (
+          <div className="mx-4 mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--pink)] bg-[var(--pink-soft)] px-3 py-1.5 text-[12px] text-[var(--pink-deep)]">
+            <span className="font-semibold">
+              {selectMode ? `已选 ${selectedSeqs.size} 条` : ''}
+            </span>
+            <span className="text-[11px] opacity-80">
+              在消息上右键可以「删除这条」或进入多选；只有你自己发的消息能删。
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <button
+                className="btn sm"
+                disabled={selectedSeqs.size === 0 || deleting}
+                onClick={() => void doDelete([...selectedSeqs])}
+              >
+                {deleting ? '删除中…' : '删除'}
+              </button>
+              <button
+                className="btn ghost sm"
+                onClick={() => {
+                  setSelectMode(false)
+                  setSelectedSeqs(new Set())
+                }}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* 消息流 */}
         <div className="flex-1 overflow-y-auto px-3 py-4 sm:px-5" onScroll={onScrollMessages}>
           {loadingOlder && <div className="mb-2 text-center text-[12px] text-[var(--text-3)]">加载更早的消息…</div>}
@@ -1165,8 +1360,38 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
             const err = msgError[active.id]
             const isLast = i === messages.length - 1
             const segs = m.kind === 'groups' && m.segments?.length ? m.segments : null
+            // 真删只针对用户自己发的、且已落库的消息（§15.2）；助手回复不给入口
+            const deletable = m.role === 'user' && Boolean(m.dbId)
+            const checked = selectedSeqs.has(i)
             return (
-              <div key={i} className={`mb-3 flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+              <div
+                key={i}
+                onContextMenu={(e) => {
+                  if (!deletable || streaming || deleting) return
+                  e.preventDefault()
+                  setMenu({ x: e.clientX, y: e.clientY, seq: i, dbId: m.dbId ?? '' })
+                }}
+                className={`mb-3 flex items-end gap-2 ${m.role === 'user' ? 'justify-end' : 'justify-start'} ${
+                  selectMode && checked ? 'rounded-xl bg-[var(--pink-soft)]/60 ring-1 ring-[var(--pink)]' : ''
+                }`}
+              >
+                {selectMode && deletable && (
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) =>
+                      setSelectedSeqs((prev) => {
+                        const next = new Set(prev)
+                        if (e.target.checked) next.add(i)
+                        else next.delete(i)
+                        return next
+                      })
+                    }
+                    className="mb-2 shrink-0"
+                    title="勾选这条（也可以直接在这条上右键）"
+                  />
+                )}
+                <div className={`flex min-w-0 flex-1 flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                 {segs ? (
                   segs.map((s, si) => {
                     const segKey = `${active.id}:${i}:${si}`
@@ -1178,12 +1403,13 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                       >
                         {s.speaker && (
                           <div className="mb-1 flex items-center gap-1.5">
-                            <span
-                              className="rounded-full px-2 py-0.5 text-[11px] text-white"
-                              style={{ background: 'var(--pink-deep)' }}
-                            >
-                              {s.speaker}
-                            </span>
+                            {/* 群聊分段说话人：像 QQ 一样「头像 + 名字」。分段只给了名字串，
+                                按名字反查角色拿头像；查不到就退回首字圆片（Avatar 自带兜底）。 */}
+                            {(() => {
+                              const sp = characters.find((c) => c.name === s.speaker)
+                              return <Avatar name={s.speaker} avatar={sp?.avatar} emoji={sp?.emoji} size={20} />
+                            })()}
+                            <span className="text-[12px] font-semibold text-[var(--pink-deep)]">{s.speaker}</span>
                           </div>
                         )}
                         <div className="whitespace-pre-wrap">{s.text}</div>
@@ -1208,11 +1434,26 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                     )
                   })
                 ) : (
-                  <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-2 text-[15px] sm:max-w-[72%] ${
-                      m.role === 'user' ? 'bg-[var(--pink)] text-white' : 'bg-[var(--surface)] text-[var(--text)]'
-                    }`}
-                  >
+                  <>
+                    {/* QQ 式「头像 + 名字」：私聊的回复标明是谁在说。
+                        群聊的非分段回复是「大家一起」，不署名。 */}
+                    {m.role === 'assistant' && active.kind === 'single' && (
+                      (() => {
+                        const c = characters.find((x) => x.id === active.characterIds[0])
+                        if (!c) return null
+                        return (
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <Avatar name={c.name} avatar={c.avatar} emoji={c.emoji} size={20} />
+                            <span className="text-[12px] font-semibold text-[var(--pink-deep)]">{c.name}</span>
+                          </div>
+                        )
+                      })()
+                    )}
+                    <div
+                      className={`max-w-[85%] rounded-2xl px-4 py-2 text-[15px] sm:max-w-[72%] ${
+                        m.role === 'user' ? 'bg-[var(--pink)] text-white' : 'bg-[var(--surface)] text-[var(--text)]'
+                      }`}
+                    >
                     {m.image && (
                       <div className="relative mb-2 block w-max">
                         <button
@@ -1255,13 +1496,15 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                         />
                       </div>
                     )}
-                  </div>
+                    </div>
+                  </>
                 )}
                 {m.role === 'assistant' && isLast && err && (
                   <div className="mt-1.5 max-w-[85%] rounded-lg bg-[var(--pink-deep)]/10 px-2.5 py-1.5 text-[12px] leading-snug text-[var(--pink-deep)] sm:max-w-[72%]">
                     ⚠ {err}
                   </div>
                 )}
+                </div>
               </div>
             )
           })}
@@ -1439,7 +1682,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
               <button onClick={() => !genBusy && setGenOpen(false)} className="text-[var(--text-3)] hover:text-[var(--text)]">✕</button>
             </div>
 
-            {/* 生图方式切换器（§7）：腾讯云（默认占位）/ 本地 ComfyUI-SD（占位）/ 第三方 API */}
+            {/* 生图方式切换器（§7）：本地 ComfyUI / 云端 ComfyUI / 第三方 API / NovelAI（插槽） */}
             <div className="mb-3">
               <span className="eyebrow mb-1.5 block">选生图方式</span>
               <div className="flex flex-wrap gap-1.5">
@@ -1471,18 +1714,133 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
             </div>
 
             <Field label="画面描述（提示词）">
-              <textarea
-                className="textarea"
-                rows={3}
-                value={genPrompt}
-                onChange={(e) => setGenPrompt(e.target.value)}
-                placeholder="如：大诗音穿着围裙在烘焙坊微笑着递上一块蛋糕…"
-              />
+              <div className="flex items-start gap-2">
+                <textarea
+                  className="textarea flex-1"
+                  rows={3}
+                  value={genPrompt}
+                  onChange={(e) => setGenPrompt(e.target.value)}
+                  placeholder="如：大诗音穿着围裙在烘焙坊微笑着递上一块蛋糕…"
+                />
+                <button
+                  type="button"
+                  className="btn ghost sm shrink-0"
+                  title="按当前角色的形态重设为外貌提示词"
+                  disabled={!appearForm || !active}
+                  onClick={() => {
+                    const char = characters.find((c) => c.id === active?.characterIds[0])
+                    if (!char) return
+                    const appearance = buildAppearancePrompt(char)
+                    if (!appearance) return
+                    setGenPrompt(appearance)
+                    lastAutoRef.current = appearance
+                  }}
+                >
+                  ↺ 重置
+                </button>
+              </div>
             </Field>
-            {!config.imageModel && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-2)]">
+                <input
+                  type="checkbox"
+                  checked={autoAppend}
+                  onChange={(e) => setAutoAppend(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-[var(--pink)]"
+                />
+                自动拼装外貌
+              </label>
+              <span className="text-[11px] text-[var(--text-3)]">
+                {appearForm ? `按「${appearForm}」的外观` : '当前会话没有可用的角色'}
+              </span>
+            </div>
+
+            {/* 参数区：尺寸 / 张数常显；负向提示词、步数、CFG、seed 收在「更多」里 */}
+            <div className="mt-2 flex flex-wrap items-end gap-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-[var(--text-3)]">尺寸</span>
+                <select className="input w-auto py-1 text-[12px]" value={genSize} onChange={(e) => setGenSize(e.target.value)}>
+                  <option value="512x768">512×768（SD1.5 竖）</option>
+                  <option value="768x512">768×512（SD1.5 横）</option>
+                  <option value="512x512">512×512（SD1.5 方）</option>
+                  <option value="832x1216">832×1216（SDXL 竖）</option>
+                  <option value="1216x832">1216×832（SDXL 横）</option>
+                  <option value="1024x1024">1024×1024（SDXL 方）</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-[var(--text-3)]">张数</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={4}
+                  className="input w-[70px] py-1 text-[12px]"
+                  value={genN}
+                  onChange={(e) => setGenN(Math.max(1, Math.min(4, Number(e.target.value) || 1)))}
+                />
+              </label>
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => setShowAdvanced((v) => !v)}
+                title="负向提示词 / 步数 / CFG / seed"
+              >
+                {showAdvanced ? '收起参数 ▴' : '更多参数 ▾'}
+              </button>
+            </div>
+
+            {showAdvanced && (
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <label className="flex flex-col gap-1 sm:col-span-3">
+                  <span className="text-[11px] text-[var(--text-3)]">负向提示词（不想出现的）</span>
+                  <input
+                    className="input py-1 text-[12px]"
+                    value={genNegative}
+                    onChange={(e) => setGenNegative(e.target.value)}
+                    placeholder="如：lowres, bad anatomy, extra fingers"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[var(--text-3)]">步数（留空=工作流默认）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={150}
+                    className="input py-1 text-[12px]"
+                    value={genSteps}
+                    onChange={(e) => setGenSteps(e.target.value)}
+                    placeholder="25"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[var(--text-3)]">CFG（留空=工作流默认）</span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={0}
+                    className="input py-1 text-[12px]"
+                    value={genCfg}
+                    onChange={(e) => setGenCfg(e.target.value)}
+                    placeholder="7.0"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[var(--text-3)]">seed（留空=随机）</span>
+                  <input
+                    type="number"
+                    className="input py-1 text-[12px]"
+                    value={genSeed}
+                    onChange={(e) => setGenSeed(e.target.value)}
+                    placeholder="随机"
+                  />
+                </label>
+              </div>
+            )}
+
+            {genEngine === 'thirdparty' && !config.imageModel && (
               <p className="mt-2 rounded-lg bg-[var(--pink-soft)] px-3 py-2 text-[12px] leading-snug text-[var(--pink-deep)]">
-                ⚠ 还没配置生图模型。当前 vsllm 中转没有生图通道 —— 请点 ⚙ 模型设置填一个支持
-                /images/generations 的中转地址 + 模型名。
+                ⚠ 第三方通道还没配生图模型。请点 ⚙ 模型设置填一个支持 /images/generations
+                的中转地址 + 模型名（vsllm 无生图通道）。
               </p>
             )}
             <div className="mt-3 flex items-center justify-between gap-2.5">
@@ -1508,14 +1866,45 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
             </div>
             {genImages.length > 0 && (
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {genImages.map((g, i) => (
-                  <img
-                    key={i}
-                    src={g.url ?? (g.b64 ? `data:image/png;base64,${g.b64}` : '')}
-                    alt={`生成结果 ${i + 1}`}
-                    className="w-full rounded-xl border border-[var(--border)]"
-                  />
-                ))}
+                {genImages.map((g, i) => {
+                  const src = g.orig || g.thumb
+                  return (
+                    <figure key={g.id || i} className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)]">
+                      <img
+                        src={src}
+                        alt={`生成结果 ${i + 1}`}
+                        className="w-full cursor-zoom-in"
+                        onClick={() => setLightbox(src)}
+                      />
+                      <figcaption className="flex items-center justify-between gap-2 px-2 py-1.5">
+                        <span className="text-[11px] text-[var(--text-3)]">结果 {i + 1}</span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            className="btn ghost sm"
+                            title="下载原图"
+                            onClick={() => {
+                              const a = document.createElement('a')
+                              a.href = src
+                              a.download = `xiaotangren-${i + 1}.png`
+                              a.click()
+                            }}
+                          >
+                            ⤓
+                          </button>
+                          <button
+                            type="button"
+                            className="btn ghost sm"
+                            title="存入画廊（相册 + 照片记忆）"
+                            onClick={() => void starGenerated(g)}
+                          >
+                            ⭐
+                          </button>
+                        </div>
+                      </figcaption>
+                    </figure>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -1532,6 +1921,33 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         />
       )}
 
+      {/* 右键菜单（§15.2）：QQ 那样在消息上右键 —— 删除这条 / 进入多选。
+          绝对定位在鼠标处，点空白或滚动即关（见上方那对 window 监听）。 */}
+      {menu && (
+        <div
+          className="fixed z-[70] min-w-[132px] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] py-1 shadow-xl"
+          style={{ left: menu.x, top: menu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="block w-full px-3 py-1.5 text-left text-[13px] text-[var(--text)] hover:bg-[var(--pink-soft)] hover:text-[var(--pink-deep)]"
+            onClick={() => void doDelete([menu.seq])}
+          >
+            删除这条
+          </button>
+          <button
+            className="block w-full px-3 py-1.5 text-left text-[13px] text-[var(--text)] hover:bg-[var(--pink-soft)] hover:text-[var(--pink-deep)]"
+            onClick={() => {
+              setSelectMode(true)
+              setSelectedSeqs(new Set([menu.seq]))
+              setMenu(null)
+            }}
+          >
+            多选…
+          </button>
+        </div>
+      )}
+
       {/* 画廊浮层（§9.4）：收藏的图片 + 描述；描述按 A 方案进记忆 */}
       {galleryOpen && (
         <GalleryPanel
@@ -1539,6 +1955,8 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
           apiKey={route.vision.apiKey}
           visionModel={route.vision.model}
           uncensored={config.channel === 'uncensored'}
+          characters={characters.map((c) => ({ id: c.id, name: c.name }))}
+          defaultOwner={ownerOf(active)}
           onClose={() => setGalleryOpen(false)}
         />
       )}

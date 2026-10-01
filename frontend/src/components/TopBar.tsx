@@ -1,9 +1,17 @@
+type View = 'home' | 'chat' | 'nest'
+
 type Props = {
   theme: 'light' | 'dark'
-  view: 'home' | 'chat'
+  view: View
   onToggleTheme: () => void
-  onView: (v: 'home' | 'chat') => void
+  onView: (v: View) => void
 }
+
+const NAV: { v: View; label: string }[] = [
+  { v: 'home', label: '角色介绍' },
+  { v: 'chat', label: '聊天' },
+  { v: 'nest', label: '🏠 糖人小窝' },
+]
 
 export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {
   return (
@@ -18,7 +26,7 @@ export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {
 
         <div className="flex items-center gap-2">
           <nav className="mr-1 flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--surface)] p-1">
-            {(['home', 'chat'] as const).map((v) => (
+            {NAV.map(({ v, label }) => (
               <button
                 key={v}
                 onClick={() => onView(v)}
@@ -26,7 +34,7 @@ export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {
                   view === v ? 'bg-[var(--pink)] text-white' : 'text-[var(--text-2)] hover:text-[var(--text)]'
                 }`}
               >
-                {v === 'home' ? '角色介绍' : '聊天'}
+                {label}
               </button>
             ))}
           </nav>

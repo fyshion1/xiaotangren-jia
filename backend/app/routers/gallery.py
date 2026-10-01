@@ -1,10 +1,13 @@
 """画廊路由（对应《项目要求》§9.4）。
 
 - `POST /api/gallery`          聊天图片气泡的「⭐ 存入画廊」
-- `GET  /api/gallery`          列出走廊图（含缩略图、描述、是否进记忆）
+- `GET  /api/gallery`          列出画廊图（含缩略图、描述、是否进记忆）；可按归属过滤
 - `POST /api/gallery/{id}/describe`  让 vision 模型自动写描述（也可由用户手写覆盖）
-- `PATCH /api/gallery/{id}`    改描述 / 切换「进小糖人记忆」
+- `PATCH /api/gallery/{id}`    改描述 / 切换「进小糖人记忆」/ 改归属
 - `DELETE /api/gallery/{id}`   移除（连带删掉它的照片记忆）
+
+归属（owner）：'' = 家共用，<charId> = 该角色专属。私聊里 ⭐ 自动归属该角色，
+画廊里可手动改。上传图片走已有的 `POST /api/attachments`，再 `POST /gallery` 带 owner。
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ class StarIn(BaseModel):
     session_id: str = ""
     message_id: str = ""
     description: str = ""
+    owner: str = ""  # '' = 家共用，<charId> = 角色专属
     in_memory: bool = True
 
 
@@ -39,17 +43,21 @@ class DescribeIn(BaseModel):
 class UpdateIn(BaseModel):
     description: str | None = None
     in_memory: bool | None = None
+    owner: str | None = None
 
 
 @router.get("/gallery")
-async def list_gallery(limit: int = Query(200, ge=1, le=1000)) -> dict:
-    items = db.list_gallery(limit=limit)
-    return {"items": items, "total": db.count_gallery()}
+async def list_gallery(
+    limit: int = Query(200, ge=1, le=1000),
+    owner: str | None = Query(None, description="不传 = 全量；'' = 家共用；<charId> = 角色专属"),
+) -> dict:
+    items = db.list_gallery(limit=limit, owner=owner)
+    return {"items": items, "total": db.count_gallery(owner)}
 
 
 @router.post("/gallery")
 async def add_to_gallery(body: StarIn) -> dict:
-    """⭐ 存入画廊。已收藏过的同一张图直接返回原记录（幂等，不报错）。"""
+    """⭐ 存入画廊。同一归属下已收藏过的同一张图直接返回原记录（幂等，不报错）。"""
     if not (body.orig or "").strip():
         raise HTTPException(status_code=400, detail="缺少图片引用（orig）")
     created = gal.star(
@@ -57,6 +65,7 @@ async def add_to_gallery(body: StarIn) -> dict:
         session_id=body.session_id,
         message_id=body.message_id,
         description=body.description,
+        owner=body.owner,
         in_memory=body.in_memory,
     )
     if created is None:
@@ -94,10 +103,12 @@ async def describe(gallery_id: str, body: DescribeIn) -> dict:
 
 @router.patch("/gallery/{gallery_id}")
 async def update_gallery(gallery_id: str, body: UpdateIn) -> dict:
-    """改描述 / 切换「进小糖人记忆」。改描述时若在记忆中，会同步刷新那条记忆。"""
+    """改描述 / 切归属 / 切换「进小糖人记忆」。改描述或归属时若在记忆中，会同步重建那条记忆。"""
     if db.get_gallery(gallery_id) is None:
         raise HTTPException(status_code=404, detail="画廊里没有这张图")
     item = db.get_gallery(gallery_id)
+    if body.owner is not None:
+        item = gal.set_owner(gallery_id, body.owner)
     if body.description is not None:
         item = gal.update_description(gallery_id, body.description)
     if body.in_memory is not None:

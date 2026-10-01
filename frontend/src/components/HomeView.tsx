@@ -11,9 +11,11 @@ type Props = {
   initialCharId?: string
   onSaveChar: (next: CharacterProfile) => void
   onEnterChat: (sessionId?: string) => void
+  /** 跳到「糖人小窝」（§9.6）：成员切换行最左边那个入口。 */
+  onOpenNest: () => void
 }
 
-export default function HomeView({ characters, initialCharId, onSaveChar, onEnterChat }: Props) {
+export default function HomeView({ characters, initialCharId, onSaveChar, onEnterChat, onOpenNest }: Props) {
   const [activeId, setActiveId] = useState(initialCharId ?? characters[0]?.id)
   const [editing, setEditing] = useState<CharacterProfile | null>(null)
 
@@ -25,8 +27,16 @@ export default function HomeView({ characters, initialCharId, onSaveChar, onEnte
         点击成员切换角色；词条（含「关于」提示词）均可点 <b className="text-[var(--pink-deep)]">✎ 编辑资料</b> 随时修改。
       </p>
 
-      {/* 家成员切换 */}
+      {/* 家成员切换；最左边是「糖人小窝」入口（§9.6） */}
       <div className="mb-6 flex flex-wrap gap-3">
+        <button
+          className="member"
+          onClick={onOpenNest}
+          title="糖人小窝：全家的共同回忆（共用画廊）+ 以后的小游戏 / 互动小家"
+        >
+          <span className="ear">🏠</span>
+          糖人小窝
+        </button>
         {characters.map((c) => (
           <button key={c.id} className={`member ${c.id === active.id ? 'on' : ''}`} onClick={() => setActiveId(c.id)}>
             <span className="ear">{c.emoji}</span>
@@ -45,7 +55,8 @@ export default function HomeView({ characters, initialCharId, onSaveChar, onEnte
         />
       )}
 
-      <GalleryGrid />
+      {/* 这位角色的专属画廊（§9.4 归属）；家共用的那部分在「糖人小窝」 */}
+      <GalleryGrid owner={active?.id} />
 
       <WorldbookPanel />
 

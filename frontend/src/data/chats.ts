@@ -26,17 +26,26 @@ export type ChatMessage = {
   segments?: { speaker: string; text: string }[]
   // 落库后的游标（seq = rowid），用于向上翻页；未落库的临时消息为空
   seq?: number
+  // 落库后的行 id（'m-<hex>'）。单条真删、⭐ 存画廊的 message_id 级联都要它；
+  // 未落库的临时消息为空 —— 那类消息只能从本地 state 剔除，删不了库。
+  dbId?: string
 }
+
+// 大老大 = 用户本人（见 seed_characters.py 文件头 ⚠）。她有完整档案（介绍 / 立绘 /
+// 两个形态 / 专属画廊），但不作为群聊的默认在场角色 —— 否则模型分饰多角时会以为要
+// 「扮演大老大」，和用户自己发的消息打架。私聊照常生成，那是她画廊的落点。
+export const SELF_CHARACTER_ID = 'dalaoda'
 
 // 由当前角色列表生成默认会话：一个群聊 + 每个小糖人的私聊。
 export function buildSessions(chars: CharacterProfile[]): ChatSession[] {
+  const cast = chars.filter((c) => c.id !== SELF_CHARACTER_ID).map((c) => c.id)
   const group: ChatSession = {
     id: 'group',
     kind: 'group',
     name: '小糖人的家（群聊）',
     emoji: '🏠',
-    subtitle: '四位都在场 · 默认',
-    characterIds: chars.map((c) => c.id),
+    subtitle: `${cast.length} 位都在场 · 默认`,
+    characterIds: cast,
   }
   const singles: ChatSession[] = chars.map((c) => ({
     id: `single-${c.id}`,
