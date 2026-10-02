@@ -91,10 +91,28 @@ def _group_director(names: list[str]) -> str:
     return (
         f"这是一个多人聊天场景，在场角色有：{'、'.join(names)}。"
         "请你一人分饰多角：轮流扮演在场的每个角色，让她们自然地对话、互相搭话或拌嘴。"
-        "每位角色都要保持自己的语气与个性，不要串戏；用户是大家同处一屋的「哥哥/姐姐」。"
+        "每位角色都要保持自己的语气与个性，不要串戏；用户是谁见下文的「用户身份」。"
         "格式要求：每位角色发言时，先另起一行写「**角色名**：」，再写动作描写和小段台词；"
         "每个人一段，段落之间空一行分开，不要挤在一个大段落里。"
     )
+
+
+def _user_block(persona: dict) -> str:
+    """告诉小糖人「现在和她们说话的是谁」（§22）。
+
+    以前这里写死成「用户是大家同处一屋的『哥哥/姐姐』」，现在换成用户自己那份档案里的
+    `relation` —— 这正是「用不同身份对话更有趣」的着力点：切到汐子，她们眼里的人就变了。
+
+    relation 是用户视角的第二人称自述（私人空间里就那么显示），所以这里补一句说明，
+    免得模型把里面的「你」当成小糖人自己。
+    """
+    name = (persona.get("name") or "用户").strip()
+    alias = (persona.get("alias") or "").strip()
+    relation = (persona.get("relation") or "").strip()
+    lines = [f"【用户身份】正在和你说话的人是「{name}」" + (f"（{alias}）" if alias else "") + "。"]
+    if relation:
+        lines.append(f"以下是这个人自述的身份说明（其中「你」指用户本人，而不是你）：{relation}")
+    return "\n".join(lines)
 
 
 def _worldbook_hits(texts: list[str], owners: list[str]) -> list[dict]:
@@ -121,12 +139,14 @@ def build_system_prompt(
     character_ids: list[str] | None = None,
     messages: list[dict] | None = None,
     uncensored: bool = False,
+    persona: dict | None = None,
 ) -> str:
     """组装最终 system prompt。
 
     character_ids：本会话在场角色 id（空/缺省时默认全员在场）。
     messages：聊天历史，用于世界书关键词扫描（取最近 N 条）。
     uncensored：是否走无审查通道——为真时额外追加「无审查专属」越狱块。
+    persona：当前用户身份档案（§22）。给了就注入「用户身份」块，替代写死的哥哥/姐姐。
     """
     messages = messages or []
     ids = [i for i in (character_ids or []) if i]
@@ -148,6 +168,10 @@ def build_system_prompt(
             parts.append(_persona_block(p))
     else:
         parts.append(DEFAULT_PERSONA)
+
+    # 用户身份（§22）：紧跟在「她们是谁」后面说清「在和谁说话」。
+    if persona:
+        parts.append(_user_block(persona))
 
     recent = [str(m.get("content") or "") for m in messages[-WORLDBOOK_WINDOW:]]
     # 世界书归属（§19）：单人在场 → 她的专属 + 家共用；多人 / 无人在场 → 只有家共用。

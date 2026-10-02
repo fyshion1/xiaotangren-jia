@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from .. import db
 from ..providers import openai
 from ..services.prompt import build_system_prompt
 
@@ -23,6 +24,8 @@ class VisionRequest(BaseModel):
     mime: str = "image/png"
     prompt: str = "看看这张图，说说你的感受。"
     character_ids: list[str] = Field(default_factory=list)
+    # 当前用户身份 id（§22）；缺省 = 服务端记着的当前身份。
+    persona_id: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
@@ -43,10 +46,13 @@ async def images_chat(req: VisionRequest) -> StreamingResponse:
     api_key = req.api_key or settings.model_api_key
     model = req.model or settings.model_vision
 
+    # 看图轮也要知道「在和谁说话」（§22），否则切到汐子后她的反应仍是大老大视角。
+    persona = db.get_profile((req.persona_id or "").strip() or db.get_active_persona_id())
     system = build_system_prompt(
         character_ids=req.character_ids,
         messages=[{"role": "user", "content": req.prompt}],
         uncensored=req.uncensored,
+        persona=persona,
     )
     messages: list[dict] = []
     if system:

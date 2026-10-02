@@ -6,11 +6,14 @@ import { extractPalette, firstFrameOf, isGif, paletteGradient } from '../lib/por
 type Props = {
   p: CharacterProfile
   onEdit: () => void
-  onEnterChat: () => void
+  /** 缺省时不渲染「进入小窝」按钮 —— 私人空间里的身份档案不需要（§22）。 */
+  onEnterChat?: () => void
   /** 切换形态（§17）。缺省时不渲染形态 chip —— 没配形态的角色保持原样。 */
   onSwitchForm?: (formId: string) => void
   /** 点立绘看高清原图（§19.13）。缺省时立绘不可点 —— 保持原样。 */
   onOpenPortrait?: (src: string) => void
+  /** 卡片尾部追加的自定义区块（§22：私人空间用它塞「身份定位 + 删档」）。 */
+  extra?: React.ReactNode
 }
 
 function Attr({ k, children, priv }: { k: string; children: React.ReactNode; priv?: boolean }) {
@@ -37,7 +40,7 @@ function Chips({ items }: { items: string[] }) {
   )
 }
 
-export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchForm, onOpenPortrait }: Props) {
+export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchForm, onOpenPortrait, extra }: Props) {
   const [showPriv, setShowPriv] = useState(false)
   // 立绘显示方式（§19）：静态 / Live2D 占位 / 3D 占位。用左上角标签里的下拉切换，
   // 不再是「点整张图循环」（那样每次点图都会误切，而且没有提示当前是哪个）。
@@ -286,11 +289,14 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
 
         {/* CTA */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
-          <button className="btn" onClick={onEnterChat}>进入她的小窝 · 聊天</button>
+          {onEnterChat && <button className="btn" onClick={onEnterChat}>进入她的小窝 · 聊天</button>}
           <button className="btn ghost sm ml-auto" onClick={onEdit}>
             ✎ 编辑资料
           </button>
         </div>
+
+        {/* 私人空间（§22）：身份定位 + 删档，由调用方塞进来 */}
+        {extra && <div className="mt-6">{extra}</div>}
       </div>
     </section>
   )

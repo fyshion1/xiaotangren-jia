@@ -34,7 +34,10 @@ export default function StatusSidebar({
   const status: CharacterStatus | undefined = single ? DEFAULT_STATUS[single.id] : undefined
 
   return (
-    <div className="flex h-full flex-col">
+    // min-h-0 flex-1 而不是 h-full（§19.21）：h-full 是按「整栏高度」算的，
+    // 不扣掉上面那个立绘轮播（shrink-0），于是内部滚动区的可用高度被高估、
+    // 下半截落到父级 overflow-hidden 之外被裁掉 —— 手机上看着就是「滑到底了但下面还有字」。
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="px-4 pb-2 pt-3 text-[12px] font-semibold tracking-wide text-[var(--text-3)]">状态</div>
 
       {/* 操作：生成照片 / 朗读·停止 / 自动朗读 */}

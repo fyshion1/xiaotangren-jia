@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
-import { SELF_CHARACTER_ID } from '../data/chats'
+import { MAIN_PERSONA_ID } from '../data/chats'
 import CharacterProfileCard from './CharacterProfileCard'
 import GalleryGrid from './GalleryGrid'
 import CharacterEditor from './CharacterEditor'
@@ -11,19 +11,75 @@ import Avatar from './Avatar'
 type Props = {
   characters: CharacterProfile[]
   initialCharId?: string
-  /** 私人空间（§21）：只显示大老大一个人的介绍 / 词条 / 画廊，隐藏成员切换行。 */
+  /** 私人空间（§22）：characters 换成「你的身份档案列表」，多出一排身份卡片。 */
   space?: boolean
+  /** 当前正在用的身份（只有私人空间有）。 */
+  activePersonaId?: string
   onSaveChar: (next: CharacterProfile) => void
   onEnterChat: (sessionId?: string) => void
   /** 跳到「糖人小窝」（§9.6）：成员切换行最左边那个入口。 */
   onOpenNest: () => void
+  // ---- 以下仅私人空间用（§22）----
+  /** 新建一份身份档案（差量草稿，id 由后端生成）。 */
+  onCreateProfile?: (draft: Omit<CharacterProfile, 'id'> & { id?: string }) => Promise<CharacterProfile>
+  /** 「成为这个身份」：全局一处切换，聊天记录各自一条。 */
+  onBecomePersona?: (personaId: string) => void | Promise<void>
+  onDeletePersona?: (personaId: string) => void | Promise<void>
 }
 
-export default function HomeView({ characters, initialCharId, space, onSaveChar, onEnterChat, onOpenNest }: Props) {
-  // 私人空间（§21）：只认大老大自己；普通介绍页维持原样（全部成员）。
-  // 大老大的档案在后端是「逐条幂等补种」的（§8.5），老库启动后必然在场；真缺了也不崩 ——
-  // list 为空 → active 为空 → 下面整块不渲染，不会白屏。
-  const list = space ? characters.filter((c) => c.id === SELF_CHARACTER_ID) : characters
+function emptyProfile(): Omit<CharacterProfile, 'id'> {
+  return {
+    name: '',
+    jp: '',
+    alias: '',
+    emoji: '🌟',
+    about: '',
+    birthday: '',
+    age: '',
+    height: '',
+    bloodType: '',
+    constellation: '',
+    personality: [],
+    likes: [],
+    dislikes: [],
+    catchphrase: '',
+    bodyType: '',
+    eyeColor: '',
+    hairstyle: '',
+    hairColor: '',
+    bust: '',
+    hip: '',
+    clothing: '',
+    occupation: '',
+    relationships: '',
+    specialFeatures: '',
+    weight: '',
+    measurements: '',
+    secret: '',
+    weakPoint: '',
+    privateWish: '',
+    relation: '',
+    // 新档案默认**不当**可聊角色（§22）：多数身份只是「换个视角说话」，
+    // 想让她现身当角色，去编辑面板把开关打开。
+    asCharacter: false,
+  }
+}
+
+export default function HomeView({
+  characters,
+  initialCharId,
+  space,
+  activePersonaId,
+  onSaveChar,
+  onEnterChat,
+  onOpenNest,
+  onCreateProfile,
+  onBecomePersona,
+  onDeletePersona,
+}: Props) {
+  // 私人空间（§22）：characters 传进来的就是身份档案列表，active 跟着「当前身份」走。
+  // 列表为空时（后端不可用）下面整块不渲染，不会白屏。
+  const list = characters
   const [activeId, setActiveId] = useState(initialCharId ?? list[0]?.id)
   const [editing, setEditing] = useState<CharacterProfile | null>(null)
   // 看立绘原图（§19.13）：介绍页自己的浮层，跟画廊那个同款。Esc 也能关。
@@ -39,6 +95,11 @@ export default function HomeView({ characters, initialCharId, space, onSaveChar,
     if (initialCharId) setActiveId(initialCharId)
   }, [initialCharId])
 
+  // 私人空间：当前身份变了就跟着切（从别处「成为」了别的身份 / 删掉当前身份回落）。
+  useEffect(() => {
+    if (space && activePersonaId) setActiveId(activePersonaId)
+  }, [space, activePersonaId])
+
   useEffect(() => {
     if (!lightbox) return
     const onKey = (e: KeyboardEvent) => {
@@ -48,13 +109,30 @@ export default function HomeView({ characters, initialCharId, space, onSaveChar,
     return () => window.removeEventListener('keydown', onKey)
   }, [lightbox])
 
+  const onCreate = async () => {
+    if (!onCreateProfile) return
+    const created = await onCreateProfile(emptyProfile())
+    setActiveId(created.id)
+    setEditing(created) // 新建即进编辑，省一步点击
+  }
+
+  const onDelete = async (p: CharacterProfile) => {
+    if (!onDeletePersona) return
+    const ok = window.confirm(
+      `删掉「${p.name}」这份身份档案？\n\n它名下的聊天记录会一起清掉（每个身份各自一条）。\n小糖人们的记忆、画廊、世界书不受影响。`,
+    )
+    if (!ok) return
+    await onDeletePersona(p.id)
+  }
+
   return (
     <main className="mx-auto max-w-6xl overflow-y-auto px-4 pb-16 pt-5">
       <p className="mb-4 rounded-[14px] border border-dashed border-[var(--border-strong)] bg-[color-mix(in_srgb,var(--surface)_60%,transparent)] px-4 py-2.5 text-[13px] text-[var(--text-2)]">
         {space ? (
           <>
-            这是<b className="text-[var(--pink-deep)]">你的</b>私人空间 —— 档案、词条、画廊都只属于你。
-            词条均可点 <b className="text-[var(--pink-deep)]">✎ 编辑资料</b> 随时修改。
+            这是<b className="text-[var(--pink-deep)]">你的</b>私人空间 —— 你的几份身份档案都在这里。
+            点卡片看档案，点 <b className="text-[var(--pink-deep)]">成为这个身份</b> 才会真的换视角
+            （聊天记录各自一条）；词条均可点 <b className="text-[var(--pink-deep)]">✎ 编辑资料</b> 随时修改。
           </>
         ) : (
           <>
@@ -64,8 +142,35 @@ export default function HomeView({ characters, initialCharId, space, onSaveChar,
         )}
       </p>
 
-      {/* 普通介绍页才有「家成员切换行」；私人空间只属于你自己，不给切换（§21） */}
-      {!space && (
+      {/* 私人空间（§22）：一排身份卡片，点开看档案 + 单独一个「成为这个身份」按钮。 */}
+      {space ? (
+        <div className="mb-6 flex flex-wrap gap-3">
+          {characters.map((p) => (
+            <div key={p.id} className={`persona-card ${p.id === active.id ? 'on' : ''}`}>
+              <button className="flex min-w-0 flex-1 items-center gap-2" onClick={() => setActiveId(p.id)}>
+                <Avatar name={p.name} avatar={p.avatar} emoji={p.emoji} size={30} className="ear" />
+                <span className="truncate">{p.name}</span>
+                {p.id === activePersonaId && <span className="persona-badge">当前</span>}
+              </button>
+              {/* 单独按钮：不点就不成为 —— 避免「只是想看看」也被换掉视角 */}
+              <button
+                className="persona-become"
+                disabled={p.id === activePersonaId}
+                title={p.id === activePersonaId ? '已经在用这个身份了' : `以「${p.name}」的身份聊天`}
+                onClick={() => void onBecomePersona?.(p.id)}
+              >
+                {p.id === activePersonaId ? '使用中' : '成为'}
+              </button>
+            </div>
+          ))}
+          {onCreateProfile && (
+            <button className="member" onClick={() => void onCreate()} title="添加一份新的身份档案">
+              <span className="ear">＋</span>
+              新身份
+            </button>
+          )}
+        </div>
+      ) : (
         <div className="mb-6 flex flex-wrap gap-3">
           <button
             className="member"
@@ -89,9 +194,10 @@ export default function HomeView({ characters, initialCharId, space, onSaveChar,
           key={active.id}
           p={active}
           onEdit={() => setEditing(active)}
-          onEnterChat={() => onEnterChat(`single-${active.id}`)}
+          onEnterChat={space ? undefined : () => onEnterChat(`single-${active.id}`)}
           onSwitchForm={(formId) => onSaveChar({ ...active, activeFormId: formId })}
           onOpenPortrait={setLightbox}
+          extra={space ? <PersonaActions p={active} onDelete={onDeletePersona ? onDelete : undefined} /> : undefined}
         />
       )}
 
@@ -123,5 +229,43 @@ export default function HomeView({ characters, initialCharId, space, onSaveChar,
         </div>
       )}
     </main>
+  )
+}
+
+/** 私人空间专属：卡片里那两行「这个身份的定位」+ 删除按钮（§22 大老大不能删）。 */
+function PersonaActions({ p, onDelete }: { p: CharacterProfile; onDelete?: (p: CharacterProfile) => void }) {
+  const isMain = p.id === MAIN_PERSONA_ID
+  return (
+    <div className="flex flex-col gap-3 border-t border-[var(--border)] pt-4">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="rounded-xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] p-3">
+          <div className="mb-1 text-[12px] font-semibold text-[var(--pink-deep)]">与大家的关系（喂给模型）</div>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-[var(--text-2)]">
+            {p.relation?.trim() || '还没写。填上之后，小糖人会用这个身份对应的方式对待你。'}
+          </p>
+        </div>
+        <div className="rounded-xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] p-3">
+          <div className="mb-1 text-[12px] font-semibold text-[var(--pink-deep)]">别人眼里的存在感</div>
+          <p className="text-[13px] leading-relaxed text-[var(--text-2)]">
+            {p.asCharacter
+              ? '✅ 当你用别的身份聊天时，她会作为可聊角色出现在角色介绍 / 群聊阵容里。'
+              : '⛔ 只作为「身份」存在，永远不进角色介绍 / 群聊阵容。'}
+          </p>
+        </div>
+      </div>
+      {!isMain && onDelete && (
+        <button
+          className="self-start rounded-xl border border-[var(--border-strong)] px-3 py-1.5 text-[13px] text-[#d9534f] transition-colors hover:bg-[#d9534f]/10"
+          onClick={() => void onDelete(p)}
+        >
+          🗑 删掉这份档案
+        </button>
+      )}
+      {isMain && (
+        <p className="text-[12px] text-[var(--text-3)]">
+          默认身份不能删 —— 老库里 `group` / `single-*` 的聊天记录都挂在它名下。
+        </p>
+      )}
+    </div>
   )
 }

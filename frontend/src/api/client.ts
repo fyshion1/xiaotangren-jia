@@ -79,3 +79,46 @@ export async function saveSettings(kv: Settings): Promise<Settings> {
     body: JSON.stringify(kv),
   })
 }
+
+// ---- 个人档案（私人空间 / 用户身份，§22）----
+// 和 characters 是一对镜像，多一个「当前身份」和删除。当前身份存在后端 settings 里，
+// 所以全局一处切换，私聊群聊一起走。
+
+export type ProfilesPayload = {
+  profiles: CharacterProfile[]
+  active_id: string
+  main_id: string
+}
+
+export async function fetchProfiles(): Promise<ProfilesPayload> {
+  return asJson<ProfilesPayload>('/api/profiles')
+}
+
+export async function saveProfile(profile: CharacterProfile): Promise<CharacterProfile> {
+  return asJson<CharacterProfile>(`/api/profiles/${profile.id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
+}
+
+/** 新建身份档案。缺 id 时后端生成 `persona-<hex>`，返回落库后的完整档案。 */
+export async function createProfile(
+  profile: Omit<CharacterProfile, 'id'> & { id?: string },
+): Promise<CharacterProfile> {
+  return asJson<CharacterProfile>('/api/profiles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
+}
+
+/** 「成为这个身份」：切当前身份。只改一个服务端设置，不动任何消息。 */
+export async function switchProfile(profileId: string): Promise<{ active_id: string }> {
+  return asJson<{ active_id: string }>(`/api/profiles/active/${profileId}`, { method: 'PUT' })
+}
+
+/** 删档案：后端会连这个身份名下的会话一起清掉（每个身份各自一条，§22）。 */
+export async function deleteProfile(profileId: string): Promise<void> {
+  await asJson(`/api/profiles/${profileId}`, { method: 'DELETE' })
+}

@@ -13,6 +13,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from .. import db
 from ..providers import openai
 from ..services.prompt import build_system_prompt
 
@@ -28,6 +29,8 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(default_factory=list)
     # 本会话在场角色 id（群聊 = 多位；私聊 = 一位）；缺省 = 全员在场。
     character_ids: list[str] = Field(default_factory=list)
+    # 当前用户身份 id（§22）。缺省 = 服务端记着的当前身份，再缺省 = 大老大。
+    persona_id: str | None = None
     # 模型来源由前端显式传入，未传时用服务端默认（见 config）
     base_url: str | None = None
     api_key: str | None = None
@@ -42,12 +45,23 @@ def _role_of(role: str) -> str:
     return role if role in {"user", "assistant"} else "user"
 
 
+def _resolve_persona(persona_id: str | None) -> dict | None:
+    """取当前用户身份档案。前端没传就按服务端记着的当前身份走，都没有则不带身份块。"""
+    pid = (persona_id or "").strip() or db.get_active_persona_id()
+    return db.get_profile(pid) if pid else None
+
+
 def _to_openai_messages(
-    messages: list[ChatMessage], character_ids: list[str], uncensored: bool = False
+    messages: list[ChatMessage],
+    character_ids: list[str],
+    uncensored: bool = False,
+    persona: dict | None = None,
 ) -> list[dict]:
     # 世界书需要原文消息，先转成 dict 再传给组装引擎。
     raw = [{"role": _role_of(m.role), "content": m.content} for m in messages]
-    system = build_system_prompt(character_ids=character_ids, messages=raw, uncensored=uncensored)
+    system = build_system_prompt(
+        character_ids=character_ids, messages=raw, uncensored=uncensored, persona=persona
+    )
     out: list[dict] = [{"role": "system", "content": system}] if system else []
     out.extend(raw)
     return out
@@ -65,7 +79,9 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     base_url = req.base_url or settings.model_base_url
     api_key = req.api_key or settings.model_api_key
     model = req.model or settings.model_chat
-    messages = _to_openai_messages(req.messages, req.character_ids, req.uncensored)
+    messages = _to_openai_messages(
+        req.messages, req.character_ids, req.uncensored, _resolve_persona(req.persona_id)
+    )
     max_tokens = req.max_tokens if req.max_tokens and req.max_tokens > 0 else None
 
     async def gen() -> AsyncIterator[str]:

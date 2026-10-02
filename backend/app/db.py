@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .seed_characters import SEED_CHARACTERS
+from .seed_profiles import MAIN_PERSONA_ID, SEED_PROFILES
 from .seed_worldbook import SEED_WORLDBOOK
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -24,6 +25,11 @@ _lock = threading.Lock()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS characters (
+    id TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS profiles (
     id TEXT PRIMARY KEY,
     data TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -129,6 +135,65 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(sql)
 
 
+def _read_tombstones(conn: sqlite3.Connection) -> list[str]:
+    row = conn.execute("SELECT value FROM settings WHERE key = 'deleted_profiles'").fetchone()
+    return [i for i in (row["value"] if row else "").split(",") if i]
+
+
+def _write_tombstones(conn: sqlite3.Connection, ids: list[str]) -> None:
+    value = ",".join(dict.fromkeys(i for i in ids if i))
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('deleted_profiles', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (value,),
+    )
+
+
+def _migrate_dalaoda(conn: sqlite3.Connection) -> None:
+    """把大老大从 characters 迁进 profiles（§22）。幂等：跑过一次之后不再有可迁的行。
+
+    只搬档案，**不动聊天记录 / 记忆 / 画廊** —— 会话 id（`single-dalaoda`）、记忆桶
+    （`personal/dalaoda`）、画廊归属都以「大老大」这个 id 为键，id 不变就全部照旧，
+    切回大老大身份时历史原样还在。这跟「记忆完全独立于用户视角」是同一条原则。
+    """
+    row = conn.execute("SELECT id, data FROM characters WHERE id = ?", ("dalaoda",)).fetchone()
+    if row is None:
+        return
+    # 已在 profiles 里的话（重复启动）只删 characters 那份，不覆盖用户改过的档案。
+    exists = conn.execute("SELECT id FROM profiles WHERE id = ?", ("dalaoda",)).fetchone()
+    if exists is None and "dalaoda" not in _read_tombstones(conn):
+        conn.execute(
+            "INSERT INTO profiles (id, data) VALUES (?, ?) ON CONFLICT(id) DO NOTHING",
+            ("dalaoda", row["data"]),
+        )
+    conn.execute("DELETE FROM characters WHERE id = ?", ("dalaoda",))
+
+
+def _backfill_profile_fields(conn: sqlite3.Connection) -> None:
+    """给老库里已有的身份档案补上「种子里新加、而这份档案整个键都还没有」的字段（§22）。
+
+    典型场景：大老大的档案是从 characters 抬过来的老数据，里面没有 `relation` 与
+    `asCharacter` —— 不补的话，Prompt 里注不进用户身份，汐子视角下他也不会现身。
+
+    判定用「键是否存在」而不是「值是否为空」：用户手动清空 relation（存成 `""`）算他的
+    修改，不该被种子填回去。只补顶层缺失键，不递归。
+    """
+    rows = conn.execute("SELECT id, data FROM profiles").fetchall()
+    for row in rows:
+        seed = next((p for p in SEED_PROFILES if p["id"] == row["id"]), None)
+        if seed is None:
+            continue
+        data = json.loads(row["data"])
+        missing = {k: v for k, v in seed.items() if k not in data}
+        if not missing:
+            continue
+        data.update(missing)
+        conn.execute(
+            "UPDATE profiles SET data = ?, updated_at = datetime('now') WHERE id = ?",
+            (json.dumps(data, ensure_ascii=False), row["id"]),
+        )
+
+
 def init_db() -> None:
     """建表 + 迁移 + 逐条幂等补种。在启动时调用一次。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -137,12 +202,26 @@ def init_db() -> None:
     try:
         conn.executescript(_SCHEMA)
         _migrate(conn)
-        # 逐条补种：老库也能长出新增的角色（如大老大），但已存在的一律不覆盖 ——
+        # 逐条补种：老库也能长出新增的角色（如后来加的小糖人），但已存在的一律不覆盖 ——
         # 用户可能在编辑器里改过，种子不该把改动冲掉。
         conn.executemany(
             "INSERT INTO characters (id, data) VALUES (?, ?) ON CONFLICT(id) DO NOTHING",
             [(c["id"], json.dumps(c, ensure_ascii=False)) for c in SEED_CHARACTERS],
         )
+        # 大老大先从 characters 抬出来（老库升级路径），再补种 profiles。
+        _migrate_dalaoda(conn)
+        # 个人档案（§22）同样逐条补种，且尊重删除墓碑：用户删掉的档案不会被种子复活。
+        dead = _read_tombstones(conn)
+        conn.executemany(
+            "INSERT INTO profiles (id, data) VALUES (?, ?) ON CONFLICT(id) DO NOTHING",
+            [
+                (p["id"], json.dumps(p, ensure_ascii=False))
+                for p in SEED_PROFILES
+                if p["id"] not in dead
+            ],
+        )
+        # 补种只覆盖「整行不存在」的情况，补不了「行在、但缺新字段」（老库升级路径）。
+        _backfill_profile_fields(conn)
         if conn.execute("SELECT COUNT(*) FROM worldbook").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO worldbook (id, title, keywords, content, enabled, priority) "
@@ -180,6 +259,80 @@ def upsert_character(char_id: str, data: dict) -> None:
             "ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
             (char_id, json.dumps(data, ensure_ascii=False)),
         )
+
+
+# ---- 个人档案（profiles / 私人空间，§22）----
+# 表结构、读写方式与 characters 完全一致，只是语义不同：characters 是「被聊的小糖人」，
+# profiles 是「用户自己的身份」。拆成两张表而不是加个字段，是为了让两边各自独立演进 ——
+# 身份不需要进群聊阵容，角色也不需要「成为」这个动作。
+
+
+def list_profiles() -> list[dict]:
+    with _tx() as conn:
+        rows = conn.execute("SELECT data FROM profiles ORDER BY rowid").fetchall()
+    return [json.loads(r["data"]) for r in rows]
+
+
+def get_profile(profile_id: str) -> dict | None:
+    with _tx() as conn:
+        row = conn.execute("SELECT data FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+    return json.loads(row["data"]) if row else None
+
+
+def upsert_profile(profile_id: str, data: dict) -> None:
+    data = {**data, "id": profile_id}
+    with _tx() as conn:
+        conn.execute(
+            "INSERT INTO profiles (id, data, updated_at) VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+            (profile_id, json.dumps(data, ensure_ascii=False)),
+        )
+
+
+def delete_profile(profile_id: str) -> None:
+    """删一份身份档案，并记下墓碑 —— 否则下次启动种子会把它复活。
+
+    只删档案行。聊天记录 / 记忆 / 画廊的清理在 `services/cleanup.py` 里做，
+    因为那要动文件系统，不该由 db 层操心。
+    """
+    with _tx() as conn:
+        conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
+        _write_tombstones(conn, [*_read_tombstones(conn), profile_id])
+
+
+def get_active_persona_id() -> str:
+    """当前正在用的身份 id。缺省（首次启动 / 没设置过）= 大老大。"""
+    with _tx() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'active_persona_id'"
+        ).fetchone()
+    value = (row["value"] if row else "") or ""
+    if not value:
+        return MAIN_PERSONA_ID
+    # 身份被删掉了（或指向了不存在的档案）就回落，免得前端拿到空身份。
+    return value if get_profile(value) else MAIN_PERSONA_ID
+
+
+def set_active_persona_id(profile_id: str) -> None:
+    with _tx() as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('active_persona_id', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (profile_id,),
+        )
+
+
+def list_session_ids(prefix: str) -> list[str]:
+    """消息表里所有以 `prefix` 开头的会话 id（去重）。
+
+    删一份身份档案时用它找出这个身份名下的全部会话（`xizi@group` / `xizi@single-xxx`）。
+    """
+    with _tx() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT session_id FROM messages WHERE session_id LIKE ?",
+            (f"{prefix}%",),
+        ).fetchall()
+    return [r["session_id"] for r in rows]
 
 
 # ---- 世界书（worldbook）----
@@ -377,6 +530,21 @@ def delete_messages(session_id: str) -> int:
     with _tx() as conn:
         cur = conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         return int(cur.rowcount or 0)
+
+
+def delete_messages_by_session(session_id: str) -> list[dict]:
+    """清空某会话并**返回被删的整行** —— `cleanup.delete_session` 要用它们回收图片。
+
+    与上面的 `delete_messages` 的区别只是返回值形状；那个已被 routers/messages.py
+    占用为「只报数量」的老接口，不动它。
+    """
+    with _tx() as conn:
+        rows = conn.execute(
+            "SELECT rowid, * FROM messages WHERE session_id = ? ORDER BY rowid", (session_id,)
+        ).fetchall()
+        if rows:
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+    return [_row_to_message(r) for r in rows]
 
 
 def get_message(msg_id: str) -> dict | None:

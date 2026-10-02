@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import type { ChatSession, ChatMessage } from '../data/chats'
-import { buildSessions, suggestionsFor } from '../data/chats'
+import { buildSessions, personaSessionId, personasAsCast, suggestionsFor, MAIN_PERSONA_ID, SELF_CHARACTER_ID } from '../data/chats'
 import { activeFormId, listForms } from '../lib/forms'
 import SessionList from './SessionList'
 import StatusSidebar from './StatusSidebar'
@@ -280,8 +280,14 @@ function segmentGroupReply(full: string): { segments: { speaker: string; text: s
 
 type Props = {
   characters: CharacterProfile[]
+  /** 你自己的身份档案（§22）。除了「当前身份」，档案上开关打开的那些会作为可聊角色现身。 */
+  personas?: CharacterProfile[]
+  /** 当前正在用的身份（§22）：决定「在跟谁说话」以及聊天记录挂在哪条线上。 */
+  activePersona?: CharacterProfile
   initialSessionId?: string
   onOpenProfile: (charId: string) => void
+  /** 点自己那侧的署名人 → 进私人空间（§21）。 */
+  onOpenSelf: () => void
   /** 切换某角色的形态（§17）：写回后端，全局生效。 */
   onSwitchForm: (charId: string, formId: string) => void
 }
@@ -292,17 +298,26 @@ type EngineOption = { id: string; name: string; desc?: string; available: boolea
 // 手机端底部 Tab（桌面端不用）
 type MobileTab = 'sessions' | 'chat' | 'status'
 
-export default function ChatView({ characters, initialSessionId, onOpenProfile, onSwitchForm }: Props) {
-  const sessions = useMemo(() => buildSessions(characters), [characters])
+export default function ChatView({ characters, personas = [], activePersona, initialSessionId, onOpenProfile, onOpenSelf, onSwitchForm }: Props) {
+  const activePersonaId = activePersona?.id ?? MAIN_PERSONA_ID
+  // 当前视角下能出场的全部角色（§22）：小糖人 + 「别的身份」（汐子视角下的大老大）。
+  // 后者不进屋里的成员表，只在这个视角下临时现身，会话 id 照旧，隔离交给 personaSessionId。
+  const extraCast = useMemo(() => personasAsCast(personas, activePersonaId), [personas, activePersonaId])
+  const visibleCharacters = useMemo(() => [...characters, ...extraCast], [characters, extraCast])
+  const sessions = useMemo(() => buildSessions(visibleCharacters), [visibleCharacters])
   const [activeId, setActiveId] = useState<string>(initialSessionId ?? sessions[0]?.id ?? 'group')
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0]
   // 本会话在场的角色（群聊 = 全部成员，私聊 = 一位）—— 立绘轮播与状态栏共用
-  const activeCharacters = active ? active.characterIds.map((cid) => characters.find((c) => c.id === cid)).filter((c): c is CharacterProfile => Boolean(c)) : []
+  const activeCharacters = active ? active.characterIds.map((cid) => visibleCharacters.find((c) => c.id === cid)).filter((c): c is CharacterProfile => Boolean(c)) : []
+  // 自己那侧的署名行（§19.22 / §22）：跟着私人空间里「成为」的那个身份走。
+  const selfProfile = activePersona ?? characters.find((c) => c.id === SELF_CHARACTER_ID)
+  // 这一条聊天线的真实会话键（§22：「每个身份各自一条」，默认身份不加前缀，老历史一条不丢）。
+  const sessionKey = active ? personaSessionId(activePersonaId, active.id) : ''
 
   const [history, setHistory] = useState<Record<string, ChatMessage[]>>({})
   // 每条消息的错误态（流被掐断 / 上游报错），单独展示而不是塞进正文
   const [msgError, setMsgError] = useState<Record<string, string>>({})
-  const messages = active ? history[active.id] ?? [] : []
+  const messages = active ? history[sessionKey] ?? [] : []
 
   // ---- 持久化（§15）：文本落库 + 附件落盘；启动只载最近 30 条，向上滚再按游标拉 ----
   const loadedRef = useRef<Set<string>>(new Set())
@@ -552,7 +567,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
   // 群聊取第一位：真要画别人，改提示词框里的名字比换角色更省事。
   useEffect(() => {
     if (!genOpen || !autoAppend || !active) return
-    const char = characters.find((c) => c.id === active.characterIds[0])
+    const char = visibleCharacters.find((c) => c.id === active.characterIds[0])
     if (!char) {
       setAppearForm('')
       return
@@ -568,7 +583,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       lastAutoRef.current = appearance
     }
     dirtyKeyRef.current = key
-  }, [genOpen, autoAppend, active, characters])
+  }, [genOpen, autoAppend, active, visibleCharacters])
 
   // 看原图浮层：Esc 关闭
   useEffect(() => {
@@ -583,8 +598,8 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
   // 切换会话时首次载入最近 30 条（已载过则不重复拉，避免覆盖正在播的流）
   useEffect(() => {
     if (!active) return
-    const sid = active.id
-    if (loadedRef.current.has(sid)) return
+    const sid = sessionKey
+    if (!sid || loadedRef.current.has(sid)) return
     loadedRef.current.add(sid)
     // ⚠ 不要在这里用 cancelled 标志丢弃结果：dev 下 React StrictMode 会
     // 「setup→cleanup→setup」，cleanup 会把第一次的 fetch 结果丢掉，而第二次因
@@ -598,27 +613,28 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       })
       setPaging((prev) => ({ ...prev, [sid]: { cursor: page.next_cursor, hasMore: page.has_more } }))
     })
-  }, [active])
+  }, [active, sessionKey])
 
   // 向上滚到顶 → 按游标拉更早的一页，插到最前面（不跳视口）
   const onScrollMessages = useCallback(
     async (e: React.UIEvent<HTMLDivElement>) => {
       const el = e.currentTarget
       if (el.scrollTop > 40 || loadingOlder) return
-      const page = active ? paging[active.id] : undefined
-      if (!active || !page?.hasMore || !page.cursor) return
+      const sid = sessionKey
+      const page = sid ? paging[sid] : undefined
+      if (!sid || !page?.hasMore || !page.cursor) return
       setLoadingOlder(true)
       const prevHeight = el.scrollHeight
-      const older = await loadMessages(active.id, page.cursor, PAGE_SIZE)
-      setHistory((prev) => ({ ...prev, [active.id]: [...older.items.map(toChatMessage), ...(prev[active.id] ?? [])] }))
-      setPaging((prev) => ({ ...prev, [active.id]: { cursor: older.next_cursor, hasMore: older.has_more } }))
+      const older = await loadMessages(sid, page.cursor, PAGE_SIZE)
+      setHistory((prev) => ({ ...prev, [sid]: [...older.items.map(toChatMessage), ...(prev[sid] ?? [])] }))
+      setPaging((prev) => ({ ...prev, [sid]: { cursor: older.next_cursor, hasMore: older.has_more } }))
       setLoadingOlder(false)
       // 保持视口位置不跳：滚回「原高度 - 新内容补上的高度」
       requestAnimationFrame(() => {
         el.scrollTop = el.scrollHeight - prevHeight
       })
     },
-    [active, paging, loadingOlder],
+    [sessionKey, paging, loadingOlder],
   )
 
   const saveConfig = useCallback((c: ModelConfig) => {
@@ -872,7 +888,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         const saved = res.saved ?? []
         if (saved.length) {
           const names = saved
-            .map((s) => (s.bucket === 'home' ? '家记忆' : characters.find((c) => c.id === s.char_id)?.name ?? '个人'))
+            .map((s) => (s.bucket === 'home' ? '家记忆' : visibleCharacters.find((c) => c.id === s.char_id)?.name ?? '个人'))
             .join('、')
           setAutoMsg(`🧠 自动记住了 ${saved.length} 条（${names}）`)
           setTimeout(() => setAutoMsg(''), 6000)
@@ -882,7 +898,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         console.warn('自动记忆提炼失败：', e)
       }
     },
-    [active, characters, config],
+    [active, visibleCharacters, config],
   )
 
   const lastAssistantText = useMemo(() => {
@@ -952,7 +968,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
   const sendText = useCallback(async () => {
     const text = input.trim()
     if (!text || streaming || !active) return
-    const id = active.id
+    const id = sessionKey
     const userMsg: ChatMessage = { role: 'user', content: text }
     const next: ChatMessage[] = [...messages, userMsg]
     setHistory((prev) => ({ ...prev, [id]: next }))
@@ -968,6 +984,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       {
         messages: next.map((m) => ({ role: m.role, content: m.content })),
         character_ids: active.characterIds,
+        persona_id: activePersonaId,
         base_url: r.chat.baseUrl,
         api_key: r.chat.apiKey,
         model: r.chat.model,
@@ -976,12 +993,12 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       },
       active.kind === 'group',
     )
-  }, [input, messages, streaming, active, config, stampDb, streamAssistant])
+  }, [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant])
 
   const onPickImage = useCallback(
     async (file: File) => {
       if (streaming || !active) return
-      const id = active.id
+      const id = sessionKey
       const text = input.trim()
       const dataUrl = await fileToDataUrl(file)
       const base64 = dataUrl.split(',')[1]
@@ -1017,6 +1034,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
           mime,
           prompt: caption,
           character_ids: active.characterIds,
+          persona_id: activePersonaId,
           base_url: r.vision.baseUrl,
           api_key: r.vision.apiKey,
           model: r.vision.model,
@@ -1025,7 +1043,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         active.kind === 'group',
       )
     },
-    [input, messages, streaming, active, config, stampDb, streamAssistant, clearAtt],
+    [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant, clearAtt],
   )
 
   const onImport = useCallback((name: string) => {
@@ -1052,7 +1070,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
     try {
       const imgs = await generateImages({
         prompt,
-        session_id: active?.id ?? 'single-default', // 落在当前会话的附件目录里
+        session_id: sessionKey || 'single-default', // 落在当前会话的附件目录里
         size: genSize,
         n: genN,
         seed: num(genSeed),
@@ -1113,7 +1131,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       try {
         await starImage({
           orig,
-          session_id: active.id,
+          session_id: sessionKey,
           message_id: m.dbId ?? '',
           owner: ownerOf(active),
           in_memory: true,
@@ -1126,7 +1144,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         setStarring('')
       }
     },
-    [active],
+    [active, sessionKey],
   )
 
   // 生图结果「⭐ 存入画廊」：图已经在附件库里了（§7 生图直接落盘），
@@ -1138,7 +1156,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       try {
         await starImage({
           orig: g.orig,
-          session_id: active.id,
+          session_id: sessionKey,
           message_id: '',
           owner: ownerOf(active),
           in_memory: true,
@@ -1148,7 +1166,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         setErrorText(e instanceof Error ? e.message : String(e))
       }
     },
-    [active],
+    [active, sessionKey],
   )
 
   // ⭐ / 🧠 是按「会话:下标」记的。下标一变（删消息 / 重新生成 / 编辑重发），
@@ -1191,9 +1209,9 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         const dead = new Set(rows.map((r) => r.key))
         setHistory((prev) => ({
           ...prev,
-          [active.id]: (prev[active.id] ?? []).filter((_, i) => !dead.has(i)),
+          [sessionKey]: (prev[sessionKey] ?? []).filter((_, i) => !dead.has(i)),
         }))
-        clearSessionMarks(active.id)
+        clearSessionMarks(sessionKey)
       } catch (e) {
         setErrorText(e instanceof Error ? e.message : String(e))
       } finally {
@@ -1203,7 +1221,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         setMenu(null)
       }
     },
-    [active, messages, clearSessionMarks],
+    [active, sessionKey, messages, clearSessionMarks],
   )
 
   // 重新生成（§15.5）：无谱系列 —— 删掉库里那条旧回复，用**截断到它之前**的历史重新 POST。
@@ -1212,7 +1230,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
   const regenerate = useCallback(
     async (i: number) => {
       if (!active || streaming || deleting) return
-      const id = active.id
+      const id = sessionKey
       const target = messages[i]
       if (!target || target.role !== 'assistant') return
       const prev = messages[i - 1]
@@ -1240,6 +1258,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
           {
             messages: truncated.map((m) => ({ role: m.role, content: m.content })),
             character_ids: active.characterIds,
+            persona_id: activePersonaId,
             base_url: r.chat.baseUrl,
             api_key: r.chat.apiKey,
             model: r.chat.model,
@@ -1253,7 +1272,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         setDeleting(false)
       }
     },
-    [active, messages, streaming, deleting, config, clearSessionMarks, streamAssistant],
+    [active, sessionKey, messages, streaming, deleting, activePersonaId, config, clearSessionMarks, streamAssistant],
   )
 
   // 编辑并重发（§15.5，Gemini 式）：改这条 + 删掉它后面所有，再重新生成。
@@ -1261,7 +1280,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
     if (!active || streaming || deleting || editingSeq === null) return
     const text = editDraft.trim()
     if (!text) return
-    const id = active.id
+    const id = sessionKey
     const i = editingSeq
     const head = messages.slice(0, i)
     const dropped = messages.slice(i)
@@ -1289,6 +1308,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         {
           messages: next.map((m) => ({ role: m.role, content: m.content })),
           character_ids: active.characterIds,
+          persona_id: activePersonaId,
           base_url: r.chat.baseUrl,
           api_key: r.chat.apiKey,
           model: r.chat.model,
@@ -1301,7 +1321,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       setErrorText(e instanceof Error ? e.message : String(e))
       setDeleting(false)
     }
-  }, [active, messages, streaming, deleting, editingSeq, editDraft, config, clearSessionMarks, streamAssistant, stampDb])
+  }, [active, sessionKey, messages, streaming, deleting, editingSeq, editDraft, activePersonaId, config, clearSessionMarks, streamAssistant, stampDb])
 
   // 导入的角色卡（阶段 2 才解析）；先挂在会话列表尾部，让 UI 走通
   const [sessionsExtra, setSessionsExtra] = useState<ChatSession[]>([])
@@ -1319,6 +1339,9 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
   const tabCls = (tab: MobileTab) => (mobileTab === tab ? '' : 'max-md:hidden')
 
   return (
+    // h-full 而不是 h-[100dvh]（§19.23）：ChatView 是 App 内容区里唯一需要「自带滚动」的视图，
+    // 自己撑满这一层就好。写成 dvh 等于把顶栏那一截又算进来，整栏比可用高度高出 ~54px，
+    // 多出来的部分溢到内容区滚动区里 —— 手机上看着就是输入栏被压扁、按钮挤成一团。
     <div className="flex h-full flex-col md:flex-row">
       {/* 左：最近聊天 / 会话列表。右缘那条把手可以把这一栏拖宽（§19.11），宽度记在 localStorage。 */}
       <aside
@@ -1327,7 +1350,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       >
         <SessionList
           sessions={allSessions}
-          characters={characters}
+          characters={visibleCharacters}
           activeId={active.id}
           onSelect={(id) => {
             setActiveId(id)
@@ -1345,13 +1368,14 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         </div>
       </aside>
 
-      {/* 中：对话框 */}
-      <section className={`flex min-w-0 flex-1 flex-col bg-[var(--bg-soft)] ${tabCls('chat')}`}>
+      {/* 中：对话框。min-h-0（§19.21）：列式 flex 子项默认 min-height:auto，
+          里面的消息列表是 overflow-y-auto，缺了它会把这一节撑破外层、连输入栏一起滚出屏幕。 */}
+      <section className={`flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--bg-soft)] ${tabCls('chat')}`}>
         {/* 顶部：小糖人缩略头像，点击进个人介绍 */}
         <header className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2">
           {active.characterIds.length > 0 ? (
             active.characterIds.map((cid) => {
-              const c = characters.find((x) => x.id === cid)
+              const c = visibleCharacters.find((x) => x.id === cid)
               if (!c) return null
               return (
                 <button
@@ -1374,7 +1398,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
           {/* 形态切换（§17）：私聊时可直接在聊天头部换她的形态，切换即写回后端、全局生效 */}
           {active.characterIds.length === 1 &&
             (() => {
-              const c = characters.find((x) => x.id === active.characterIds[0])
+              const c = visibleCharacters.find((x) => x.id === active.characterIds[0])
               if (!c) return null
               const forms = listForms(c)
               if (forms.length < 2) return null
@@ -1702,13 +1726,13 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
           {messages.length === 0 && (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-[var(--text-3)]">
               <div className="rounded-full bg-[var(--pink-soft)] px-3 py-1 text-[var(--pink-deep)]">
-                {active.kind === 'group' ? '🏠' : active.characterIds[0] ? characters.find((c) => c.id === active.characterIds[0])?.emoji : '🎴'}
+                {active.kind === 'group' ? '🏠' : active.characterIds[0] ? visibleCharacters.find((c) => c.id === active.characterIds[0])?.emoji : '🎴'}
               </div>
               和 {active.kind === 'group' ? '大家' : active.name} 说点什么吧（先点 ⚙ 填好模型）
             </div>
           )}
           {messages.map((m, i) => {
-            const err = msgError[active.id]
+            const err = msgError[sessionKey]
             const isLast = i === messages.length - 1
             const segs = m.kind === 'groups' && m.segments?.length ? m.segments : null
             // 真删：用户消息与小糖人的回复都能删（§15.2），前提是已落库 —— dbId 由 §0 的回填补上
@@ -1750,7 +1774,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                     群聊非分段回复是「大家一起说」，不署名。点头像 / 名字进这位的介绍页（§19）。 */}
                 {!segs && m.role === 'assistant' && active.kind === 'single' && (
                   (() => {
-                    const c = characters.find((x) => x.id === active.characterIds[0])
+                    const c = visibleCharacters.find((x) => x.id === active.characterIds[0])
                     if (!c) return null
                     return (
                       <div className={`mb-1.5 flex items-center gap-2.5 ${selectMode && deletable ? 'pl-7' : ''}`}>
@@ -1771,6 +1795,28 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                       </div>
                     )
                   })()
+                )}
+                {/* 自己那侧的署名行（§19.22）：私聊、群聊都显示，右对齐、贴在气泡上方。
+                    跟小糖人那侧同一套版式（40px 头像 + 15px 名字），只是换到右边、用主色。
+                    群聊里「大家都署名、自己也署名」—— 用户明确要这个，不是 QQ 的省略做法。
+                    点头像 / 名字进私人空间（那里才是「我」的档案页）。 */}
+                {!segs && m.role === 'user' && selfProfile && !m.image && (
+                  <div className={`mb-1.5 flex items-center justify-end gap-2.5 ${selectMode && deletable ? 'pr-7' : ''}`}>
+                    {m.createdAt && (
+                      <span className="text-[11px] text-[var(--text-3)]" title={fullTime(m.createdAt)}>
+                        {hhmm(m.createdAt)}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onOpenSelf}
+                      title="看我在私人空间的档案"
+                      className="flex flex-row-reverse items-center gap-2.5 transition hover:opacity-85"
+                    >
+                      <Avatar name={selfProfile.name} avatar={selfProfile.avatar} emoji={selfProfile.emoji} size={40} />
+                      <span className="text-[15px] font-semibold text-[var(--pink-deep)]">{selfProfile.name}</span>
+                    </button>
+                  </div>
                 )}
                 {/* 自己的消息：时间戳不再逐条显示（§19.6）——
                     改由下方「间隔超过 5 分钟」的居中分隔行统一承担。 */}
@@ -1794,7 +1840,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                 <div className={`flex min-w-0 flex-1 flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                 {segs ? (
                   segs.map((s, si) => {
-                    const segKey = `${active.id}:${i}:${si}`
+                    const segKey = `${sessionKey}:${i}:${si}`
                     const segText = s.speaker ? `${s.speaker}：${s.text}` : s.text
                     return (
                       <div key={si} className="mb-2 flex min-w-0 flex-col items-start">
@@ -1803,7 +1849,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                             分段只给了名字串，按名字反查角色拿头像和 id；查不到就不套按钮（纯头像兜底）。 */}
                         {s.speaker &&
                           (() => {
-                            const sp = characters.find((c) => c.name === s.speaker)
+                            const sp = visibleCharacters.find((c) => c.name === s.speaker)
                             const face = <Avatar name={s.speaker} avatar={sp?.avatar} emoji={sp?.emoji} size={40} />
                             return (
                               <div className={`mb-1.5 flex items-center gap-2.5 ${selectMode && deletable ? 'pl-7' : ''}`}>
@@ -1905,11 +1951,11 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                         </button>
                         <button
                           type="button"
-                          onClick={() => void starThis(`${active.id}:${i}`, m)}
-                          disabled={starred[`${active.id}:${i}`] || starring === `${active.id}:${i}`}
+                          onClick={() => void starThis(`${sessionKey}:${i}`, m)}
+                          disabled={starred[`${sessionKey}:${i}`] || starring === `${sessionKey}:${i}`}
                           title="存入画廊"
                           className={`absolute right-1 top-1 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]/85 px-1 py-0.5 text-[10px] leading-tight shadow backdrop-blur transition ${
-                            starred[`${active.id}:${i}`]
+                            starred[`${sessionKey}:${i}`]
                               ? 'border-[var(--pink)] text-[var(--pink-deep)]'
                               : 'text-[var(--text-3)] hover:border-[var(--pink)] hover:text-[var(--pink-deep)]'
                           }`}
@@ -1939,17 +1985,17 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                     {m.role === 'assistant' && m.content.trim() && (
                       <div className="mt-1 flex items-center gap-2">
                         <button
-                          onClick={() => speakText(m.content, `${active.id}:${i}`)}
+                          onClick={() => speakText(m.content, `${sessionKey}:${i}`)}
                           className={`text-[11px] transition hover:text-[var(--pink-deep)] ${
-                            playingKey === `${active.id}:${i}` ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)]'
+                            playingKey === `${sessionKey}:${i}` ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)]'
                           }`}
                           title="朗读 / 停止这条回复"
                         >
-                          {playingKey === `${active.id}:${i}` ? '⏹ 停止' : '🔈 朗读'}
+                          {playingKey === `${sessionKey}:${i}` ? '⏹ 停止' : '🔈 朗读'}
                         </button>
                         <RememberButton
-                          done={Boolean(remembered[`${active.id}:${i}`])}
-                          onClick={() => void rememberThis(`${active.id}:${i}`, m.content)}
+                          done={Boolean(remembered[`${sessionKey}:${i}`])}
+                          onClick={() => void rememberThis(`${sessionKey}:${i}`, m.content)}
                         />
                         {/* 重新生成（§15.5）：删掉旧的这条真行，用截断的历史重新 POST。
                             看图轮没有原图 base64，不给入口。 */}
@@ -1999,7 +2045,9 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
               </button>
             </div>
           )}
-          <div className="mb-2 flex flex-wrap gap-2">
+          {/* 开场白建议（§19.24）：手机屏矮，这几颗 chip + 输入框上面那行东西一叠，
+              就把真正的输入区挤没了 —— 所以只在桌面显示（手机想开口直接打字即可）。 */}
+          <div className="mb-2 hidden flex-wrap gap-2 sm:flex">
             {suggestions.map((s) => (
               <button
                 key={s}
@@ -2106,19 +2154,21 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
         style={sideResize.style}
         className={`relative min-h-0 min-w-0 flex-1 overflow-hidden border-[var(--border)] bg-[var(--surface)] max-md:flex max-md:flex-col md:w-[var(--sb-w)] md:flex-none md:border-l ${tabCls('status')}`}
       >
-        {/* 立绘轮播（§19）：给个自身上限，剩下的高度留给状态栏的 flex-1 */}
-        <div className="max-h-[46vh] shrink-0 overflow-y-auto">
+        {/* 立绘轮播（§19）：给个自身上限，剩下的高度留给状态栏的 flex-1。
+            手机端高度本来就紧，压到 34vh（桌面仍 46vh）——
+            上面顶栏 + 底部 Tab 已经吃掉不少，46vh 会把状态栏挤没。 */}
+        <div className="max-h-[34vh] shrink-0 overflow-y-auto md:max-h-[46vh]">
           <PortraitCarousel characters={activeCharacters} onOpenImage={setLightbox} />
         </div>
         <StatusSidebar
           session={active}
-          characters={characters}
+          characters={visibleCharacters}
           autoSpeak={autoSpeak}
           voiceName={engines.find((e) => e.id === speakEngine)?.name ?? '晓晓'}
           speaking={playingKey !== null}
           onToggleAutoSpeak={() => setAutoSpeak((v) => !v)}
           onSpeak={() => {
-            if (lastAssistantText) speakText(lastAssistantText, `${active.id}:last`)
+            if (lastAssistantText) speakText(lastAssistantText, `${sessionKey}:last`)
             else setErrorText('还没有可朗读的回复')
           }}
           onStop={() => stopSpeak()}
@@ -2253,7 +2303,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
                   title="按当前角色的形态重设为外貌提示词"
                   disabled={!appearForm || !active}
                   onClick={() => {
-                    const char = characters.find((c) => c.id === active?.characterIds[0])
+                    const char = visibleCharacters.find((c) => c.id === active?.characterIds[0])
                     if (!char) return
                     const appearance = buildAppearancePrompt(char)
                     if (!appearance) return
@@ -2439,7 +2489,7 @@ export default function ChatView({ characters, initialSessionId, onOpenProfile, 
       {/* 记忆浮层（§9.2/§9.3）：家记忆 + 各人的个人记忆，可增可删可重建索引 */}
       {memoryOpen && (
         <MemoryPanel
-          characters={characters}
+          characters={visibleCharacters}
           sessionKind={active.kind === 'single' ? 'single' : 'group'}
           characterIds={active.characterIds}
           onClose={() => setMemoryOpen(false)}

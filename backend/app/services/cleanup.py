@@ -29,8 +29,16 @@ def delete_messages(ids: list[str]) -> dict:
     clean = [i for i in (ids or []) if i]
     if not clean:
         return {"deleted": 0, "files_removed": 0, "gallery_removed": 0}
+    return _purge(db.delete_messages_by_ids(clean))
 
-    removed = db.delete_messages_by_ids(clean)
+
+def delete_session(session_id: str) -> dict:
+    """清空一整个会话（含图片级联）。删掉一份身份档案时用（§22）。"""
+    return _purge(db.delete_messages_by_session(session_id))
+
+
+def _purge(removed: list[dict]) -> dict:
+    """已删的消息行 → 回收孤儿图片文件 + 连带画廊收藏。"""
     if not removed:
         return {"deleted": 0, "files_removed": 0, "gallery_removed": 0}
 

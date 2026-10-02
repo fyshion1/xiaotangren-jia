@@ -34,13 +34,34 @@ export type ChatMessage = {
   createdAt?: string
 }
 
-// 大老大 = 用户本人（见 seed_characters.py 文件头 ⚠）。她有完整档案（介绍 / 立绘 /
-// 两个形态 / 专属画廊），但不作为群聊的默认在场角色 —— 否则模型分饰多角时会以为要
-// 「扮演大老大」，和用户自己发的消息打架。私聊照常生成，那是她画廊的落点。
-export const SELF_CHARACTER_ID = 'dalaoda'
+// 默认身份（大老大）的 id。同时也是「会话 id 不加后缀」的那个身份（§22）。
+export const MAIN_PERSONA_ID = 'dalaoda'
+
+// 兼容旧引用：大老大以前混在 characters 里，现在搬到「私人空间」的档案里（§22）。
+export const SELF_CHARACTER_ID = MAIN_PERSONA_ID
+
+/**
+ * 用户身份的会话隔离（§22）：**每个身份各自一条聊天记录**（用户拍板）。
+ *
+ * 默认身份保持原样（`group` / `single-<charId>`），这样老库里已有的历史一条不丢；
+ * 其余身份一律加 `"<身份>@"` 前缀（如 `xizi@group`）。
+ * 记忆不受影响 —— 记忆以角色 id 为键，与用户视角无关。
+ */
+export function personaSessionId(personaId: string, sessionId: string): string {
+  return !personaId || personaId === MAIN_PERSONA_ID ? sessionId : `${personaId}@${sessionId}`
+}
+
+/** 能作为「可聊角色」出场的身份档案：不是当前身份，且档案上的开关打开（§22）。 */
+export function personasAsCast(profiles: CharacterProfile[], activePersonaId: string): CharacterProfile[] {
+  return profiles.filter((p) => p.id !== activePersonaId && p.asCharacter)
+}
 
 // 由当前角色列表生成默认会话：一个群聊 + 每个小糖人的私聊。
-export function buildSessions(chars: CharacterProfile[]): ChatSession[] {
+//
+// `extra` 是「别的身份」在当前视角下现身的样子（§22）：切到汐子时，大老大会作为一位
+// 可聊角色加进来。会话 id 照旧 `group` / `single-dalaoda` —— 隔离靠 personaSessionId
+// 加前缀，与阵容本身无关。
+export function buildSessions(chars: CharacterProfile[], extra: CharacterProfile[] = []): ChatSession[] {
   const cast = chars.filter((c) => c.id !== SELF_CHARACTER_ID).map((c) => c.id)
   const group: ChatSession = {
     id: 'group',
@@ -58,7 +79,15 @@ export function buildSessions(chars: CharacterProfile[]): ChatSession[] {
     subtitle: c.alias,
     characterIds: [c.id],
   }))
-  return [group, ...singles]
+  const extraSingles: ChatSession[] = extra.map((p) => ({
+    id: `single-${p.id}`,
+    kind: 'single' as const,
+    name: p.name,
+    emoji: p.emoji,
+    subtitle: p.alias || '另一份身份档案',
+    characterIds: [p.id],
+  }))
+  return [group, ...singles, ...extraSingles]
 }
 
 // ---- 右侧状态栏（壳子）----

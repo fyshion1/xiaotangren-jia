@@ -14,6 +14,7 @@ from .routers import (
     images,
     memory,
     messages,
+    profiles,
     voice,
     worldbook,
 )
@@ -46,6 +47,7 @@ app.include_router(messages.router, prefix="/api")
 app.include_router(memory.router, prefix="/api")
 app.include_router(gallery.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
+app.include_router(profiles.router, prefix="/api")
 app.include_router(worldbook.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 

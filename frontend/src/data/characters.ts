@@ -66,6 +66,11 @@ export type CharacterProfile = {
   baseFormName?: string // 基础形态的显示名（如「第一形态 · 粉发」），未填则用默认名
   forms?: CharacterForm[] // 其余形态（只存覆盖项）
   activeFormId?: string // 当前激活形态；缺省 = BASE_FORM_ID
+  // ---- 个人档案（§22）专用：只有「私人空间」里的身份档案才带这两个字段 ----
+  /** 这个身份**与在场小糖人们的关系**。组装 Prompt 时注入，替代写死的「哥哥/姐姐」。 */
+  relation?: string
+  /** 当你**不是**这个身份时，她要不要作为可聊角色出现在角色介绍 / 群聊默认阵容。 */
+  asCharacter?: boolean
 }
 
 /** 后端拉不到人设时的应急占位（正常路径见 api/client.ts 的 fetchCharacters）。 */
@@ -103,6 +108,8 @@ export const PROFILE_FALLBACK: CharacterProfile[] = [
     weakPoint: '',
     privateWish: '',
     baseFormName: '第一形态 · 日常',
+    relation: '你是小糖人之家的主人 —— 大诗音、小诗音、小白、小红薯头共同的主人。',
+    asCharacter: true,
   },
   {
     id: 'dashiyin',
@@ -231,5 +238,82 @@ export const PROFILE_FALLBACK: CharacterProfile[] = [
     secret: '',
     weakPoint: '',
     privateWish: '',
+  },
+]
+
+/**
+ * 私人空间（§22）的应急占位：后端拉不到 `GET /api/profiles` 时，至少让那一排身份卡片
+ * 有东西可点（否则「私人空间」整页空白）。真正的档案内容在后端 `seed_profiles.py`，
+ * 这里只放能认出来的最小信息 —— 别在第二处维护人设副本（见文件头）。
+ */
+export const PERSONA_FALLBACK: CharacterProfile[] = [
+  {
+    id: 'dalaoda',
+    name: '大老大',
+    jp: 'ビッグボス',
+    alias: '本家主人 · 小糖人们围着转的那个人',
+    emoji: '🐻',
+    about: '你是「大老大」，小糖人之家的主人 —— 这个家里唯一的人类。',
+    birthday: '1 月 1 日',
+    age: '秘密（被问会糊弄过去）',
+    height: '照着镜子自己填',
+    bloodType: '保密',
+    constellation: '摩羯座',
+    personality: [],
+    likes: [],
+    dislikes: [],
+    catchphrase: '',
+    bodyType: '',
+    eyeColor: '',
+    hairstyle: '',
+    hairColor: '',
+    bust: '—',
+    hip: '—',
+    clothing: '',
+    occupation: '',
+    relationships: '',
+    specialFeatures: '',
+    weight: '',
+    measurements: '—',
+    secret: '',
+    weakPoint: '',
+    privateWish: '',
+    relation: '你是小糖人之家的主人 —— 大诗音、小诗音、小白、小红薯头共同的主人。',
+    asCharacter: true,
+  },
+  {
+    id: 'xizi',
+    name: '汐子',
+    jp: 'しおこ / シオコ',
+    alias: '大老大的性转独立体 · 家里新来的女孩',
+    emoji: '🌊',
+    about: '你是「汐子」，小糖人之家新来的女孩 —— 大老大分化出来的女性独立体。',
+    birthday: '1 月 1 日',
+    age: '秘密（被问会糊弄过去）',
+    height: '比大老大矮一点点',
+    bloodType: '保密',
+    constellation: '摩羯座',
+    personality: [],
+    likes: [],
+    dislikes: [],
+    catchphrase: '',
+    bodyType: '',
+    eyeColor: '',
+    hairstyle: '',
+    hairColor: '',
+    bust: '—',
+    hip: '—',
+    clothing: '',
+    occupation: '',
+    relationships: '',
+    specialFeatures: '',
+    weight: '',
+    measurements: '—',
+    secret: '',
+    weakPoint: '',
+    privateWish: '',
+    relation: '你是「汐子」—— 大老大分化出来的女性独立体，和他同源、却以女生的身份独立存在。',
+    // 她是**身份**不是角色：永远不进角色介绍 / 群聊阵容。
+    asCharacter: false,
   },
 ]

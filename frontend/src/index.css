@@ -45,6 +45,18 @@ body,
 #root {
   height: 100%;
 }
+/* 手机端滚动语义（§19.21）：整页本身不滚，滚动全在各视图内部 —— 否则浏览器地址栏收放
+   会让 100vh > 可视高度，多出一截可滚区间把顶栏和聊天输入栏一起带走。
+   注意**不能给 body 加 overflow:hidden**（§19.23）：介绍页 / 小窝 / 私人空间在桌面端是
+   靠 body 自己滚的，一旦锁死，这些页面在电脑和手机上都完全滑不动。
+   max-height:100% 已经足够 —— 高度不溢出，body 就没有可滚区间，
+   滚动天然只发生在视图内部；溢出时（那几个页面）又能正常滚。 */
+html,
+body {
+  height: 100%;
+  max-height: 100%;
+  overscroll-behavior: none;
+}
 body {
   margin: 0;
   color: var(--text);
@@ -222,6 +234,68 @@ body {
   border-color: var(--pink);
   color: var(--pink-deep);
   font-weight: 600;
+}
+
+/* ===== 身份卡片（§22 私人空间）=====
+   一条胶囊里塞两块可点区域：左边点开看档案，右边那个按钮才真的换视角。
+   「不点就不成为」—— 只是想看看的时候不会被顺手换掉身份。 */
+.persona-card {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 5px 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 14px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.persona-card:hover {
+  border-color: var(--border-strong);
+}
+.persona-card.on {
+  border-color: var(--pink);
+  box-shadow: 0 8px 20px rgba(242, 126, 158, 0.18);
+}
+.persona-card > button:first-child {
+  transition: color 0.15s;
+}
+.persona-card > button:first-child:hover {
+  color: var(--pink-deep);
+}
+.persona-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--pink-soft);
+  color: var(--pink-deep);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.persona-become {
+  flex: none;
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--pink);
+  background: var(--pink);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: nowrap;
+  transition: opacity 0.15s, background 0.15s;
+}
+.persona-become:hover:not(:disabled) {
+  opacity: 0.88;
+}
+.persona-become:disabled {
+  cursor: default;
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-3);
 }
 
 /* ===== 立绘占位区 ===== */
