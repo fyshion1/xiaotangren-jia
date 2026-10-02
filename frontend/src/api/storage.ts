@@ -35,6 +35,7 @@ export function toChatMessage(s: StoredMessage): ChatMessage {
     segments: s.segments?.length ? s.segments : undefined,
     seq: s.seq,
     dbId: s.id,
+    createdAt: s.created_at,
   }
 }
 

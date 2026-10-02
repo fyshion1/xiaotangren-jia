@@ -5,10 +5,11 @@ import ChatView from './components/ChatView'
 import NestView from './components/NestView'
 import type { CharacterProfile } from './data/characters'
 import { PROFILE_FALLBACK } from './data/characters'
+import { SELF_CHARACTER_ID } from './data/chats'
 import { fetchCharacters, saveCharacter } from './api/client'
 
 type Theme = 'light' | 'dark'
-type View = 'home' | 'chat' | 'nest'
+type View = 'home' | 'chat' | 'nest' | 'space'
 
 const THEME_KEY = 'xtr.theme'
 
@@ -94,6 +95,17 @@ export default function App() {
           />
         ) : view === 'nest' ? (
           <NestView />
+        ) : view === 'space' ? (
+          /* 私人空间（§21）：你自己的档案页 —— 复用角色介绍页的全部内容，
+             只钉死在大老大身上、且不给成员切换（space）。 */
+          <HomeView
+            characters={characters}
+            initialCharId={SELF_CHARACTER_ID}
+            space
+            onSaveChar={onSaveChar}
+            onEnterChat={openChat}
+            onOpenNest={() => setView('nest')}
+          />
         ) : (
           <ChatView
             characters={characters}

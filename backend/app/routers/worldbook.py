@@ -14,11 +14,14 @@ class WorldbookBody(BaseModel):
     content: str = ""
     enabled: bool = True
     priority: int = 0
+    # 归属（§19）：'' = 家共用（群聊用），<角色 id> = 那位角色的专属
+    owner: str = ""
 
 
 @router.get("/worldbook")
-async def list_worldbook() -> list[dict]:
-    return db.list_worldbook()
+async def list_worldbook(owner: str | None = None) -> list[dict]:
+    """`?owner=` 过滤出某一档；不带参数 = 全部（编辑面板用）。"""
+    return db.list_worldbook(owner)
 
 
 @router.post("/worldbook")

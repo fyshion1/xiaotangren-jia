@@ -4,8 +4,8 @@
 // owner（§9.4 归属）：不传 = 全量（兼容旧调用）；'' = 家共用；<charId> = 该角色专属。
 // 介绍页传当前角色的 id，小窝传 ''。
 
-import { useEffect, useState } from 'react'
-import { fetchGallery, type GalleryItem } from '../api/gallery'
+import { useEffect, useRef, useState } from 'react'
+import { fetchGallery, uploadToGallery, type GalleryItem } from '../api/gallery'
 
 const CELLS = [
   { cls: 't1', emoji: '🌸', cap: '日常 · 烘焙坊', framed: true },
@@ -26,6 +26,11 @@ type Props = {
 export default function GalleryGrid({ owner, variant = 'character' }: Props) {
   const [items, setItems] = useState<GalleryItem[]>([])
   const [lightbox, setLightbox] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadErr, setUploadErr] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const reload = () => fetchGallery(owner)
 
   useEffect(() => {
     let cancelled = false
@@ -41,6 +46,22 @@ export default function GalleryGrid({ owner, variant = 'character' }: Props) {
     }
   }, [owner])
 
+  // 直接上传到本页固定的归属（§9.4）：介绍页 = 该角色，小窝 = 家共用。
+  // 需要改归属的场合去聊天的 🖼 画廊（那里有选择器）。
+  async function pickAndUpload(file: File) {
+    setUploading(true)
+    setUploadErr('')
+    try {
+      await uploadToGallery(file, { owner: owner ?? '' })
+      setItems((await reload()).filter((g) => g.thumb || g.orig))
+    } catch (e) {
+      setUploadErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
   useEffect(() => {
     if (!lightbox) return
     const onKey = (e: KeyboardEvent) => {
@@ -55,12 +76,32 @@ export default function GalleryGrid({ owner, variant = 'character' }: Props) {
 
   return (
     <section className="mt-10">
-      <div className="mb-4 flex items-baseline gap-3">
+      <div className="mb-4 flex flex-wrap items-baseline gap-3">
         <h2 className="text-[20px] font-extrabold tracking-wide">{isHome ? '共同回忆 · 画廊' : '画廊'}</h2>
         <span className="text-[13px] text-[var(--text-3)]">
           {isHome ? 'Home Gallery' : 'Gallery'} · {hasReal ? `已收藏 ${items.length} 张` : isHome ? '全家的合照都放这儿' : 'CG / 立绘 · 在个人介绍下方'}
         </span>
+        <button
+          type="button"
+          className="btn ml-auto text-[13px]"
+          disabled={uploading}
+          onClick={() => fileRef.current?.click()}
+          title={isHome ? '上传到「家 · 共用」' : '上传到这位小糖人的专属画廊'}
+        >
+          {uploading ? '上传中…' : '＋ 上传图片'}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) void pickAndUpload(f)
+          }}
+        />
       </div>
+      {uploadErr && <p className="mb-3 text-[12px] text-[var(--pink-deep)]">上传失败：{uploadErr}</p>}
 
       <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-6">
         {hasReal

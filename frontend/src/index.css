@@ -186,6 +186,7 @@ body {
   height: 30px;
   border-radius: 50%;
   flex: none;
+  overflow: hidden;
   background: linear-gradient(135deg, #fff, #f4e0d0);
   color: var(--pink-deep);
   display: inline-flex;

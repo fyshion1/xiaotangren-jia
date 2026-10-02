@@ -38,8 +38,10 @@ export async function createCharacter(char: Omit<CharacterProfile, 'id'> & { id?
   })
 }
 
-export async function fetchWorldbook(): Promise<WorldbookEntry[]> {
-  return asJson<WorldbookEntry[]>('/api/worldbook')
+/** owner 不传 = 全部（编辑面板）；传 '' = 家共用那一档（群聊）；传角色 id = 那位的专属。 */
+export async function fetchWorldbook(owner?: string): Promise<WorldbookEntry[]> {
+  const qs = owner === undefined ? '' : `?owner=${encodeURIComponent(owner)}`
+  return asJson<WorldbookEntry[]>(`/api/worldbook${qs}`)
 }
 
 export async function createWorldbookEntry(

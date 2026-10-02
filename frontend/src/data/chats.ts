@@ -29,6 +29,9 @@ export type ChatMessage = {
   // 落库后的行 id（'m-<hex>'）。单条真删、⭐ 存画廊的 message_id 级联都要它；
   // 未落库的临时消息为空 —— 那类消息只能从本地 state 剔除，删不了库。
   dbId?: string
+  /** 落库时间（SQLite 的 `datetime('now')`，UTC，形如 '2026-10-02 05:39:12'）。
+   *  未落库的临时消息为空 —— 界面上那几秒不显示时间戳，落库回填后补上（§19）。 */
+  createdAt?: string
 }
 
 // 大老大 = 用户本人（见 seed_characters.py 文件头 ⚠）。她有完整档案（介绍 / 立绘 /

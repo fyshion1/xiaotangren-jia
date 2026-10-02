@@ -8,6 +8,8 @@ export type WorldbookEntry = {
   content: string
   enabled: boolean
   priority: number
+  /** 归属（§19）：'' = 家共用（群聊用），<角色 id> = 那位角色的专属 */
+  owner: string
   updated_at: string
 }
 

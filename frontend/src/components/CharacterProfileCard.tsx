@@ -1,13 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import { activeFormId, listForms, resolveForm } from '../lib/forms'
+import { extractPalette, firstFrameOf, isGif, paletteGradient } from '../lib/portraitFx'
 
 type Props = {
   p: CharacterProfile
   onEdit: () => void
   onEnterChat: () => void
-  /** 切换形态（§17）。缺省时不渲染形态 chip —— 没配形态的角色卡片保持原样。 */
+  /** 切换形态（§17）。缺省时不渲染形态 chip —— 没配形态的角色保持原样。 */
   onSwitchForm?: (formId: string) => void
+  /** 点立绘看高清原图（§19.13）。缺省时立绘不可点 —— 保持原样。 */
+  onOpenPortrait?: (src: string) => void
 }
 
 function Attr({ k, children, priv }: { k: string; children: React.ReactNode; priv?: boolean }) {
@@ -34,16 +37,47 @@ function Chips({ items }: { items: string[] }) {
   )
 }
 
-export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchForm }: Props) {
+export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchForm, onOpenPortrait }: Props) {
   const [showPriv, setShowPriv] = useState(false)
-  // 立绘三态循环：静态图片/GIF → Live2D（2D）→ 3D（VRM）→ 回到静态。模型后续替换，现在只占位。
+  // 立绘显示方式（§19）：静态 / Live2D 占位 / 3D 占位。用左上角标签里的下拉切换，
+  // 不再是「点整张图循环」（那样每次点图都会误切，而且没有提示当前是哪个）。
   const [portraitMode, setPortraitMode] = useState<'image' | 'live2d' | 'vrm'>('image')
+  const [modeOpen, setModeOpen] = useState(false)
+  // 取色底（§19）：立绘多为不透明整幅图，object-contain 会留生硬直角 ——
+  // 量出图里的主色铺成柔和渐变化进背景（参考图那种纵向色带的感觉）。
+  const [palette, setPalette] = useState<string[]>([])
+  // GIF 只在鼠标移上去时播放（§19）：静止态显示首帧静态图
+  const [hovering, setHovering] = useState(false)
+  const [firstFrame, setFirstFrame] = useState<string | null>(null)
 
   // 形态（§17）：没配形态的角色 = 只有基础形态，chip 不渲染，页面与从前一模一样。
   const forms = listForms(p)
   const hasForms = forms.length > 1
   const curFormId = activeFormId(p)
   const view = resolveForm(p).profile
+
+  const portrait = view.portrait
+  const gif = Boolean(portrait && isGif(portrait))
+
+  // 换角色 / 换形态 / 换立绘 → 重新量主色与首帧
+  useEffect(() => {
+    let cancelled = false
+    setPalette([])
+    setFirstFrame(null)
+    setHovering(false)
+    if (!portrait) return
+    void extractPalette(portrait).then((pal) => {
+      if (!cancelled && pal?.colors.length) setPalette(pal.colors)
+    })
+    if (isGif(portrait)) {
+      void firstFrameOf(portrait).then((frame) => {
+        if (!cancelled) setFirstFrame(frame)
+      })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [portrait])
 
   const priv: [string, string][] = [
     ['体重', view.weight],
@@ -53,27 +87,106 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
     ['私密小愿望', view.privateWish],
   ]
 
-  const cyclePortrait = () => {
-    setPortraitMode((m) => (m === 'image' ? 'live2d' : m === 'live2d' ? 'vrm' : 'image'))
-  }
-
-  const modeBadge =
-    portraitMode === 'image' ? '静态图片 / GIF 占位' : portraitMode === 'live2d' ? 'Live2D（2D）占位' : '3D（VRM）占位'
+  const MODES = [
+    { id: 'image' as const, label: '静态图片 / GIF', hint: '显示上传的立绘；GIF 只在鼠标移上去时播放' },
+    { id: 'live2d' as const, label: 'Live2D（2D）占位', hint: '规划中：接入 pixi-live2d-display' },
+    { id: 'vrm' as const, label: '3D（VRM）占位', hint: '规划中：接入 three.js + three-vrm' },
+  ]
+  const modeLabel = MODES.find((m) => m.id === portraitMode)?.label ?? ''
 
   return (
     <section
       className="grid overflow-hidden rounded-[22px] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow)] md:grid-cols-[320px_1fr]"
       style={{ gridAutoRows: 'auto' }}
     >
-      {/* 左：立绘占位 */}
-      <button type="button" onClick={cyclePortrait} className="portrait relative flex min-h-[280px] items-center justify-center overflow-hidden md:min-h-0" title="点击切换立绘：静态/GIF → Live2D → 3D">
-        <span className="absolute left-3.5 top-3.5 rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_80%,transparent)] px-2.5 py-0.5 text-[11px] text-[var(--text-2)]">
-          {modeBadge}
+      {/* 左：立绘区。显示方式由左上角标签里的下拉控制（§19），不再点整张图切换 */}
+      <div
+        className="portrait relative flex min-h-[280px] items-center justify-center overflow-hidden md:min-h-0"
+        style={palette.length ? { background: paletteGradient(palette) } : undefined}
+      >
+        {/* 剩余占区用图自己填：放大 + 重模糊铺满 → 就是「取背景色做滤镜模糊」那层。
+            object-cover 保证铺满，blur-3xl 把内容糊成色雾，不会露出直角边。
+            GPU 只吃这一张底图；GIF 用首帧静态图，免得底下也在一直播。 */}
+        {portraitMode === 'image' && portrait && (
+          <img
+            src={gif && firstFrame ? firstFrame : portrait}
+            alt=""
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-0 h-full w-full scale-150 object-cover opacity-60 blur-3xl"
+          />
+        )}
+        {/* 左上角标签 = 下拉选择器（§19） */}
+        <div className="absolute left-3.5 top-3.5 z-[6]">
+          <button
+            type="button"
+            onClick={() => setModeOpen((v) => !v)}
+            className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_85%,transparent)] px-2.5 py-0.5 text-[11px] text-[var(--text-2)] backdrop-blur transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
+            title="选择立绘的显示方式"
+          >
+            {modeLabel}
+            <span className={`text-[9px] transition ${modeOpen ? 'rotate-180' : ''}`}>▼</span>
+          </button>
+          {modeOpen && (
+            <>
+              {/* 点外面关掉 */}
+              <span className="fixed inset-0 z-[4]" onClick={() => setModeOpen(false)} />
+              <div className="absolute left-0 top-full z-[5] mt-1 w-[176px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1 shadow-[var(--shadow)]">
+                {MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => {
+                      setPortraitMode(m.id)
+                      setModeOpen(false)
+                    }}
+                    title={m.hint}
+                    className={`block w-full px-3 py-1.5 text-left text-[12px] transition hover:bg-[var(--surface-2)] ${
+                      m.id === portraitMode ? 'font-semibold text-[var(--pink-deep)]' : 'text-[var(--text-2)]'
+                    }`}
+                  >
+                    {m.id === portraitMode ? '✓ ' : ''}
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+        <span className="absolute bottom-2.5 right-3 z-[6] text-[11px] text-[var(--text-3)]">
+          {gif && portraitMode === 'image' ? '鼠标移上去播放 GIF' : '待替换实机模型'}
         </span>
-        <span className="absolute bottom-2.5 right-3 text-[11px] text-[var(--text-3)]">点击切换 · 待替换实机模型</span>
+        {/* 过渡（§8.6 / §19）：上面那层模糊色雾已经让边缘不硬了，
+            这里只再压一层很淡的四周渐隐（左右一样深），避免图的四边留下刀切感。
+            旧做法是「下沿一道 45% 的卡片底色渐变」—— 那道边本身就是硬边，所以换掉。 */}
+        {portraitMode === 'image' && portrait && (
+          <span
+            className="pointer-events-none absolute inset-0 z-[3]"
+            style={{
+              background:
+                'radial-gradient(115% 88% at 50% 50%, transparent 58%, color-mix(in srgb, var(--surface) 55%, transparent) 100%)',
+            }}
+          />
+        )}
         {portraitMode === 'image' ? (
-          view.portrait ? (
-            <img src={view.portrait} alt={view.name} className="pointer-events-none h-full w-full object-contain" />
+          portrait ? (
+            /* 点立绘 = 看高清原图（§19.13）。原来右下角那个「查看立绘大图」按钮
+               没有任何 onClick，是个死按钮，已删掉 —— 直接点图更直觉。
+               object-contain 的框比图大，所以按钮自己不吃点击，只有图那块响应。 */
+            <button
+              type="button"
+              onClick={() => onOpenPortrait?.(portrait)}
+              disabled={!onOpenPortrait}
+              className="relative z-[2] flex h-full w-full cursor-zoom-in items-center justify-center disabled:cursor-default"
+              title="点开看高清原图"
+            >
+              <img
+                src={gif && !hovering && firstFrame ? firstFrame : portrait}
+                alt={view.name}
+                onMouseEnter={() => setHovering(true)}
+                onMouseLeave={() => setHovering(false)}
+                className="h-full w-full object-contain drop-shadow-[0_18px_28px_rgba(90,60,40,0.18)]"
+              />
+            </button>
           ) : (
             <div className="mb-4 text-[130px] leading-none drop-shadow-[0_14px_20px_rgba(140,96,58,0.18)]">{view.emoji}</div>
           )
@@ -88,7 +201,7 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
             <span className="text-[12px]">VRM 3D 模型占位 · 后续 three.js + three-vrm</span>
           </div>
         )}
-      </button>
+      </div>
 
       {/* 右：信息 */}
       <div className="flex flex-col p-6 md:p-7 md:pl-3">
@@ -174,7 +287,6 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
         {/* CTA */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <button className="btn" onClick={onEnterChat}>进入她的小窝 · 聊天</button>
-          <button className="btn ghost">查看立绘大图</button>
           <button className="btn ghost sm ml-auto" onClick={onEdit}>
             ✎ 编辑资料
           </button>

@@ -16,9 +16,10 @@ type Draft = {
   content: string
   enabled: boolean
   priority: number
+  owner: string
 }
 
-const EMPTY: Draft = { id: '', title: '', keywords: '', content: '', enabled: true, priority: 0 }
+const EMPTY: Draft = { id: '', title: '', keywords: '', content: '', enabled: true, priority: 0, owner: '' }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -29,19 +30,33 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-export default function WorldbookPanel() {
+type Props = {
+  /**
+   * 这一页只管哪个归属的世界书（§19）：角色介绍页传 <charId>，糖人小窝传 ''（家共用）。
+   * 新词条的归属固定 = 这个值，面板里不给下拉 —— 跟画廊「归属由所在页面决定」一个道理。
+   */
+  owner: string
+  /** 归属名字，只用于文案（如「大诗音的世界书」/「家 · 共用世界书」）。 */
+  ownerLabel: string
+}
+
+export default function WorldbookPanel({ owner, ownerLabel }: Props) {
   const [entries, setEntries] = useState<WorldbookEntry[]>([])
+  const [shared, setShared] = useState<WorldbookEntry[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   const reload = useCallback(async () => {
     try {
-      setEntries(await fetchWorldbook())
+      // 角色页在这里把「家共用」也列出来（只读），让人看得见私聊时还有哪些共用条目会生效
+      const [mine, home] = await Promise.all([fetchWorldbook(owner), fetchWorldbook('')])
+      setEntries(mine)
+      setShared(owner === '' ? [] : home)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [owner])
 
   useEffect(() => {
     reload()
@@ -70,6 +85,7 @@ export default function WorldbookPanel() {
           content: draft.content,
           enabled: draft.enabled,
           priority: draft.priority,
+          owner,
         })
       }
       setDraft(null)
@@ -79,7 +95,7 @@ export default function WorldbookPanel() {
     } finally {
       setBusy(false)
     }
-  }, [draft, entries, reload])
+  }, [draft, entries, reload, owner])
 
   const toggleEnabled = useCallback(
     async (e: WorldbookEntry) => {
@@ -112,13 +128,16 @@ export default function WorldbookPanel() {
   return (
     <section className="mt-10">
       <div className="mb-4 flex items-baseline gap-3">
-        <h2 className="text-[20px] font-extrabold tracking-wide">世界书</h2>
+        <h2 className="text-[20px] font-extrabold tracking-wide">世界书 · {ownerLabel}</h2>
         <span className="text-[13px] text-[var(--text-3)]">World Info · 关键词触发的设定集</span>
       </div>
 
       <p className="mb-4 rounded-[14px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)] px-4 py-2.5 text-[13px] text-[var(--text-2)]">
         世界书 = 你预先写好的静态设定。聊天最近几轮里出现「关键词」里任意一个词，就会把这条设定临时注入
         给模型（不会常驻，只在相关时出现）。用纯文本关键词，逗号分隔即可；优先数越大越靠前注入。
+        <br />
+        世界书按归属分家（§19）：这一页只放<b className="text-[var(--pink-deep)]">{ownerLabel}</b>的词条。
+        {owner === '' ? '群聊里生效的就是这一档。' : '私聊时，这一位自己的词条 + 「家 · 共用」的词条会一起生效。'}
       </p>
 
       {error && <p className="mb-3 text-[13px] text-[var(--pink-deep)]">⚠ {error}</p>}
@@ -165,9 +184,43 @@ export default function WorldbookPanel() {
           </div>
         ))}
         {entries.length === 0 && (
-          <p className="text-[13px] text-[var(--text-3)]">还没有词条，点右上角「新增词条」创建一条。</p>
+          <p className="text-[13px] text-[var(--text-3)]">
+            这里还没有词条，点右上角「新增词条」创建一条。
+          </p>
         )}
       </div>
+
+      {/* 角色页里只读列出家共用词条（要改请去「糖人小窝」）—— 让「私聊时哪些共用设定会跟着生效」一眼可见 */}
+      {shared.length > 0 && (
+        <div className="mt-6">
+          <p className="mb-2 text-[13px] text-[var(--text-3)]">
+            另外，下面这些<b>家 · 共用</b>词条在她私聊时也会生效（在「🏠 糖人小窝」里编辑）：
+          </p>
+          <div className="space-y-2">
+            {shared.map((e) => (
+              <div
+                key={e.id}
+                className="rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)] px-4 py-3"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-[14px] font-semibold text-[var(--text-2)]">{e.title}</span>
+                  <span className={`text-[11px] ${e.enabled ? 'text-[var(--text-3)]' : 'text-[var(--pink-deep)]'}`}>
+                    {e.enabled ? '' : '（已停用）'}
+                  </span>
+                  <span className="ml-auto text-[12px] text-[var(--text-3)]">优先 {e.priority}</span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {keywordList(e).map((k) => (
+                    <span key={k} className="chip">
+                      {k}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {draft && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm">

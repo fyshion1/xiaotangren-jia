@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS worldbook (
     content TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     priority INTEGER NOT NULL DEFAULT 0,
+    owner TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS settings (
@@ -89,6 +90,9 @@ _GALLERY_INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_orig_owner ON gallery (orig, owner)",
 )
 
+# 世界书的归属索引同理，也必须等 ALTER 补完 owner 列再建（§19）。
+_WORLDBOOK_INDEXES = ("CREATE INDEX IF NOT EXISTS idx_worldbook_owner ON worldbook (owner)",)
+
 
 @contextmanager
 def _tx() -> Iterator[sqlite3.Connection]:
@@ -115,6 +119,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for sql in _GALLERY_INDEXES:
         conn.execute(sql)
     conn.execute("DROP INDEX IF EXISTS idx_gallery_orig")
+
+    # 世界书同样按归属分家（§19）：和画廊一个套路。
+    # 老库的世界书全部落成 ''（= 家共用），所以升级后旧词条仍然是全家共享的，行为不变。
+    wb_cols = {r["name"] for r in conn.execute("PRAGMA table_info(worldbook)")}
+    if "owner" not in wb_cols:
+        conn.execute("ALTER TABLE worldbook ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
+    for sql in _WORLDBOOK_INDEXES:
+        conn.execute(sql)
 
 
 def init_db() -> None:
@@ -181,15 +193,22 @@ def _row_to_entry(row: sqlite3.Row) -> dict:
         "content": row["content"],
         "enabled": bool(row["enabled"]),
         "priority": row["priority"],
+        # 归属：'' = 家共用（群聊 / 未指定时用），<角色 id> = 那位角色的专属（§19）
+        "owner": row["owner"] or "",
         "updated_at": row["updated_at"],
     }
 
 
-def list_worldbook() -> list[dict]:
+def list_worldbook(owner: str | None = None) -> list[dict]:
+    """owner=None 取全部；给了值就只取那一档（'' 即家共用）。"""
     with _tx() as conn:
-        rows = conn.execute(
-            "SELECT * FROM worldbook ORDER BY priority DESC, rowid"
-        ).fetchall()
+        if owner is None:
+            rows = conn.execute("SELECT * FROM worldbook ORDER BY priority DESC, rowid").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM worldbook WHERE owner = ? ORDER BY priority DESC, rowid",
+                (owner,),
+            ).fetchall()
     return [_row_to_entry(r) for r in rows]
 
 
@@ -203,8 +222,8 @@ def create_worldbook(entry: dict) -> dict:
     entry_id = f"wb-{uuid.uuid4().hex[:10]}"
     with _tx() as conn:
         conn.execute(
-            "INSERT INTO worldbook (id, title, keywords, content, enabled, priority) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO worldbook (id, title, keywords, content, enabled, priority, owner) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 entry_id,
                 entry["title"],
@@ -212,6 +231,7 @@ def create_worldbook(entry: dict) -> dict:
                 entry["content"],
                 int(entry["enabled"]),
                 int(entry["priority"]),
+                entry.get("owner") or "",
             ),
         )
     row = get_worldbook(entry_id)
@@ -223,13 +243,14 @@ def update_worldbook(entry_id: str, entry: dict) -> None:
     with _tx() as conn:
         conn.execute(
             "UPDATE worldbook SET title=?, keywords=?, content=?, enabled=?, priority=?, "
-            "updated_at=datetime('now') WHERE id=?",
+            "owner=?, updated_at=datetime('now') WHERE id=?",
             (
                 entry["title"],
                 entry["keywords"],
                 entry["content"],
                 int(entry["enabled"]),
                 int(entry["priority"]),
+                entry.get("owner") or "",
                 entry_id,
             ),
         )

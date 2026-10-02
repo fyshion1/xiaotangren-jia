@@ -97,17 +97,22 @@ def _group_director(names: list[str]) -> str:
     )
 
 
-def _worldbook_hits(texts: list[str]) -> list[dict]:
+def _worldbook_hits(texts: list[str], owners: list[str]) -> list[dict]:
+    """世界书按归属分家（§19）：私聊只吃自己那位 + 家共用；群聊只吃家共用。
+
+    owners 由调用方按在场人数决定，这里只管把这几档拿去匹配。
+    """
     blob = "\n".join(texts).lower()
     hits: list[dict] = []
-    for entry in db.list_worldbook():
-        if not entry.get("enabled", True):
-            continue
-        keywords = [k.strip() for k in (entry.get("keywords") or "").split(",") if k.strip()]
-        if not keywords:
-            continue
-        if any(kw.lower() in blob for kw in keywords):
-            hits.append(entry)
+    for owner in owners:
+        for entry in db.list_worldbook(owner):
+            if not entry.get("enabled", True):
+                continue
+            keywords = [k.strip() for k in (entry.get("keywords") or "").split(",") if k.strip()]
+            if not keywords:
+                continue
+            if any(kw.lower() in blob for kw in keywords):
+                hits.append(entry)
     hits.sort(key=lambda e: -(e.get("priority") or 0))
     return hits
 
@@ -145,7 +150,9 @@ def build_system_prompt(
         parts.append(DEFAULT_PERSONA)
 
     recent = [str(m.get("content") or "") for m in messages[-WORLDBOOK_WINDOW:]]
-    hits = _worldbook_hits(recent)
+    # 世界书归属（§19）：单人在场 → 她的专属 + 家共用；多人 / 无人在场 → 只有家共用。
+    wb_owners = [""] if len(profiles) != 1 else [profiles[0].get("id") or "", ""]
+    hits = _worldbook_hits(recent, wb_owners)
     if hits:
         block = ["【当前场景背景 · 世界书】"]
         for h in hits:

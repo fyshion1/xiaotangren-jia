@@ -4,6 +4,7 @@
 
 import { useState } from 'react'
 import GalleryGrid from './GalleryGrid'
+import WorldbookPanel from './WorldbookPanel'
 
 const PLACEHOLDERS = [
   {
@@ -65,6 +66,9 @@ export default function NestView() {
 
       {/* 共同回忆 · 画廊：只看 owner='' 的那些（全家共用） */}
       <GalleryGrid owner="" variant="home" />
+
+      {/* 家 · 共用世界书（§19）：群聊里生效的就是这一档；每人自己的那份在各自介绍页 */}
+      <WorldbookPanel owner="" ownerLabel="家 · 共用世界书" />
     </main>
   )
 }

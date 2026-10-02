@@ -1,4 +1,4 @@
-type View = 'home' | 'chat' | 'nest'
+type View = 'home' | 'chat' | 'nest' | 'space'
 
 type Props = {
   theme: 'light' | 'dark'
@@ -7,10 +7,13 @@ type Props = {
   onView: (v: View) => void
 }
 
+// 「糖人小窝」放最左（与介绍页成员切换行的顺序一致）；「我的私人空间」仅次于它 ——
+// 两者都是「全家 / 个人」的总入口，跟三位一体的角色页 + 聊天分开排（§21）。
 const NAV: { v: View; label: string }[] = [
+  { v: 'nest', label: '🏠 糖人小窝' },
+  { v: 'space', label: '🐻 私人空间' },
   { v: 'home', label: '角色介绍' },
   { v: 'chat', label: '聊天' },
-  { v: 'nest', label: '🏠 糖人小窝' },
 ]
 
 export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {

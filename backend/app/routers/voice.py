@@ -3,7 +3,6 @@
 引擎：
 - edge   微软在线 Neural TTS（经 edge-tts 走 WebSocket），只留「晓晓」默认女声。
 - piper  本地轻量离线引擎（piper-tts + onnx），合成快、无需网络。
-- sovits GPT-SoVITS 专属音色（留按钮、暂未安装）。
 
 接口：
 - GET  /api/voice/engines           引擎列表（含是否可用）
@@ -25,6 +24,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 router = APIRouter()
+
+# edge-tts 两次合成之间的最小间隔（秒）：连点朗读时避免 WebSocket 连接叠着开而卡顿（§19.18）。
+_EDGE_MIN_GAP = 0.25
+_edge_last_at = 0.0
 
 PIPER_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "tts" / "piper"
 
@@ -52,7 +55,6 @@ async def list_engines() -> list[dict]:
     return [
         {"id": "edge", "name": "Edge 在线（晓晓）", "desc": "微软在线音 · 免费 · 需网络", "available": True},
         {"id": "piper", "name": "Piper 本地（轻量）", "desc": "本地离线合成 · 低算力友好", "available": True},
-        {"id": "sovits", "name": "GPT-SoVITS（专属）", "desc": "小糖人专属音色 · 尚未安装", "available": False},
     ]
 
 
@@ -66,8 +68,6 @@ async def list_voices(engine: str = "edge") -> list[dict]:
             for vid, name in PIPER_VOICES
             if (PIPER_DIR / f"{vid}.onnx").exists()
         ]
-    if engine == "sovits":
-        return []
     raise HTTPException(status_code=400, detail=f"未知引擎 {engine}")
 
 
@@ -111,11 +111,21 @@ async def tts(req: TTSRequest) -> Response:
     try:
         if engine == "edge":
             voice = voice or "zh-CN-XiaoxiaoNeural"
-            com = edge_tts.Communicate(text, voice)
-            buf = bytearray()
-            async for chunk in com.stream():
-                if chunk.get("type") == "audio":
-                    buf.extend(chunk["data"])
+            # 暂停一下再合成（§19.18）：edge-tts 每次都要新开一条 WebSocket，
+            # 连点朗读时前一条的 socket 还没关干净，新的一条就会卡住几秒 —— 用户感觉是「卡顿」。
+            # 上一次合成结束到这次之间隔 250ms，给旧连接一点收尾时间；顺序点不会再有这感觉。
+            global _edge_last_at
+            gap = _EDGE_MIN_GAP - (asyncio.get_running_loop().time() - _edge_last_at)
+            if gap > 0:
+                await asyncio.sleep(gap)
+            try:
+                com = edge_tts.Communicate(text, voice)
+                buf = bytearray()
+                async for chunk in com.stream():
+                    if chunk.get("type") == "audio":
+                        buf.extend(chunk["data"])
+            finally:
+                _edge_last_at = asyncio.get_running_loop().time()
             if not buf:
                 raise HTTPException(status_code=502, detail="TTS 合成结果为空")
             return Response(content=bytes(buf), media_type="audio/mpeg")
@@ -124,9 +134,6 @@ async def tts(req: TTSRequest) -> Response:
             voice = voice or "zh_CN-huayan-medium"
             wav_bytes = await asyncio.to_thread(_piper_synthesize, voice, text)
             return Response(content=wav_bytes, media_type="audio/wav")
-
-        if engine == "sovits":
-            raise HTTPException(status_code=400, detail="GPT-SoVITS 尚未安装，专属音色敬请期待")
 
         raise HTTPException(status_code=400, detail=f"未知引擎 {engine}")
     except HTTPException:
