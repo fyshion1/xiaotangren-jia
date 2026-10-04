@@ -60,6 +60,7 @@ export function useSpeechToText() {
       }
       rec.onerror = (e: any) => {
         if (e.error && e.error !== 'no-speech') onError(`语音识别错误：${e.error}`)
+        else if (e.error === 'no-speech') onError('没听到声音，再按住说一次')
         setListening(false)
       }
       rec.onend = () => setListening(false)

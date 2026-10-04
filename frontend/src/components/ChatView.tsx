@@ -298,6 +298,20 @@ type EngineOption = { id: string; name: string; desc?: string; available: boolea
 // 手机端底部 Tab（桌面端不用）
 type MobileTab = 'sessions' | 'chat' | 'status'
 
+// 手机端底部聊天栏的内联图标（§19.25）。
+// 参照图里 QQ 那排是细线图标；emoji 直接渲染在不同系统上胖瘦差太多、
+// 跟旁边的线性图标不是一套。所以表情这颗手写 SVG，其余继续用 emoji（本来就是彩色的）。
+function StickerIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M21 12a9 9 0 1 0-9 9h4l5-5v-4z" />
+      <path d="M16 21v-3a2 2 0 0 1 2-2h3" />
+      <path d="M9 10.2h.01M15 10.2h.01" />
+      <path d="M9.2 14.2c.9 1 1.8 1.5 2.8 1.5s1.9-.5 2.8-1.5" />
+    </svg>
+  )
+}
+
 export default function ChatView({ characters, personas = [], activePersona, initialSessionId, onOpenProfile, onOpenSelf, onSwitchForm }: Props) {
   const activePersonaId = activePersona?.id ?? MAIN_PERSONA_ID
   // 当前视角下能出场的全部角色（§22）：小糖人 + 「别的身份」（汐子视角下的大老大）。
@@ -375,6 +389,15 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       (m) => setErrorText(m),
     )
   }, [asr, input])
+
+  // 麦克风能不能用（§19.25 / §16.17）：手机上「按住说话」是核心入口，但 Web Speech 要求
+  // 安全上下文，`http://192.168.x.x` 下浏览器会直接拒绝。别让按钮点下去只报一句错 ——
+  // 直接换成提示，把「走 https 隧道才能用麦克风」这件事讲清楚。
+  const micAvailable =
+    asr.available &&
+    (typeof window === 'undefined' ||
+      window.isSecureContext ||
+      ['localhost', '127.0.0.1'].includes(window.location.hostname))
 
   // 语音：先选引擎、后选音色；单一音频控制器 + 令牌防竞态 + 显式停止
   const [engines, setEngines] = useState<EngineOption[]>([])
@@ -1329,6 +1352,9 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
   // 手机端当前显示哪一栏（桌面端不生效）
   const [mobileTab, setMobileTab] = useState<MobileTab>('chat')
+  // 手机端底部聊天栏（§19.25）：跟 QQ 一样，输入框下面再挂一行小图标。
+  // trio = 右半边那三颗；recording = 是否已经点了麦克风、露出「按住说话」。
+  const [micPanel, setMicPanel] = useState<'none' | 'trio' | 'recording'>('none')
 
   const suggestions = active ? suggestionsFor(active) : []
 
@@ -2058,7 +2084,116 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               </button>
             ))}
           </div>
-          <div className="flex items-end gap-2">
+          {/* 手机端底部聊天栏（§19.25）：跟 QQ 一样分成两层 —— 上面一整行只有输入框和发送，
+              输入框才能真的占满宽度（以前跟五颗按钮挤在一行，手机上窄到看不见自己打了什么）；
+              下面一行才是小图标。桌面端维持原来的一行排布，一点不动。 */}
+          <div className="md:hidden">
+            <div className="flex items-end gap-2">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                rows={2}
+                onPaste={(e) => {
+                  const f = [...e.clipboardData.files].find((x) => x.type.startsWith('image/'))
+                  if (!f) return
+                  e.preventDefault()
+                  attachImage(f)
+                }}
+                placeholder={pendingAtt ? '给这张图配句话，发出去' : '和小糖人说点什么…'}
+                className="input min-w-0 flex-1 resize-none rounded-xl px-3 py-2 text-[15px] placeholder:text-[var(--text-3)]"
+              />
+              <button
+                onClick={() => (pendingAtt ? void onPickImage(pendingAtt.file) : void sendText())}
+                disabled={streaming}
+                className="btn shrink-0 rounded-xl px-5 py-2 text-sm disabled:opacity-50"
+              >
+                发送
+              </button>
+            </div>
+
+            {/* 录音中：麦克风原地变成那颗大的圆形「按住说话」（§19.25） */}
+            {micPanel === 'recording' ? (
+              <div className="mt-2 flex flex-col items-center gap-2 rounded-2xl bg-[var(--surface-2)] py-3">
+                {micAvailable ? (
+                  <>
+                    <button
+                      // 按住说话（§19.19）：按下开始听，松手停 —— 说完整句再松手，
+                      // 识别结果留在输入框里，可以接着改，按发送才发出去。
+                      onPointerDown={(e) => {
+                        e.preventDefault()
+                        ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+                        if (!asr.listening) startAsr()
+                      }}
+                      onPointerUp={() => {
+                        if (asr.listening) asr.stop()
+                        setMicPanel('trio')
+                      }}
+                      onPointerCancel={() => {
+                        if (asr.listening) asr.stop()
+                        setMicPanel('trio')
+                      }}
+                      className={`flex h-20 w-20 touch-none select-none items-center justify-center rounded-full text-[26px] transition ${
+                        asr.listening
+                          ? 'scale-105 bg-[var(--pink-deep)] text-white shadow-[0_0_0_10px_var(--pink-soft)]'
+                          : 'bg-[var(--pink)] text-white shadow-[0_8px_20px_rgba(242,126,158,0.35)]'
+                      }`}
+                    >
+                      🎤
+                    </button>
+                    <span className="text-[12px] text-[var(--text-3)]">
+                      {asr.listening ? '正在听…松手就停' : '按住说话'}
+                    </span>
+                  </>
+                ) : (
+                  // 不安全上下文（http://192.168.x.x）下浏览器压根不给麦克风 —— 与其让用户
+                  // 按下去只换来一句报错，不如在这里直接说清楚怎么才能用（§16.17）。
+                  <span className="px-4 text-center text-[12px] leading-relaxed text-[var(--text-3)]">
+                    手机上的麦克风需要 https 才能用。
+                    <br />
+                    局域网 IP 直连会被浏览器拒绝 —— 在电脑上跑 start-tunnel.bat，
+                    <br />
+                    用打印出来的 https 网址打开就能按住说话了。
+                  </span>
+                )}
+                <button
+                  onClick={() => setMicPanel('trio')}
+                  disabled={asr.listening}
+                  className="text-[12px] text-[var(--text-3)] disabled:opacity-40"
+                >
+                  收起
+                </button>
+              </div>
+            ) : (
+              <div className="mt-2 flex items-center justify-around">
+                {(
+                  [
+                    ['mic', '🎤', '按住说话'],
+                    ['image', '🖼', '发图片'],
+                    ['sticker', '✎', '表情包'],
+                    ['plus', '＋', '更多'],
+                  ] as const
+                ).map(([key, icon, title]) => (
+                  <button
+                    key={key}
+                    disabled={streaming}
+                    title={title}
+                    onClick={() => {
+                      if (key === 'mic') setMicPanel('recording')
+                      else if (key === 'image') fileRef.current?.click()
+                      else if (key === 'sticker') setInput((v) => v + '✎ ')
+                      else setNotice('更多功能规划中：语音 / 视频通话（§18）、表情包、小游戏。')
+                    }}
+                    className="px-3 py-1.5 text-[22px] text-[var(--text-2)] transition active:scale-90 disabled:opacity-40"
+                  >
+                    {key === 'sticker' ? <StickerIcon className="h-[22px] w-[22px]" /> : icon}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 桌面端：保持原样的一行排布 */}
+          <div className="hidden items-end gap-2 md:flex">
             <button
               onClick={() => fileRef.current?.click()}
               disabled={streaming}
