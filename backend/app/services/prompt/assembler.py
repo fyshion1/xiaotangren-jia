@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ... import db
 from .. import memory as memory_service
 from . import forms as forms_service
@@ -20,6 +22,9 @@ WORLDBOOK_WINDOW = 10
 
 # 记忆检索时拼接 query 的最近消息条数（§9.2.3）
 MEMORY_QUERY_WINDOW = 4
+
+# 群聊历史里识别「**角色名**：」/「【角色名】：」段首签名的正则（与前端 NAME_MARKER 同口径）
+_SPEAKER_MARKER = re.compile(r"^\s*(?:\*\*([^*\n]+?)\*\*|【([^】\n]+?)】)\s*[:：]?")
 
 # 档案里挑出来、用「键：值」展示的字段（越靠前越重要）
 _PROFILE_ROWS: list[tuple[str, str]] = [
@@ -97,6 +102,56 @@ def _group_director(names: list[str]) -> str:
     )
 
 
+def _strip_absent_speakers(messages: list[dict], present: set[str]) -> list[dict]:
+    """群聊历史清洗（§25 补丁二）：把不在场角色的发言段落从上下文里删掉。
+
+    与「在场名单」块构成双保险：名单是提示词层的事前警告，这里是历史层的事前删除。
+    只动发往模型的副本，库里的记录原封不动 —— 改阵容再改回来，发言全部都在。
+    """
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") != "assistant":
+            out.append(m)
+            continue
+        lines = str(m.get("content") or "").split("\n")
+        kept: list[str] = []
+        skipping = False
+        for line in lines:
+            match = _SPEAKER_MARKER.match(line)
+            if match:
+                speaker = (match.group(1) or match.group(2) or "").strip()
+                skipping = bool(speaker) and speaker not in present
+            if skipping:
+                continue
+            kept.append(line)
+        # 全段都是缺席者发言 → 整条丢掉，别给模型留一句空壳
+        if "\n".join(kept).strip():
+            out.append({**m, "content": "\n".join(kept).rstrip()})
+    return out
+
+
+def _roster_notice(present: list[str], absent: list[str]) -> str:
+    """群聊里明确「谁不在场」（§25 补丁）。
+
+    光把不在场的人从角色设定块里摘掉是不够的：聊天记录里还留着她以前的发言，
+    模型会顺着那个格式继续往下写（用户实测：「让小红薯头不在场，结果她还是回复了」）。
+    所以这里用否定式再点一遍名 —— 只在真有人不在场时追加，全员在场时一个字不多写。
+    """
+    lines = [
+        "【本轮在场名单 · 必须遵守】",
+        f"这一轮只有这几位在场：{'、'.join(present)}。",
+    ]
+    for name in absent:
+        lines.append(
+            f"{name} 目前不在场。上面「角色设定」与聊天记录里都还有她，那是她的过去，"
+            f"但**这一轮她不是对话者**：\n"
+            f"- 不要写以「{name}：」开头的段落；\n"
+            f"- 不要用她的口头禅与台词，也不要让别的角色替她说话，或描述她的动作；\n"
+            f"- 聊天记录里她以前的发言只是历史，不要顺着那个格式继续往下写。"
+        )
+    return "\n".join(lines)
+
+
 def _user_block(persona: dict) -> str:
     """告诉小糖人「现在和她们说话的是谁」（§22）。
 
@@ -157,6 +212,12 @@ def build_system_prompt(
         # 未指定 / 全部未知：默认全家在场（贴合「家」模型）。
         profiles = list(db.list_characters())
 
+    # 群聊双保险（§25）之二：不在场者的发言段落直接从上下文里洗掉。
+    # 注意这是「发往模型的副本」，库里原记录不动 —— 阵容改回来，发言全都还在。
+    present_names = {p.get("name") or "小糖人" for p in profiles}
+    if len(profiles) > 1 and len(by_id) > len(present_names):
+        messages = _strip_absent_speakers(messages, present_names)
+
     parts: list[str] = []
     if len(profiles) == 1:
         parts.append(_persona_block(profiles[0]))
@@ -166,12 +227,32 @@ def build_system_prompt(
         parts.append("—— 各角色设定 ——")
         for p in profiles:
             parts.append(_persona_block(p))
+        # 阵容之外的人要点名说「不在场」，否则模型会跟着聊天记录里她的旧发言继续写（§25）。
+        present = [p.get("name") or "小糖人" for p in profiles]
+        absent = [
+            c.get("name") or "小糖人"
+            for c in db.list_characters()
+            if (c.get("name") or "小糖人") not in present
+        ]
+        if absent:
+            parts.append(_roster_notice(present, absent))
     else:
         parts.append(DEFAULT_PERSONA)
 
     # 用户身份（§22）：紧跟在「她们是谁」后面说清「在和谁说话」。
     if persona:
         parts.append(_user_block(persona))
+
+    # 自我档案注入（§23）：inject=true 且角色可见的区块
+    if persona:
+        try:
+            from . import self_profile as _sp
+            self_block = _sp.inject_self_profile(persona, ids)
+            if self_block:
+                parts.append(self_block)
+        except Exception:  # noqa: BLE001
+            # 自我档案缺失不拖垮聊天
+            pass
 
     recent = [str(m.get("content") or "") for m in messages[-WORLDBOOK_WINDOW:]]
     # 世界书归属（§19）：单人在场 → 她的专属 + 家共用；多人 / 无人在场 → 只有家共用。

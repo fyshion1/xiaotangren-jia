@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS gallery (
     description TEXT NOT NULL DEFAULT '',
     in_memory INTEGER NOT NULL DEFAULT 1,
     memory_id TEXT NOT NULL DEFAULT '',
+    -- §26 私密层：纯界面开关，与 owner（归属）/ in_memory（进记忆）正交。
+    -- 1 = 收进「私密」层，公开画廊列表默认不展示（防别人瞥屏），但仍可正常进记忆。
+    private INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
@@ -121,6 +124,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # SQLite 的 ADD COLUMN 不接受「NOT NULL 且无默认值」，必须带 DEFAULT。
         # 老行全部落成 ''（= 家共用），不丢数据。
         conn.execute("ALTER TABLE gallery ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
+    if "private" not in cols:
+        # 私密层（§26）：老行全部落成 0（= 公开），升级后画廊显示不变。
+        conn.execute("ALTER TABLE gallery ADD COLUMN private INTEGER NOT NULL DEFAULT 0")
     # 补列之后才建索引（老库的旧唯一索引 idx_gallery_orig 会让「同图进多个归属」失败）
     for sql in _GALLERY_INDEXES:
         conn.execute(sql)
@@ -775,6 +781,7 @@ def _row_to_gallery(row: sqlite3.Row) -> dict:
         "description": row["description"],
         "in_memory": bool(row["in_memory"]),
         "memory_id": row["memory_id"],
+        "private": bool(row["private"]),
         "created_at": row["created_at"],
     }
 
@@ -788,10 +795,12 @@ def add_gallery(
     owner: str = "",
     in_memory: bool = True,
     memory_id: str = "",
+    private: bool = False,
 ) -> dict | None:
     """收藏一张图。同一归属下同一张原图重复收藏 → 返回 None（幂等）。
 
     owner：'' = 家共用，<charId> = 该角色专属。同一张图可以分别存进多个归属。
+    private（§26）：1 = 收进私密层（界面默认不展示，与记忆无关）。
     """
     with _tx() as conn:
         existing = conn.execute(
@@ -802,19 +811,33 @@ def add_gallery(
         gid = f"gal-{uuid.uuid4().hex[:12]}"
         conn.execute(
             "INSERT INTO gallery (id, session_id, message_id, owner, orig, thumb, description, "
-            "in_memory, memory_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (gid, session_id, message_id, owner, orig, thumb, description, int(in_memory), memory_id),
+            "in_memory, memory_id, private) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                gid, session_id, message_id, owner, orig, thumb, description,
+                int(in_memory), memory_id, int(private),
+            ),
         )
     return get_gallery(gid)
 
 
-def list_gallery(limit: int = 200, owner: str | None = None) -> list[dict]:
-    """owner=None = 全量；owner='' / <charId> = 按归属过滤（空串是合法筛选值）。"""
+def list_gallery(
+    limit: int = 200, owner: str | None = None, private: bool | None = None
+) -> list[dict]:
+    """owner=None = 全量；owner='' / <charId> = 按归属过滤（空串是合法筛选值）。
+
+    private（§26）：None = 两层都要；True/False = 只要私密层 / 只要公开层。
+    """
     sql = "SELECT * FROM gallery"
+    where: list[str] = []
     args: list = []
     if owner is not None:
-        sql += " WHERE owner = ?"
+        where.append("owner = ?")
         args.append(owner)
+    if private is not None:
+        where.append("private = ?")
+        args.append(int(private))
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY rowid DESC LIMIT ?"
     args.append(max(1, min(int(limit or 200), 1000)))
     with _tx() as conn:
@@ -854,6 +877,7 @@ def update_gallery(
     in_memory: bool | None = None,
     memory_id: str | None = None,
     owner: str | None = None,
+    private: bool | None = None,
 ) -> None:
     sets: list[str] = []
     args: list = []
@@ -869,6 +893,9 @@ def update_gallery(
     if owner is not None:
         sets.append("owner = ?")
         args.append(owner)
+    if private is not None:
+        sets.append("private = ?")
+        args.append(int(private))
     if not sets:
         return
     args.append(gallery_id)
@@ -882,10 +909,18 @@ def delete_gallery(gallery_id: str) -> bool:
         return bool(cur.rowcount)
 
 
-def count_gallery(owner: str | None = None) -> int:
+def count_gallery(owner: str | None = None, private: bool | None = None) -> int:
+    where: list[str] = []
+    args: list = []
+    if owner is not None:
+        where.append("owner = ?")
+        args.append(owner)
+    if private is not None:
+        where.append("private = ?")
+        args.append(int(private))
+    sql = "SELECT COUNT(*) FROM gallery"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     with _tx() as conn:
-        if owner is None:
-            row = conn.execute("SELECT COUNT(*) FROM gallery").fetchone()
-        else:
-            row = conn.execute("SELECT COUNT(*) FROM gallery WHERE owner = ?", (owner,)).fetchone()
+        row = conn.execute(sql, args).fetchone()
     return int(row[0])

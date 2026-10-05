@@ -29,6 +29,7 @@ class StarIn(BaseModel):
     description: str = ""
     owner: str = ""  # '' = 家共用，<charId> = 角色专属
     in_memory: bool = True
+    private: bool = False  # §26 私密层：界面默认不展示，与记忆无关
 
 
 class DescribeIn(BaseModel):
@@ -44,15 +45,17 @@ class UpdateIn(BaseModel):
     description: str | None = None
     in_memory: bool | None = None
     owner: str | None = None
+    private: bool | None = None  # §26 切公开层 / 私密层（不影响记忆）
 
 
 @router.get("/gallery")
 async def list_gallery(
     limit: int = Query(200, ge=1, le=1000),
     owner: str | None = Query(None, description="不传 = 全量；'' = 家共用；<charId> = 角色专属"),
+    private: bool | None = Query(None, description="不传 = 两层都要；true/false = 只要私密层 / 公开层（§26）"),
 ) -> dict:
-    items = db.list_gallery(limit=limit, owner=owner)
-    return {"items": items, "total": db.count_gallery(owner)}
+    items = db.list_gallery(limit=limit, owner=owner, private=private)
+    return {"items": items, "total": db.count_gallery(owner, private)}
 
 
 @router.post("/gallery")
@@ -67,6 +70,7 @@ async def add_to_gallery(body: StarIn) -> dict:
         description=body.description,
         owner=body.owner,
         in_memory=body.in_memory,
+        private=body.private,
     )
     if created is None:
         raise HTTPException(status_code=400, detail="存不进画廊：图片引用无效")
@@ -111,6 +115,8 @@ async def update_gallery(gallery_id: str, body: UpdateIn) -> dict:
         item = gal.set_owner(gallery_id, body.owner)
     if body.description is not None:
         item = gal.update_description(gallery_id, body.description)
+    if body.private is not None:
+        item = gal.set_private(gallery_id, body.private)
     if body.in_memory is not None:
         item = gal.attach_memory(gallery_id) if body.in_memory else gal.detach_memory(gallery_id)
     return item or {}

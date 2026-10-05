@@ -15,6 +15,7 @@ from .routers import (
     memory,
     messages,
     profiles,
+    self as self_router,
     voice,
     worldbook,
 )
@@ -22,10 +23,12 @@ from .routers import (
     settings as settings_router,
 )
 from .services import attachments
+from .services import self_profile as sp
 
 settings = get_settings()
 
 init_db()
+sp.ensure_root()
 
 app = FastAPI(title="小糖人之家 后端", version="0.1.0")
 
@@ -48,6 +51,7 @@ app.include_router(memory.router, prefix="/api")
 app.include_router(gallery.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
 app.include_router(profiles.router, prefix="/api")
+app.include_router(self_router.router, prefix="/api")
 app.include_router(worldbook.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 

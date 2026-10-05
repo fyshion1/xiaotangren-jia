@@ -6,27 +6,26 @@ import { activeFormId, listForms } from '../lib/forms'
 import SessionList from './SessionList'
 import StatusSidebar from './StatusSidebar'
 import PortraitCarousel from './PortraitCarousel'
+import ImageGenOverlay from './ImageGenOverlay'
 import MemoryPanel from './MemoryPanel'
 import GalleryPanel from './GalleryPanel'
+import GroupRosterPanel from './GroupRosterPanel'
+import PromptInspector from './PromptInspector'
 import Avatar from './Avatar'
 import { useSpeechToText } from '../hooks/useSpeechToText'
 import { useResizable } from '../hooks/useResizable'
 import {
-  attachmentStats,
-  clearOriginals,
   deleteMessages,
   loadMessages,
   previewDeleteMessages,
   saveMessage,
   toChatMessage,
   uploadAttachment,
-  type AttachmentStats,
   type StoredMessage,
 } from '../api/storage'
 import { extractMemories, rememberMemory } from '../api/memory'
 import { starImage } from '../api/gallery'
-import { fetchImageEngines, generateImages, selectImageEngine, type GeneratedImage, type ImageEngine } from '../api/imagegen'
-import { buildAppearancePrompt, formKey } from '../lib/comfyPrompt'
+import { fetchSettings, saveSettings } from '../api/client'
 import { ownerOf } from '../lib/owner'
 
 // 模型通道（§7）：常规 = 商业 API；无审查 = 另配的中转 / 本地无审查模型。
@@ -40,6 +39,9 @@ export type ModelConfig = {
   imageModel: string
   imageBaseUrl: string
   maxTokens: number // 单条回复 token 上限，0 = 不限制
+  // 随请求发给模型的最近消息条数（§27）：0 = 不限制（把已载入的全发过去）。
+  // 只截断「发出去的副本」，界面上的聊天记录一条不少。
+  historyLimit: number
   // 发图时附在图片前的提示词（§16.11）：留空 = 用 DEFAULT_VISION_PROMPT。
   // 整体存 localStorage（STORAGE_KEY），所以自动持久化。
   visionPrompt?: string
@@ -62,6 +64,7 @@ const DEFAULT_CONFIG: ModelConfig = {
   imageModel: '',
   imageBaseUrl: '',
   maxTokens: 800,
+  historyLimit: 20,
   visionPrompt: DEFAULT_VISION_PROMPT,
   channel: 'normal',
   uncensoredBaseUrl: '',
@@ -105,6 +108,10 @@ function loadConfig(): ModelConfig {
       const staleUrl = (u?: string) => !!u && u.includes('moyuu')
       const staleModel = (m?: string) => m === 'gemini-3.6-flash' || m === 'gemini-3.1-flash-image'
       const cleaned = { ...DEFAULT_CONFIG, ...prev } as ModelConfig
+      // 老配置里没有「注入条数」（§27）这个字段：补上默认值，别让旧用户吃到 undefined。
+      if (typeof prev.historyLimit !== 'number' || !Number.isFinite(prev.historyLimit)) {
+        cleaned.historyLimit = DEFAULT_CONFIG.historyLimit
+      }
       if (staleUrl(prev.baseUrl) || staleModel(prev.chatModel) || staleModel(prev.visionModel)) {
         // 常规通道命中陈旧 → 清回默认，但保留无审查通道与通道选择
         cleaned.baseUrl = DEFAULT_CONFIG.baseUrl
@@ -278,6 +285,105 @@ function segmentGroupReply(full: string): { segments: { speaker: string; text: s
   return { segments, plain }
 }
 
+/**
+ * 群聊历史发给模型时的排版（§27）。
+ *
+ * 库里 `content` 是「大诗音：…」这种**纯名字**加冒号，而提示词要求模型按
+ * 「**角色名**：」输出、后端 `_strip_absent_speakers` 也只认这个签名（校验过：
+ * 纯名字形式它洗不掉）。所以外发前统一重排成带星号的那种，两头口径一致 ——
+ * 模型更容易维持「一人一段」，缺席者的段落后端也真能删掉。
+ *
+ * 私聊、以及没拆出分段的普通消息，原样发。
+ */
+function outboundText(m: ChatMessage): string {
+  const segs = m.kind === 'groups' && m.segments?.length ? m.segments : null
+  if (!segs) return m.content
+  return segs.map((s) => (s.speaker ? `**${s.speaker}**：${s.text}` : s.text)).join('\n\n')
+}
+
+/** 外发历史只带最近 N 条（§27）。0 / 负数 = 不限制，把已载入的全发过去。 */
+function limitHistory(list: ChatMessage[], limit: number): ChatMessage[] {
+  if (!limit || limit <= 0) return list
+  return list.length > limit ? list.slice(-limit) : list
+}
+
+/**
+ * 「不在场」的人，她在群聊里的旧发言不渲染（§27）。
+ *
+ * 跟后端那份清洗是两码事：后端洗的是**发出去的副本**，这里挡的是**屏幕上**。
+ * 库里一条没删，阵容改回来发言原样回来。
+ *
+ * 只认「能对上在场角色表的名字」；认不出的署名（导入卡、临时客人）不动它 ——
+ * 宁可多显示一段，也别把别人的话凭空藏了。返回 `null` = 这条整条都是缺席者的话，
+ * 连气泡一起不显示。
+ */
+function hideAbsentSegments(
+  m: ChatMessage,
+  memberIds: string[],
+  cast: CharacterProfile[],
+): ChatMessage | null {
+  const segs = m.kind === 'groups' && m.segments?.length ? m.segments : null
+  if (!segs) return m
+  const kept = segs.filter((s) => {
+    if (!s.speaker) return true
+    const c = cast.find((x) => x.name === s.speaker)
+    if (!c) return true
+    return memberIds.includes(c.id)
+  })
+  if (kept.length === segs.length) return m
+  if (kept.length === 0) return null
+  return { ...m, segments: kept }
+}
+
+// 等待回复时轮换的提示语（§27）：光三个点看不出是在忙还是卡了。
+const WAITING_LINES = [
+  '正在想怎么回你…',
+  '正在打字…',
+  '还在斟酌用词…',
+  '马上就来…',
+]
+
+/**
+ * 等待回复的占位气泡（§27）：跳动的三点 + 一行轮换的提示语。
+ *
+ * 群聊时上面叠一行在场者的头像（最多 3 颗），一眼看出是「她们在回」；
+ * 私聊已经有署名行了，就不再重复挂头像。计时器开在组件自己身上，
+ * 免得每 2.6 秒把整个聊天页重渲一遍。
+ */
+function WaitingBubble({ cast }: { cast: CharacterProfile[] }) {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((v) => v + 1), 2600)
+    return () => window.clearInterval(timer)
+  }, [])
+  const who = cast.length > 1 ? '她们' : cast[0]?.name || '小糖人'
+  return (
+    <div className="flex flex-col gap-1.5">
+      {cast.length > 1 && (
+        <div className="flex -space-x-2">
+          {cast.slice(0, 3).map((c) => (
+            <span key={c.id} className="rounded-full ring-2 ring-[var(--surface)]">
+              <Avatar name={c.name} avatar={c.avatar} emoji={c.emoji} size={24} />
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <span className="waiting-dots flex items-end gap-1">
+          {[0, 1, 2].map((d) => (
+            <span
+              key={d}
+              className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--pink)]"
+              style={{ animationDelay: `${d * 0.16}s` }}
+            />
+          ))}
+        </span>
+        <span className="text-[12px] text-[var(--text-3)]">{who}{WAITING_LINES[tick % WAITING_LINES.length]}</span>
+      </div>
+    </div>
+  )
+}
+
 type Props = {
   characters: CharacterProfile[]
   /** 你自己的身份档案（§22）。除了「当前身份」，档案上开关打开的那些会作为可聊角色现身。 */
@@ -318,7 +424,33 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 后者不进屋里的成员表，只在这个视角下临时现身，会话 id 照旧，隔离交给 personaSessionId。
   const extraCast = useMemo(() => personasAsCast(personas, activePersonaId), [personas, activePersonaId])
   const visibleCharacters = useMemo(() => [...characters, ...extraCast], [characters, extraCast])
-  const sessions = useMemo(() => buildSessions(visibleCharacters), [visibleCharacters])
+  // 群聊阵容（§25）：存在后端 settings 的 `group_roster`（角色 id 的 JSON 数组）。
+  // 空 / 没设置 = 全员在场（老行为）。只影响群聊的成员，私聊一条不少。
+  const [roster, setRoster] = useState<string[]>([])
+  const [rosterOpen, setRosterOpen] = useState(false)
+  // 挂载时读一次。解析失败（没设置过 / 后端没起）静默当「全员在场」—— 这只是个偏好，不值得弹错。
+  useEffect(() => {
+    let cancelled = false
+    fetchSettings()
+      .then((s) => {
+        if (cancelled) return
+        const raw = s.group_roster
+        if (!raw) return
+        try {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) setRoster(parsed.filter((x): x is string => typeof x === 'string'))
+        } catch {
+          /* 坏值当没设置 */
+        }
+      })
+      .catch(() => {
+        /* 后端没起时静默 */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  const sessions = useMemo(() => buildSessions(visibleCharacters, [], roster), [visibleCharacters, roster])
   const [activeId, setActiveId] = useState<string>(initialSessionId ?? sessions[0]?.id ?? 'group')
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0]
   // 本会话在场的角色（群聊 = 全部成员，私聊 = 一位）—— 立绘轮播与状态栏共用
@@ -337,7 +469,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const loadedRef = useRef<Set<string>>(new Set())
   const [paging, setPaging] = useState<Record<string, { cursor: number | null; hasMore: boolean }>>({})
   const [loadingOlder, setLoadingOlder] = useState(false)
-  const [stats, setStats] = useState<AttachmentStats | null>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
 
   const [input, setInput] = useState('')
@@ -345,6 +476,19 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const [config, setConfig] = useState<ModelConfig>(loadConfig)
   // 当前通道解析出的实际上游（留空字段回退常规通道）——渲染期算一次，各处复用
   const route = resolveRoute(config)
+
+  /**
+   * 组装外发历史（§27）：先按「注入条数」截断，再把群聊分段重排成「**角色名**：」。
+   *
+   * 两步都只作用于「发出去的副本」，界面上的聊天记录与库里一条不动。
+   * 重排是为了对齐后端 `_strip_absent_speakers` 的签名 —— 库里存的「名字：」那种
+   * 它认不出，不在场者的段落就洗不掉。
+   */
+  const buildOutbound = useCallback(
+    (list: ChatMessage[]): { role: string; content: string }[] =>
+      limitHistory(list, config.historyLimit).map((m) => ({ role: m.role, content: outboundText(m) })),
+    [config.historyLimit],
+  )
   const [showSettings, setShowSettings] = useState(false)
   const [showKey, setShowKey] = useState(false)
   const [showUncensoredKey, setShowUncensoredKey] = useState(false)
@@ -415,30 +559,8 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const playTokenRef = useRef(0)
 
-  // 生图
+  // 生图浮层（§7）：抽到 ImageGenOverlay，这里只保留打开/关闭的开关。
   const [genOpen, setGenOpen] = useState(false)
-  const [genPrompt, setGenPrompt] = useState('')
-  const [genBusy, setGenBusy] = useState(false)
-  const [genImages, setGenImages] = useState<GeneratedImage[]>([])
-  // 生图参数：尺寸 / 张数 / 负向 / 步数 / CFG / seed。留空 = 交给工作流自带的值。
-  // 张数上限 4 —— ComfyUI 对同一 seed+prompt 返回同一张图，批量得逐个改 seed 重跑（见 services/comfyui.py）。
-  const [genSize, setGenSize] = useState('512x768')
-  const [genN, setGenN] = useState(1)
-  const [genNegative, setGenNegative] = useState('')
-  const [genSteps, setGenSteps] = useState('')
-  const [genCfg, setGenCfg] = useState('')
-  const [genSeed, setGenSeed] = useState('')
-  const [showAdvanced, setShowAdvanced] = useState(false)
-  // 外观提示词拼装（§7）：从当前形态取外貌词条自动填进提示词框。
-  // dirtyKeyRef 是脏跟踪键 `${charId}:${formId}` —— 换角色/换形态才重拼，
-  // 否则用户手改的内容会被覆盖（§16.10：兜底要按字段做）。
-  const [autoAppend, setAutoAppend] = useState(true)
-  const [appearForm, setAppearForm] = useState('')
-  const dirtyKeyRef = useRef('')
-  const lastAutoRef = useRef('')
-  // 生图方式切换器（§7）：四个插槽。默认 local；具体哪个可用由后端探测决定（ready）。
-  const [enginesList, setEnginesList] = useState<ImageEngine[]>([])
-  const [genEngine, setGenEngine] = useState('local')
 
   // 记忆（§9.2/§9.3）：管理浮层 + 消息旁的「记住这条」快捷按钮
   const [memoryOpen, setMemoryOpen] = useState(false)
@@ -451,6 +573,8 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const [galleryOpen, setGalleryOpen] = useState(false)
   const [starred, setStarred] = useState<Record<string, true>>({})
   const [starring, setStarring] = useState('')
+  // 看提示词（§24）：把「此刻会发给模型的东西」摊开看 —— 改完档案不生效时用它核对。
+  const [promptOpen, setPromptOpen] = useState(false)
 
   // 看图轮（§15.5）：这条助手回复前一句是带图的消息 —— 原图 base64 没落库，
   // 所以重新生成 / 编辑重发都不支持。
@@ -570,43 +694,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   useEffect(() => {
     if (speakVoice) localStorage.setItem('xtr.speakVoice', speakVoice)
   }, [speakVoice])
-
-  // 打开生图浮层时刷新一次本地存储统计（原图/缩略图各占多少）
-  useEffect(() => {
-    if (!genOpen) return
-    void attachmentStats().then(setStats)
-  }, [genOpen])
-
-  // 打开生图浮层时拉一次生图方式列表（§7）；后端没起来就用内置表兜底
-  useEffect(() => {
-    if (!genOpen) return
-    void fetchImageEngines().then(({ engines, selected }) => {
-      setEnginesList(engines)
-      setGenEngine(selected)
-    })
-  }, [genOpen])
-
-  // 生图浮层打开时，按「在场的第一位角色 + 她的当前形态」拼装外观提示词。
-  // 群聊取第一位：真要画别人，改提示词框里的名字比换角色更省事。
-  useEffect(() => {
-    if (!genOpen || !autoAppend || !active) return
-    const char = visibleCharacters.find((c) => c.id === active.characterIds[0])
-    if (!char) {
-      setAppearForm('')
-      return
-    }
-    const key = formKey(char.id, activeFormId(char))
-    setAppearForm(listForms(char).find((f) => f.id === activeFormId(char))?.name ?? '')
-    if (dirtyKeyRef.current === key) return // 键没变 → 用户手改的内容一个字都不动
-    const appearance = buildAppearancePrompt(char)
-    if (appearance) {
-      // 换角色/换形态要重拼，但只在「框里还是上一次自动拼的内容（或空的）」时才覆盖，
-      // 用户自己写的东西留着 —— 想回到自动拼的版本可以点「↺ 重置」。
-      setGenPrompt((prev) => (prev.trim() && prev !== lastAutoRef.current ? prev : appearance))
-      lastAutoRef.current = appearance
-    }
-    dirtyKeyRef.current = key
-  }, [genOpen, autoAppend, active, visibleCharacters])
 
   // 看原图浮层：Esc 关闭
   useEffect(() => {
@@ -1005,7 +1092,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       next,
       '/api/chat',
       {
-        messages: next.map((m) => ({ role: m.role, content: m.content })),
+        messages: buildOutbound(next),
         character_ids: active.characterIds,
         persona_id: activePersonaId,
         base_url: r.chat.baseUrl,
@@ -1016,7 +1103,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       },
       active.kind === 'group',
     )
-  }, [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant])
+  }, [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant, buildOutbound])
 
   const onPickImage = useCallback(
     async (file: File) => {
@@ -1082,38 +1169,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     setActiveId(imported.id)
   }, [])
 
-  const doGenerate = useCallback(async () => {
-    const prompt = genPrompt.trim()
-    if (!prompt || genBusy) return
-    setGenBusy(true)
-    setGenImages([])
-    setErrorText('')
-    // 数字框留空就别传，让工作流自带的步数/CFG/随机 seed 生效
-    const num = (v: string) => (v.trim() ? Number(v) : null)
-    try {
-      const imgs = await generateImages({
-        prompt,
-        session_id: sessionKey || 'single-default', // 落在当前会话的附件目录里
-        size: genSize,
-        n: genN,
-        seed: num(genSeed),
-        negative: genNegative.trim(),
-        steps: num(genSteps),
-        cfg: num(genCfg),
-        // thirdparty 才用得上：走「模型设置」里的生图覆盖；其余引擎后端不看这三个字段
-        base_url: config.imageBaseUrl || (config.imageModel ? config.baseUrl : ''),
-        api_key: config.apiKey,
-        model: config.imageModel,
-      })
-      if (!imgs.length) throw new Error('生图接口返回为空')
-      setGenImages(imgs)
-    } catch (e) {
-      setErrorText(e instanceof Error ? e.message : String(e))
-    } finally {
-      setGenBusy(false)
-    }
-  }, [genPrompt, genBusy, active, config, genSize, genN, genSeed, genNegative, genSteps, genCfg])
-
   // 「记住这条」（§9.3 手动记忆）：桶由会话类型决定 —— 私聊进 TA 的个人记忆，群聊进家记忆。
   const rememberThis = useCallback(
     async (key: string, content: string) => {
@@ -1165,28 +1220,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         setErrorText(e instanceof Error ? e.message : String(e))
       } finally {
         setStarring('')
-      }
-    },
-    [active, sessionKey],
-  )
-
-  // 生图结果「⭐ 存入画廊」：图已经在附件库里了（§7 生图直接落盘），
-  // 这里只是把它登记进画廊 / 照片记忆，和聊天图片走的是同一个 starImage。
-  const starGenerated = useCallback(
-    async (g: GeneratedImage) => {
-      if (!active) return
-      setErrorText('')
-      try {
-        await starImage({
-          orig: g.orig,
-          session_id: sessionKey,
-          message_id: '',
-          owner: ownerOf(active),
-          in_memory: true,
-        })
-        setGalleryOpen(true) // 顺手打开画廊，提示补一句描述
-      } catch (e) {
-        setErrorText(e instanceof Error ? e.message : String(e))
       }
     },
     [active, sessionKey],
@@ -1279,7 +1312,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           truncated,
           '/api/chat',
           {
-            messages: truncated.map((m) => ({ role: m.role, content: m.content })),
+            messages: buildOutbound(truncated),
             character_ids: active.characterIds,
             persona_id: activePersonaId,
             base_url: r.chat.baseUrl,
@@ -1295,7 +1328,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         setDeleting(false)
       }
     },
-    [active, sessionKey, messages, streaming, deleting, activePersonaId, config, clearSessionMarks, streamAssistant],
+    [active, sessionKey, messages, streaming, deleting, activePersonaId, config, clearSessionMarks, streamAssistant, buildOutbound],
   )
 
   // 编辑并重发（§15.5，Gemini 式）：改这条 + 删掉它后面所有，再重新生成。
@@ -1329,7 +1362,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         next,
         '/api/chat',
         {
-          messages: next.map((m) => ({ role: m.role, content: m.content })),
+          messages: buildOutbound(next),
           character_ids: active.characterIds,
           persona_id: activePersonaId,
           base_url: r.chat.baseUrl,
@@ -1344,7 +1377,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       setErrorText(e instanceof Error ? e.message : String(e))
       setDeleting(false)
     }
-  }, [active, sessionKey, messages, streaming, deleting, editingSeq, editDraft, activePersonaId, config, clearSessionMarks, streamAssistant, stampDb])
+  }, [active, sessionKey, messages, streaming, deleting, editingSeq, editDraft, activePersonaId, config, clearSessionMarks, streamAssistant, stampDb, buildOutbound])
 
   // 导入的角色卡（阶段 2 才解析）；先挂在会话列表尾部，让 UI 走通
   const [sessionsExtra, setSessionsExtra] = useState<ChatSession[]>([])
@@ -1444,7 +1477,43 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 </span>
               )
             })()}
+          {/* 群聊阵容（§25）：手机端也留一个入口 —— 正是手机上会想改的东西 */}
+          {active.kind === 'group' && (
+            <button
+              onClick={() => setRosterOpen(true)}
+              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)] md:hidden"
+              title="改群聊成员：谁在这个群里"
+            >
+              👥
+            </button>
+          )}
+          {/* 看提示词（§24）：手机端也留一个入口 —— debug 大多是在手机上遇到的 */}
+          <button
+            onClick={() => setPromptOpen(true)}
+            className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)] md:hidden"
+            title="看这次会发给模型的原始提示词"
+          >
+            🔍
+          </button>
           <span className="ml-auto hidden items-center gap-1.5 md:flex">
+            {/* 群聊阵容（§25）：只改默认群聊的成员，存后端设置，刷新保持 */}
+            {active.kind === 'group' && (
+              <button
+                onClick={() => setRosterOpen(true)}
+                className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
+                title="改群聊成员：谁在「小糖人的家」里（§25）"
+              >
+                👥 成员 {active.characterIds.length}
+              </button>
+            )}
+            {/* 看提示词（§24）：把此刻组装出的 system / messages 摊开，零 token 消耗 */}
+            <button
+              onClick={() => setPromptOpen(true)}
+              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
+              title="看提示词：此刻会发给模型的 system / 完整消息数组（不消耗 token）"
+            >
+              🔍 提示词
+            </button>
             {/* 打电话（§18）：占位。实时语音通话还没做，点了只说明状态，不做假功能 */}
             <button
               onClick={() => setNotice('📞 实时通话规划中：先做「按住说话 → 回复自动朗读」的半自动版，方案见《项目要求》§18。')}
@@ -1578,6 +1647,46 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               </Field>
               <div className="text-[11px] leading-snug text-[var(--text-3)] md:col-span-2">
                 限制模型单次最多回复多少 token，可让群聊各位都别一回一大段；0 = 不设上限。
+              </div>
+              <Field label="注入的最近消息条数（§27）">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    step={5}
+                    value={config.historyLimit}
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      setConfig({ ...config, historyLimit: Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0 })
+                    }}
+                    placeholder="20"
+                  />
+                  {[
+                    [10, '10'],
+                    [20, '20'],
+                    [50, '50'],
+                    [0, '不限制'],
+                  ].map(([v, text]) => (
+                    <button
+                      key={String(v)}
+                      type="button"
+                      onClick={() => setConfig({ ...config, historyLimit: Number(v) })}
+                      className={`shrink-0 rounded-lg border px-2 py-1.5 text-[12px] transition ${
+                        config.historyLimit === v
+                          ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
+                          : 'border-[var(--border-strong)] text-[var(--text-2)] hover:border-[var(--pink)]'
+                      }`}
+                    >
+                      {text}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <div className="text-[11px] leading-snug text-[var(--text-3)] md:col-span-2">
+                每次发给模型的只有<strong>最近这几条</strong>聊天记录（越少越省 token，但她也越容易忘掉早些说过的话）；
+                0 = 把已载入的全发过去。只截断发出去的副本 —— 界面上的聊天记录一条不少。
+                看图的轮次不带历史，这项对它无效。
               </div>
               <div className="md:col-span-2">
                 <Field label="看图提示词（发图时附在图片前的那句话）">
@@ -1760,13 +1869,42 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           {messages.map((m, i) => {
             const err = msgError[sessionKey]
             const isLast = i === messages.length - 1
-            const segs = m.kind === 'groups' && m.segments?.length ? m.segments : null
-            // 真删：用户消息与小糖人的回复都能删（§15.2），前提是已落库 —— dbId 由 §0 的回填补上
-            const deletable = Boolean(m.dbId)
-            const checked = selectedSeqs.has(i)
+            // 不在场的人，她在群聊里的旧发言不渲染（§27）。后端那份清洗管的是发出去的
+            // 副本，这里管的是屏幕 —— 库里一条没删，阵容调回来发言原样回来。
+            const shown = hideAbsentSegments(m, active.characterIds, visibleCharacters)
             // 时间分隔（§19.6）：不逐条显示时间，只在和上一条隔得久（>5 分钟）时插一行居中的时间。
             // 第一条也显示 —— 进会话就知道这段聊天是什么时候的。
             const showTime = shouldMarkTime(messages, i)
+            // 整条都是不在场者的话 → 一个字都不渲染，但别留一片空白让人以为卡了：
+            // 给一行浅提示 + 重新生成入口，用户能立刻重来一轮。
+            if (!shown) {
+              return (
+                <div key={i} className="mb-3 flex flex-col">
+                  {showTime && m.createdAt && (
+                    <div className="mb-3 flex items-center justify-center">
+                      <span className="text-[11px] text-[var(--text-3)]" title={fullTime(m.createdAt)}>
+                        {dayLabel(m.createdAt)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 rounded-2xl border border-dashed border-[var(--border-strong)] px-4 py-2 text-[12px] text-[var(--text-3)]">
+                    <span>这一轮只有不在场的角色在说，已隐去</span>
+                    <button
+                      onClick={() => void regenerate(i)}
+                      disabled={streaming || deleting}
+                      className="text-[11px] text-[var(--text-3)] transition hover:text-[var(--pink-deep)] disabled:cursor-not-allowed disabled:opacity-40"
+                      title="按当前在场的阵容重新生成一次"
+                    >
+                      🔁 重新生成
+                    </button>
+                  </div>
+                </div>
+              )
+            }
+            const segs = shown.kind === 'groups' && shown.segments?.length ? shown.segments : null
+            // 真删：用户消息与小糖人的回复都能删（§15.2），前提是已落库 —— dbId 由 §0 的回填补上
+            const deletable = Boolean(m.dbId)
+            const checked = selectedSeqs.has(i)
             return (
               <div
                 key={i}
@@ -1990,7 +2128,13 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                         </button>
                       </div>
                     )}
-                    <div className="whitespace-pre-wrap">{m.content || (streaming && isLast ? '…' : '')}</div>
+                    {streaming && isLast && !m.content ? (
+                      // 还没吐出第一个字 → 跳动的三点 + 一行轮换提示（§27）。
+                      // 群聊时上面叠一行在场者头像，一看就知道是「她们在回」。
+                      <WaitingBubble cast={activeCharacters} />
+                    ) : (
+                      <div className="whitespace-pre-wrap">{m.content}</div>
+                    )}
                     {/* 编辑并重发（§15.5 / §19.15）：以前只能靠右键，太隐蔽 ——
                         自己的纯文字消息给一个明显的小按钮（看图轮不给，原图没落库改不了）。 */}
                     {m.role === 'user' && !m.image && (
@@ -2380,246 +2524,18 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         </div>
       )}
 
-      {/* 生图浮层 */}
-      {genOpen && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm" onClick={() => !genBusy && setGenOpen(false)}>
-          <div
-            className="my-6 w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-[16px] font-bold">🎨 生成照片</h3>
-              <button onClick={() => !genBusy && setGenOpen(false)} className="text-[var(--text-3)] hover:text-[var(--text)]">✕</button>
-            </div>
-
-            {/* 生图方式切换器（§7）：本地 ComfyUI / 云端 ComfyUI / 第三方 API / NovelAI（插槽） */}
-            <div className="mb-3">
-              <span className="eyebrow mb-1.5 block">选生图方式</span>
-              <div className="flex flex-wrap gap-1.5">
-                {enginesList.map((e) => (
-                  <button
-                    key={e.id}
-                    type="button"
-                    onClick={() => {
-                      setGenEngine(e.id)
-                      void selectImageEngine(e.id).catch((err) =>
-                        setErrorText(err instanceof Error ? err.message : String(err)),
-                      )
-                    }}
-                    title={e.desc}
-                    className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
-                      genEngine === e.id
-                        ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
-                        : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-2)] hover:border-[var(--pink)]'
-                    }`}
-                  >
-                    {e.name}
-                    {!e.ready && <span className="ml-1 text-[10px] text-[var(--text-3)]">未接入</span>}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1.5 text-[11px] leading-snug text-[var(--text-3)]">
-                {enginesList.find((e) => e.id === genEngine)?.desc ?? '生图方式加载中…'}
-              </p>
-            </div>
-
-            <Field label="画面描述（提示词）">
-              <div className="flex items-start gap-2">
-                <textarea
-                  className="textarea flex-1"
-                  rows={3}
-                  value={genPrompt}
-                  onChange={(e) => setGenPrompt(e.target.value)}
-                  placeholder="如：大诗音穿着围裙在烘焙坊微笑着递上一块蛋糕…"
-                />
-                <button
-                  type="button"
-                  className="btn ghost sm shrink-0"
-                  title="按当前角色的形态重设为外貌提示词"
-                  disabled={!appearForm || !active}
-                  onClick={() => {
-                    const char = visibleCharacters.find((c) => c.id === active?.characterIds[0])
-                    if (!char) return
-                    const appearance = buildAppearancePrompt(char)
-                    if (!appearance) return
-                    setGenPrompt(appearance)
-                    lastAutoRef.current = appearance
-                  }}
-                >
-                  ↺ 重置
-                </button>
-              </div>
-            </Field>
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-              <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-2)]">
-                <input
-                  type="checkbox"
-                  checked={autoAppend}
-                  onChange={(e) => setAutoAppend(e.target.checked)}
-                  className="h-3.5 w-3.5 accent-[var(--pink)]"
-                />
-                自动拼装外貌
-              </label>
-              <span className="text-[11px] text-[var(--text-3)]">
-                {appearForm ? `按「${appearForm}」的外观` : '当前会话没有可用的角色'}
-              </span>
-            </div>
-
-            {/* 参数区：尺寸 / 张数常显；负向提示词、步数、CFG、seed 收在「更多」里 */}
-            <div className="mt-2 flex flex-wrap items-end gap-2">
-              <label className="flex flex-col gap-1">
-                <span className="text-[11px] text-[var(--text-3)]">尺寸</span>
-                <select className="input w-auto py-1 text-[12px]" value={genSize} onChange={(e) => setGenSize(e.target.value)}>
-                  <option value="512x768">512×768（SD1.5 竖）</option>
-                  <option value="768x512">768×512（SD1.5 横）</option>
-                  <option value="512x512">512×512（SD1.5 方）</option>
-                  <option value="832x1216">832×1216（SDXL 竖）</option>
-                  <option value="1216x832">1216×832（SDXL 横）</option>
-                  <option value="1024x1024">1024×1024（SDXL 方）</option>
-                </select>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[11px] text-[var(--text-3)]">张数</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={4}
-                  className="input w-[70px] py-1 text-[12px]"
-                  value={genN}
-                  onChange={(e) => setGenN(Math.max(1, Math.min(4, Number(e.target.value) || 1)))}
-                />
-              </label>
-              <button
-                type="button"
-                className="btn ghost sm"
-                onClick={() => setShowAdvanced((v) => !v)}
-                title="负向提示词 / 步数 / CFG / seed"
-              >
-                {showAdvanced ? '收起参数 ▴' : '更多参数 ▾'}
-              </button>
-            </div>
-
-            {showAdvanced && (
-              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                <label className="flex flex-col gap-1 sm:col-span-3">
-                  <span className="text-[11px] text-[var(--text-3)]">负向提示词（不想出现的）</span>
-                  <input
-                    className="input py-1 text-[12px]"
-                    value={genNegative}
-                    onChange={(e) => setGenNegative(e.target.value)}
-                    placeholder="如：lowres, bad anatomy, extra fingers"
-                  />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-[11px] text-[var(--text-3)]">步数（留空=工作流默认）</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={150}
-                    className="input py-1 text-[12px]"
-                    value={genSteps}
-                    onChange={(e) => setGenSteps(e.target.value)}
-                    placeholder="25"
-                  />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-[11px] text-[var(--text-3)]">CFG（留空=工作流默认）</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min={0}
-                    className="input py-1 text-[12px]"
-                    value={genCfg}
-                    onChange={(e) => setGenCfg(e.target.value)}
-                    placeholder="7.0"
-                  />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-[11px] text-[var(--text-3)]">seed（留空=随机）</span>
-                  <input
-                    type="number"
-                    className="input py-1 text-[12px]"
-                    value={genSeed}
-                    onChange={(e) => setGenSeed(e.target.value)}
-                    placeholder="随机"
-                  />
-                </label>
-              </div>
-            )}
-
-            {genEngine === 'thirdparty' && !config.imageModel && (
-              <p className="mt-2 rounded-lg bg-[var(--pink-soft)] px-3 py-2 text-[12px] leading-snug text-[var(--pink-deep)]">
-                ⚠ 第三方通道还没配生图模型。请点 ⚙ 模型设置填一个支持 /images/generations
-                的中转地址 + 模型名（vsllm 无生图通道）。
-              </p>
-            )}
-            <div className="mt-3 flex items-center justify-between gap-2.5">
-              <span className="text-[11px] leading-snug text-[var(--text-3)]">
-                {stats
-                  ? `本地：原图 ${(stats.orig_bytes / 1024 / 1024).toFixed(1)} MB · 缩略图 ${(stats.thumb_bytes / 1024).toFixed(0)} KB`
-                  : '存储统计加载中…'}
-              </span>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  className="btn ghost sm"
-                  disabled={!stats?.orig_bytes}
-                  title="清掉本地原图，只留缩略图（省空间；想看高清再重新生成/发送）"
-                  onClick={() => void clearOriginals().then(() => attachmentStats().then(setStats))}
-                >
-                  清理原图
-                </button>
-                <button className="btn ghost sm" onClick={() => !genBusy && setGenOpen(false)}>取消</button>
-                <button className="btn sm" onClick={doGenerate} disabled={genBusy || !genPrompt.trim()}>
-                  {genBusy ? '生成中…' : '生成'}
-                </button>
-              </div>
-            </div>
-            {genImages.length > 0 && (
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {genImages.map((g, i) => {
-                  const src = g.orig || g.thumb
-                  return (
-                    <figure key={g.id || i} className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)]">
-                      <img
-                        src={src}
-                        alt={`生成结果 ${i + 1}`}
-                        className="w-full cursor-zoom-in"
-                        onClick={() => setLightbox(src)}
-                      />
-                      <figcaption className="flex items-center justify-between gap-2 px-2 py-1.5">
-                        <span className="text-[11px] text-[var(--text-3)]">结果 {i + 1}</span>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            className="btn ghost sm"
-                            title="下载原图"
-                            onClick={() => {
-                              const a = document.createElement('a')
-                              a.href = src
-                              a.download = `xiaotangren-${i + 1}.png`
-                              a.click()
-                            }}
-                          >
-                            ⤓
-                          </button>
-                          <button
-                            type="button"
-                            className="btn ghost sm"
-                            title="存入画廊（相册 + 照片记忆）"
-                            onClick={() => void starGenerated(g)}
-                          >
-                            ⭐
-                          </button>
-                        </div>
-                      </figcaption>
-                    </figure>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* 生图浮层（§7）：已抽成独立组件 ImageGenOverlay，这里只管开关 */}
+      <ImageGenOverlay
+        open={genOpen}
+        onClose={() => setGenOpen(false)}
+        session={active}
+        sessionKey={sessionKey}
+        visibleCharacters={visibleCharacters}
+        config={config}
+        setLightbox={setLightbox}
+        setErrorText={setErrorText}
+        setGalleryOpen={setGalleryOpen}
+      />
 
       {/* 记忆浮层（§9.2/§9.3）：家记忆 + 各人的个人记忆，可增可删可重建索引 */}
       {memoryOpen && (
@@ -2670,6 +2586,38 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           characters={characters.map((c) => ({ id: c.id, name: c.name }))}
           defaultOwner={ownerOf(active)}
           onClose={() => setGalleryOpen(false)}
+        />
+      )}
+
+      {/* 群聊阵容浮层（§25）：改谁在群里。存后端 settings，失败回滚并留在浮层里报错 */}
+      <GroupRosterPanel
+        open={rosterOpen}
+        onClose={() => setRosterOpen(false)}
+        castable={visibleCharacters.filter((c) => c.id !== SELF_CHARACTER_ID)}
+        roster={roster}
+        onSave={async (ids) => {
+          const prev = roster
+          setRoster(ids) // 先乐观更新，界面立刻跟手
+          try {
+            await saveSettings({ group_roster: JSON.stringify(ids) })
+          } catch (e) {
+            setRoster(prev) // 写失败就回滚，别让界面显示一个没存下去的阵容
+            throw e
+          }
+        }}
+      />
+
+      {/* 看提示词浮层（§24）：改完档案不生效时，用它核对此刻到底给模型发了什么 */}
+      {promptOpen && active && (
+        <PromptInspector
+          open={promptOpen}
+          onClose={() => setPromptOpen(false)}
+          characterIds={active.characterIds}
+          personaId={activePersonaId}
+          // 走与外发同一条路（§27）：核对提示词时看到的条数与排版，
+          // 就是真发出去的那份 —— 别让调试面板和实际请求差一截。
+          messages={buildOutbound(messages)}
+          uncensored={config.channel === 'uncensored'}
         />
       )}
 

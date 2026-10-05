@@ -49,7 +49,11 @@ export default function GalleryPanel({
   const [lightbox, setLightbox] = useState<string | null>(null)
   // 归属筛选：'all' = 不看归属全列（默认，便于把一张图改到别的归属）
   const [filter, setFilter] = useState<'all' | Owner>('all')
+  // 层级筛选（§26）：'public' 公开层 / 'private' 私密层 / 'all' 两层都看。
+  // 默认只看公开层 —— 别人凑过来时屏幕上不会先铺一屏私密图。
+  const [tier, setTier] = useState<'public' | 'private' | 'all'>('public')
   const [uploadOwner, setUploadOwner] = useState<Owner>(defaultOwner)
+  const [uploadPrivate, setUploadPrivate] = useState(false)
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -63,7 +67,9 @@ export default function GalleryPanel({
     void reload()
   }, [reload])
 
-  const shown = filter === 'all' ? items : items.filter((g) => g.owner === filter)
+  const shown = items.filter(
+    (g) => (filter === 'all' || g.owner === filter) && (tier === 'all' || g.private === (tier === 'private')),
+  )
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -85,10 +91,10 @@ export default function GalleryPanel({
     setUploading(true)
     setError('')
     try {
-      await uploadToGallery(file, { owner: uploadOwner })
+      await uploadToGallery(file, { owner: uploadOwner, private: uploadPrivate })
       await reload()
       onChanged?.()
-      flash(`已上传到「${ownerLabel(uploadOwner, characters)}」✓`)
+      flash(`已上传到「${ownerLabel(uploadOwner, characters)}」${uploadPrivate ? '的私密层 🔒' : ' ✓'}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -162,6 +168,22 @@ export default function GalleryPanel({
     }
   }
 
+  // 切公开层 / 私密层（§26）：只动界面归属，不碰照片记忆 —— 私密是防瞥屏，不是瞒角色。
+  async function togglePrivate(id: string, next: boolean) {
+    setBusyId(id)
+    setError('')
+    try {
+      await updateGallery(id, { private: next })
+      await reload()
+      onChanged?.()
+      flash(next ? '已收进私密层 🔒（展示端默认不列出，记忆不受影响）' : '已放回公开层 ✓')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusyId('')
+    }
+  }
+
   async function remove(id: string) {
     setBusyId(id)
     setError('')
@@ -189,15 +211,46 @@ export default function GalleryPanel({
         <div className="mb-3 flex items-center gap-2">
           <span className="text-[15px] font-semibold text-[var(--text)]">🖼 画廊</span>
           <span className="text-[11px] text-[var(--text-3)]">
-            重要图片 · 按归属分类（私聊自动归属，这里可手改）· 描述按 A 方案进记忆
+            重要图片 · 分公开 / 私密两层 · 按归属分类（私聊自动归属，这里可手改）
           </span>
           <button onClick={onClose} className="ml-auto text-[var(--text-3)] hover:text-[var(--text)]">
             ✕
           </button>
         </div>
 
-        {/* 归属筛选 + 上传 */}
+        {/* 归属筛选 + 层级筛选 + 上传 */}
         <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2">
+          {/* 层级（§26）：公开 / 私密 / 全部。默认公开 —— 别人凑过来时不会先看到一屏私密图 */}
+          <span className="flex items-center gap-0.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] p-0.5">
+            {(['public', 'private', 'all'] as const).map((t) => {
+              const count = items.filter((g) => t === 'all' || g.private === (t === 'private')).length
+              const on = tier === t
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTier(t)}
+                  className={`rounded-md px-2 py-0.5 text-[12px] transition ${
+                    on
+                      ? t === 'private'
+                        ? 'bg-[var(--pink-deep)] text-white'
+                        : 'bg-[var(--pink)] text-white'
+                      : 'text-[var(--text-2)] hover:bg-[var(--surface-2)]'
+                  }`}
+                  title={
+                    t === 'public'
+                      ? '公开层：介绍页 / 小窝默认展示的那些'
+                      : t === 'private'
+                        ? '私密层：展示端默认不列出（防别人瞥屏）；仍可进小糖人记忆'
+                        : '两层一起看'
+                  }
+                >
+                  {t === 'public' ? '公开' : t === 'private' ? '🔒 私密' : '全部'} {count}
+                </button>
+              )
+            })}
+          </span>
+
           <div className="flex flex-wrap items-center gap-1.5">
             {(['all', '', ...characters.map((c) => c.id)] as ('all' | Owner)[]).map((o) => {
               const active = filter === o
@@ -233,6 +286,17 @@ export default function GalleryPanel({
                 </option>
               ))}
             </select>
+            <label
+              className="flex cursor-pointer items-center gap-1 text-[12px] text-[var(--text-2)]"
+              title="勾上 = 直接传进私密层，展示端默认不列出"
+            >
+              <input
+                type="checkbox"
+                checked={uploadPrivate}
+                onChange={(e) => setUploadPrivate(e.target.checked)}
+              />
+              🔒 私密
+            </label>
             <button
               className="btn sm"
               disabled={uploading}
@@ -275,7 +339,9 @@ export default function GalleryPanel({
           </div>
         ) : shown.length === 0 ? (
           <div className="py-10 text-center text-[12px] text-[var(--text-3)]">
-            这个归属下还没有图。切到「全部」，或用「＋ 上传图片」往这里放一张。
+            {tier === 'private'
+              ? '私密层还是空的。在公开层勾上某张图的「🔒 私密」，或上传时勾「🔒 私密」收进来。'
+              : '这个筛选下还没有图。切到「全部」层级或别的归属，或用「＋ 上传图片」往这里放一张。'}
           </div>
         ) : (
           <div className="space-y-3">
@@ -290,7 +356,7 @@ export default function GalleryPanel({
                   <button
                     type="button"
                     onClick={() => setLightbox(g.orig || g.thumb)}
-                    className="shrink-0"
+                    className="relative shrink-0"
                     title="点开看大图"
                   >
                     <img
@@ -298,6 +364,14 @@ export default function GalleryPanel({
                       alt={g.description || '画廊图片'}
                       className="h-[110px] w-[110px] rounded-lg border border-[var(--border)] object-cover"
                     />
+                    {g.private && (
+                      <span
+                        className="absolute right-1 top-1 flex h-[20px] w-[20px] items-center justify-center rounded-md border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_75%,transparent)] text-[11px]"
+                        title="私密层：展示端默认不列出"
+                      >
+                        🔒
+                      </span>
+                    )}
                   </button>
 
                   <div className="min-w-0 flex-1">
@@ -361,6 +435,18 @@ export default function GalleryPanel({
                             进小糖人记忆
                           </label>
                           <label
+                            className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-2)]"
+                            title="收进私密层：介绍页 / 小窝默认不列出它（防别人瞥屏）。不影响的记忆 —— 私密 ≠ 瞒着小糖人"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={g.private}
+                              disabled={busyId === g.id}
+                              onChange={(e) => void togglePrivate(g.id, e.target.checked)}
+                            />
+                            🔒 私密
+                          </label>
+                          <label
                             className="flex items-center gap-1.5 text-[12px] text-[var(--text-2)]"
                             title="这张图归谁 —— 决定它出现在谁的画廊里，以及照片记忆进谁的脑袋"
                           >
@@ -403,6 +489,8 @@ export default function GalleryPanel({
         <p className="mt-4 text-[11px] leading-snug text-[var(--text-3)]">
           归属：私聊里 ⭐ / 上传的图自动归到对方名下，「家 · 共用」则是全家的共同回忆（见「糖人小窝」）。
           改了归属，它的照片记忆会跟着搬 —— 专属归属的记忆只有那个人在场时才检索得到。
+          层级（§26）：<b>私密</b>只是「介绍页 / 小窝默认不列出它」，防的是别人瞥屏，
+          和「进小糖人记忆」是两回事 —— 私密图照样能被小糖人想起来。
           照片记忆（A 方案）：描述以「你有一张照片：…」的形式进 §9.2 的检索，只在话题相关时自然流露。
           多模态 CLIP 直检索（B 方案）已在后端留了 Provider 接口占位，默认不启用。
         </p>

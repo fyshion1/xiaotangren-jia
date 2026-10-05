@@ -62,6 +62,16 @@ def _to_openai_messages(
     system = build_system_prompt(
         character_ids=character_ids, messages=raw, uncensored=uncensored, persona=persona
     )
+    # 群聊双保险之二（§25）：不在场者的发言段落在系统提示里点名之外，
+    # 还要从外发历史里洗掉。build_system_prompt 内部已经清洗过一次（供世界书/记忆扫描），
+    # 这里对「真正发往模型」的副本再走同一个函数，保证两处口径一致。
+    from ..services.prompt.assembler import _strip_absent_speakers
+
+    by_id = {c["id"]: c for c in db.list_characters()}
+    ids = [i for i in (character_ids or []) if i]
+    present = {by_id[i].get("name") for i in ids if i in by_id}
+    if len(present) > 1 and len(by_id) > len(present):
+        raw = _strip_absent_speakers(raw, present)
     out: list[dict] = [{"role": "system", "content": system}] if system else []
     out.extend(raw)
     return out
@@ -69,6 +79,27 @@ def _to_openai_messages(
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post("/chat/preview")
+async def chat_preview(req: ChatRequest) -> dict:
+    """只组装、不调用上游（§24）：把「如果现在发这条，会给模型什么」原样返回。
+
+    零 token 消耗，用来核对自我档案 / 世界书 / 记忆到底进没进提示词。
+    """
+    from ..config import get_settings
+
+    settings = get_settings()
+    messages = _to_openai_messages(
+        req.messages, req.character_ids, req.uncensored, _resolve_persona(req.persona_id)
+    )
+    return {
+        "model": req.model or settings.model_chat,
+        "base_url": req.base_url or settings.model_base_url,
+        "max_tokens": req.max_tokens if req.max_tokens and req.max_tokens > 0 else None,
+        "messages": messages,
+        "system": messages[0]["content"] if messages else "",
+    }
 
 
 @router.post("/chat")

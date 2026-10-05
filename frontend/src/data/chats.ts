@@ -61,15 +61,27 @@ export function personasAsCast(profiles: CharacterProfile[], activePersonaId: st
 // `extra` 是「别的身份」在当前视角下现身的样子（§22）：切到汐子时，大老大会作为一位
 // 可聊角色加进来。会话 id 照旧 `group` / `single-dalaoda` —— 隔离靠 personaSessionId
 // 加前缀，与阵容本身无关。
-export function buildSessions(chars: CharacterProfile[], extra: CharacterProfile[] = []): ChatSession[] {
-  const cast = chars.filter((c) => c.id !== SELF_CHARACTER_ID).map((c) => c.id)
+//
+// `roster`（§25）＝ 群聊阵容：settings 里的 `group_roster`（角色 id 的 JSON 数组）。
+// 传了非空数组就只留这些人在群里；不传 / 传空 / 传 null ＝ 全员在场（老行为不变）。
+// 注意：阵容只影响群聊的 characterIds，私聊一条不少 —— 「不在场」是暂时不想让她插话，
+// 不是把她从家里删掉。
+export function buildSessions(
+  chars: CharacterProfile[],
+  extra: CharacterProfile[] = [],
+  roster?: string[] | null,
+): ChatSession[] {
+  const everyone = chars.filter((c) => c.id !== SELF_CHARACTER_ID).map((c) => c.id)
+  // 空数组当「没设置」处理：空阵容会让后端回退成全员在场，不如这里就认成全员。
+  // 只保留仍然存在的角色 —— 阵容里可能留着已删角色的 id。
+  const cast = roster && roster.length > 0 ? everyone.filter((id) => roster.includes(id)) : everyone
   const group: ChatSession = {
     id: 'group',
     kind: 'group',
     name: '小糖人的家（群聊）',
     emoji: '🏠',
-    subtitle: `${cast.length} 位都在场 · 默认`,
-    characterIds: cast,
+    subtitle: `${cast.length} 位在场 · 可编辑`,
+    characterIds: cast.length > 0 ? cast : everyone,
   }
   const singles: ChatSession[] = chars.map((c) => ({
     id: `single-${c.id}`,

@@ -2,6 +2,8 @@
 // 画廊图 = 图片文件（走 /api/files 静态目录）+ 一段文字描述；
 // 描述按 A 方案当成一条记忆进 §9.2 的 RAG，聊到相关话题时以「你有一张照片：…」注入。
 // 归属（owner）：'' = 家共用，<charId> = 该角色专属 —— 私聊自动归属，画廊里可手改。
+// 私密层（private，§26）：纯界面开关，1 = 收进私密层、展示端默认不列出；
+// 与 owner（归属）、in_memory（进记忆）互相独立 —— 私密只防别人瞥屏，不瞒角色。
 
 import { uploadAttachment } from './storage'
 
@@ -15,6 +17,8 @@ export type GalleryItem = {
   description: string
   in_memory: boolean
   memory_id: string
+  /** §26：是否在私密层。展示端（介绍页 / 小窝）默认只铺公开层。 */
+  private: boolean
   created_at: string
 }
 
@@ -32,10 +36,12 @@ async function asJson<T>(url: string, init?: RequestInit): Promise<T> {
   return resp.json() as Promise<T>
 }
 
-/** 不传 owner = 全量；传 '' 或 <charId> = 按归属过滤（空串是合法筛选值，别用 falsy 判断）。 */
-export async function fetchGallery(owner?: string): Promise<GalleryItem[]> {
+/** 不传 owner = 全量；传 '' 或 <charId> = 按归属过滤（空串是合法筛选值，别用 falsy 判断）。
+ *  private 同理：undefined = 两层都要，true / false = 只要私密层 / 公开层（§26）。 */
+export async function fetchGallery(owner?: string, privateOnly?: boolean): Promise<GalleryItem[]> {
   const qs = new URLSearchParams({ limit: '500' })
   if (owner !== undefined) qs.set('owner', owner)
+  if (privateOnly !== undefined) qs.set('private', String(privateOnly))
   const data = await asJson<{ items: GalleryItem[] }>(`/api/gallery?${qs}`)
   return data.items ?? []
 }
@@ -48,6 +54,7 @@ export async function starImage(payload: {
   description?: string
   owner?: string
   in_memory?: boolean
+  private?: boolean
 }): Promise<GalleryItem> {
   return asJson<GalleryItem>('/api/gallery', {
     method: 'POST',
@@ -60,7 +67,7 @@ export async function starImage(payload: {
 // 落盘目录用固定的 "gallery" 会话名 —— 画廊图不隶属任何聊天会话。
 export async function uploadToGallery(
   file: File,
-  opts: { owner?: string; description?: string } = {},
+  opts: { owner?: string; description?: string; private?: boolean } = {},
 ): Promise<GalleryItem> {
   const dataUrl = await readAsDataUrl(file)
   const saved = await uploadAttachment('gallery', dataUrl)
@@ -69,6 +76,7 @@ export async function uploadToGallery(
     orig: saved.orig,
     description: opts.description ?? '',
     owner: opts.owner ?? '',
+    private: opts.private ?? false,
   })
 }
 
@@ -102,7 +110,7 @@ export async function describeImage(
 
 export async function updateGallery(
   id: string,
-  patch: { description?: string; in_memory?: boolean; owner?: string },
+  patch: { description?: string; in_memory?: boolean; owner?: string; private?: boolean },
 ): Promise<GalleryItem> {
   return asJson<GalleryItem>(`/api/gallery/${id}`, {
     method: 'PATCH',

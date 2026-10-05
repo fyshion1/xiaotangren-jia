@@ -122,3 +122,82 @@ export async function switchProfile(profileId: string): Promise<{ active_id: str
 export async function deleteProfile(profileId: string): Promise<void> {
   await asJson(`/api/profiles/${profileId}`, { method: 'DELETE' })
 }
+
+// ── 自我档案（§23）──────────────────────────────────────────────────────────
+
+export type SelfBlockMeta = {
+  title: string
+  inject: boolean
+  visible_to: string | string[]
+  created_at: string
+  filename: string
+  persona_id: string
+  is_shared?: boolean
+}
+
+export type SelfBlock = SelfBlockMeta & { content: string }
+
+/** 当前身份下所有区块元数据（不含正文）。 */
+export async function fetchSelfBlocks(personaId: string): Promise<SelfBlockMeta[]> {
+  return asJson<SelfBlockMeta[]>(`/api/self/status?persona_id=${encodeURIComponent(personaId)}`)
+}
+
+/** 读完整区块（包含正文）。 */
+export async function fetchSelfBlock(personaId: string, filename: string): Promise<SelfBlock> {
+  return asJson<SelfBlock>(`/api/self/${encodeURIComponent(personaId)}/${encodeURIComponent(filename)}`)
+}
+
+/** 保存区块（替换 frontmatter + 正文）。 */
+export async function saveSelfBlock(
+  personaId: string,
+  filename: string,
+  body: { title: string; inject: boolean; visible_to: string | string[]; content: string },
+): Promise<SelfBlock> {
+  return asJson<SelfBlock>(`/api/self/${encodeURIComponent(personaId)}/${encodeURIComponent(filename)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/** 新建空白区块。 */
+export async function createSelfBlock(personaId: string, title: string): Promise<SelfBlockMeta> {
+  return asJson<SelfBlockMeta>(`/api/self/${encodeURIComponent(personaId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+}
+
+/** 删除区块。 */
+export async function deleteSelfBlock(personaId: string, filename: string): Promise<void> {
+  await asJson(`/api/self/${encodeURIComponent(personaId)}/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+}
+
+// ── 看提示词（§24）───────────────────────────────────────────────────────────
+
+export type PromptDump = {
+  model: string
+  base_url: string
+  max_tokens: number | null
+  /** 与真正发给上游的一模一样：system 打头，其后是原始对话 */
+  messages: { role: string; content: string }[]
+  /** messages[0] 的正文（没有 system 块时为空串），方便前端默认只展示这一段 */
+  system: string
+}
+
+export type PromptPreviewBody = {
+  messages: { role: string; content: string }[]
+  character_ids: string[]
+  persona_id: string
+  uncensored: boolean
+}
+
+/** 只组装、不调用模型（零 token 消耗）：核对自我档案 / 世界书 / 记忆进没进提示词。 */
+export async function previewPrompt(body: PromptPreviewBody): Promise<PromptDump> {
+  return asJson<PromptDump>('/api/chat/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}

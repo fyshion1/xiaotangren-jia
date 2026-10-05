@@ -180,6 +180,19 @@ def set_owner(gallery_id: str, owner: str) -> dict | None:
     return db.get_gallery(gallery_id)
 
 
+def set_private(gallery_id: str, private: bool) -> dict | None:
+    """切到公开层 / 私密层（§26）。
+
+    **故意不碰记忆**：私密只是「界面默认不展示」，防的是别人瞥屏，不是瞒着角色。
+    照片记忆的建/删仍只由 `in_memory` 决定，两者互相独立。
+    """
+    g = db.get_gallery(gallery_id)
+    if g is None:
+        return None
+    db.update_gallery(gallery_id, private=private)
+    return db.get_gallery(gallery_id)
+
+
 def remove(gallery_id: str) -> bool:
     """从画廊移除：连带删掉它的照片记忆（图文件由 §15 的清理流程回收）。"""
     g = db.get_gallery(gallery_id)
@@ -198,6 +211,7 @@ def star(
     description: str = "",
     owner: str = "",
     in_memory: bool = True,
+    private: bool = False,
 ) -> dict | None:
     """「⭐ 存入画廊」：同一归属下同一张原图重复收藏 → 返回已存在的那条（幂等）。"""
     owner = (owner or "").strip()
@@ -214,6 +228,7 @@ def star(
         # 先记下「要不要进记忆」的意向；描述为空时暂不建记忆（避免留一条空正文的孤儿记忆），
         # 等描述补上（用户手写或自动描述）再真正建。
         in_memory=in_memory,
+        private=private,
     )
     if created is None:
         return db.get_gallery_by_orig(orig, owner=owner)
