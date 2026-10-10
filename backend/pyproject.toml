@@ -13,6 +13,8 @@ dependencies = [
     "edge-tts>=7.2",
     "piper-tts>=1.8",
     "pillow>=10.3",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "小糖人 · Gemini 测试同步",
+  "version": "0.1.0",
+  "description": "手动开启后，将当前 Gemini 网页的文字同步到本地 test 群聊。",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["http://127.0.0.1:8000/*", "http://localhost:8000/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html"},
+  "content_scripts": [{"matches": ["https://gemini.google.com/*"], "js": ["content.js"], "run_at": "document_idle"}]
+}

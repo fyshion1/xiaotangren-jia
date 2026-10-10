@@ -57,6 +57,47 @@ body {
   max-height: 100%;
   overscroll-behavior: none;
 }
+
+.app-mobile-nav {
+  display: none;
+  flex: 0 0 auto;
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+@media (max-width: 767px) {
+  .app-mobile-nav { display: flex; }
+}
+.app-mobile-nav button {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 4px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.app-mobile-nav button span { font-size: 18px; line-height: 1; }
+.app-mobile-nav button.active { color: var(--pink-deep); font-weight: 600; }
+
+/* ===== 手机端「设置」页（§28） =====
+   电脑端聊天顶栏右边那一排功能（成员 / 提示词 / 通话 / 自动记忆 / 画廊 / 删除 /
+   记忆 / 生成 / 模型设置 / 通道）整体搬到这里。只在手机上渲染（md:hidden），
+   桌面端顶栏已有同样一套，不重复铺。 */
+.mobile-settings { min-height: 0; }
+.mobile-settings-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+  padding: 10px;
+}
+.mobile-settings-card .eyebrow { display: block; margin-bottom: 6px; }
+.mobile-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+}
 body {
   margin: 0;
   color: var(--text);
@@ -449,6 +490,29 @@ body {
 .self-profile-panel .panel-body {
   display: flex;
   min-height: 340px;
+}
+.personal-db-panel { max-height: 720px; }
+.personal-db-panel .panel-body { height: 580px; min-height: 0; overflow: hidden; }
+.personal-db-panel .db-toolbar { display:flex; gap:10px; align-items:center; padding:10px 14px; border-bottom:1px solid var(--border); }
+.personal-db-panel .db-toolbar .input { max-width:280px; font-size:13px; }
+.personal-db-panel .db-tree { width:300px; }
+.personal-db-panel .db-folder { display:block; width:100%; text-align:left; color:var(--text-2); font-size:12px; padding-top:7px; padding-bottom:4px; font-weight:600; border:0; background:transparent; cursor:pointer; }
+.personal-db-panel .db-folder:hover { background:var(--surface-2); }
+.personal-db-panel .block-editor { min-width:0; }
+.personal-db-panel .db-actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+.personal-db-panel .db-current-path { min-width:0; overflow-wrap:anywhere; font-size:13px; }
+.personal-db-panel .db-meta-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; font-size:12px; color:var(--text-2); }
+.personal-db-panel .db-meta-form label { display:flex; align-items:center; gap:6px; min-width:0; }
+.personal-db-panel .db-meta-form .input { min-width:0; font-size:12px; padding:6px 8px; }
+.personal-db-panel .db-meta-form .db-check { align-items:center; }
+.personal-db-panel .db-check input { accent-color:var(--pink); }
+@media (max-width:700px) {
+  .personal-db-panel .panel-body { height:600px; flex-direction:column; }
+  .personal-db-panel .db-tree { width:100%; height:190px; flex:none; border-right:0; border-bottom:1px solid var(--border); }
+  .personal-db-panel .block-editor { height:420px; }
+  .personal-db-panel .db-toolbar { align-items:flex-start; flex-direction:column; }
+  .personal-db-panel .db-toolbar .input { max-width:none; width:100%; }
+  .personal-db-panel .db-meta-form { grid-template-columns:1fr; }
 }
 
 /* 左栏：区块列表 */

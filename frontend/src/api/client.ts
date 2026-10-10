@@ -80,6 +80,17 @@ export async function saveSettings(kv: Settings): Promise<Settings> {
   })
 }
 
+export async function saveGameApiConfig(body: { game_id: string; name: string; base_url: string; api_key: string; model: string }): Promise<any> {
+  return asJson('/api/game/api-configs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+}
+export async function fetchGameApiConfigs(gameId: string): Promise<any[]> {
+  const result = await asJson<{ items: any[] }>(`/api/game/api-configs?game_id=${encodeURIComponent(gameId)}`)
+  return result.items || []
+}
+export async function launchInteractiveHome(): Promise<{ ok: boolean; project: string }> {
+  return asJson('/api/interactive-home/launch', { method: 'POST' })
+}
+
 // ---- 个人档案（私人空间 / 用户身份，§22）----
 // 和 characters 是一对镜像，多一个「当前身份」和删除。当前身份存在后端 settings 里，
 // 所以全局一处切换，私聊群聊一起走。
@@ -201,3 +212,17 @@ export async function previewPrompt(body: PromptPreviewBody): Promise<PromptDump
     body: JSON.stringify(body),
   })
 }
+
+export type PersonalDbEntry = { path: string; name: string; kind: 'file' | 'directory'; extension: string; size: number | null; editable: boolean; content?: string | null; readonly?: boolean; sha256?: string; sheets?: {name:string;rows:number;columns:number;preview?:unknown[][]}[] }
+export async function fetchPersonalDbTree(): Promise<PersonalDbEntry[]> { return asJson('/api/personal-db/tree') }
+export async function fetchPersonalDbFile(path: string): Promise<PersonalDbEntry> { return asJson(`/api/personal-db/file?path=${encodeURIComponent(path)}`) }
+export async function savePersonalDbFile(path: string, content: string, expected_sha256?: string): Promise<PersonalDbEntry> { return asJson('/api/personal-db/file', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({path, content, expected_sha256}) }) }
+export async function fetchPersonalDbHistory(path: string): Promise<{path:string;name:string;size:number}[]> { return asJson(`/api/personal-db/history?path=${encodeURIComponent(path)}`) }
+export async function restorePersonalDbVersion(path: string, version: string): Promise<void> { await asJson('/api/personal-db/restore', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,version})}) }
+export async function createPersonalDbFile(path:string,content:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,content})})}
+export async function renamePersonalDbFile(path:string,new_name:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,new_name})})}
+export async function archivePersonalDbFile(path:string):Promise<void>{await asJson(`/api/personal-db/archive?path=${encodeURIComponent(path)}`,{method:'POST'})}
+export async function movePersonalDbPath(path:string,destination:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,destination})})}
+export async function renamePersonalDbFolder(path:string,new_name:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/rename-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,new_name})})}
+export async function copyToAiLayer(source:string,destination:string,title?:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/layer/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,destination,title})})}
+export async function approveAiLayer(source:string,destination:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/layer/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,destination})})}

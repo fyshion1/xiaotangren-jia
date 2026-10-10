@@ -71,16 +71,17 @@ async def stream_chat(
     base_url: str,
     api_key: str = "",
     max_tokens: int | None = None,
+    timeout: float = 600.0,
 ) -> AsyncIterator[dict]:
     """流式聊天，逐块产出事件（见模块 docstring）。
 
-    max_tokens：单条回复 token 上限（None = 不限制），透传给上游 max_tokens。
+    max_tokens：单条回复 token 上限（None = 使用上游默认值）。
     """
     base = base_url.rstrip("/")
     payload = {"model": model, "messages": messages, "stream": True}
     if max_tokens:
         payload["max_tokens"] = max_tokens
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=30.0)) as client:
         async with client.stream(
             "POST", f"{base}/chat/completions", headers=_headers(api_key), json=payload
         ) as resp:
@@ -92,12 +93,14 @@ async def stream_chat(
                     "status": resp.status_code,
                 }
                 return
+            finish_reason = None
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[len("data:"):].strip()
                 if data == "[DONE]":
-                    break
+                    yield {"type": "done", "finish_reason": finish_reason}
+                    return
                 try:
                     obj = json.loads(data)
                 except json.JSONDecodeError:
@@ -115,7 +118,15 @@ async def stream_chat(
                 text = delta.get("content")
                 if text:
                     yield {"type": "text", "text": text}
-            yield {"type": "done"}
+                # 结束原因不能丢：length / content_filter 都可能只留下半句话。
+                finish_reason = choices[0].get("finish_reason") or finish_reason
+                if delta.get("refusal"):
+                    yield {"type": "text", "text": delta["refusal"]}
+                    finish_reason = "refusal"
+            if finish_reason:
+                yield {"type": "done", "finish_reason": finish_reason}
+            else:
+                yield {"type": "error", "message": "上游连接提前结束，回复可能不完整。", "status": 502}
 
 
 async def complete_chat(
@@ -158,21 +169,25 @@ async def stream_chat_retry(
     api_key: str = "",
     attempts: int = 3,
     max_tokens: int | None = None,
+    timeout: float = 600.0,
 ) -> AsyncIterator[dict]:
     """带瞬时错误重试的流式聊天；致命错误（模型名错 / key 错）直接透出，不空转。"""
     for i in range(attempts):
         error: dict | None = None
-        async for ev in stream_chat(messages, model, base_url, api_key, max_tokens=max_tokens):
+        emitted_text = False
+        async for ev in stream_chat(messages, model, base_url, api_key, max_tokens=max_tokens, timeout=timeout):
             if ev["type"] == "error":
                 error = ev
                 break
+            emitted_text = emitted_text or ev["type"] == "text"
             yield ev
         if error is None:
             return
         retryable = error.get("status") in _RETRY_STATUS or any(
             h in str(error.get("message", "")).lower() for h in _RETRY_HINTS
         )
-        if not retryable or i == attempts - 1:
+        # 已经输出过正文时重试会将第二次回复拼在半句话后面。
+        if emitted_text or not retryable or i == attempts - 1:
             yield error
             return
         await asyncio.sleep(0.6 * (i + 1))

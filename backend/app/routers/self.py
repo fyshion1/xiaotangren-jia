@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import zipfile
 import io
 import time
-from pathlib import Path
+import zipfile
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse

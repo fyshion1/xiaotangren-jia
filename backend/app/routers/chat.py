@@ -35,7 +35,7 @@ class ChatRequest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
-    # 单条回复的 token 上限（0 = 不限制）。前端「最大回复」面板可调。
+    # 单条回复的 token 上限（0 = 使用上游默认值）。
     max_tokens: int | None = None
     # 是否走无审查通道：为真时组装引擎额外追加「无审查专属」越狱块（§7）。
     uncensored: bool = False
@@ -123,7 +123,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
                 if ev["type"] == "text":
                     yield _sse("token", {"text": ev["text"]})
                 elif ev["type"] == "done":
-                    yield _sse("done", {})
+                    yield _sse("done", {"finish_reason": ev.get("finish_reason")})
                 else:
                     yield _sse("error", {"message": ev["message"]})
         except Exception as exc:  # noqa: BLE001

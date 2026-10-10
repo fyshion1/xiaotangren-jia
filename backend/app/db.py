@@ -60,6 +60,15 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (session_id);
+CREATE TABLE IF NOT EXISTS gemini_sync_messages (
+    conversation_id TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    raw_content TEXT NOT NULL,
+    complete INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (conversation_id, source_message_id)
+);
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
     bucket TEXT NOT NULL,
@@ -71,10 +80,68 @@ CREATE TABLE IF NOT EXISTS memories (
     vector BLOB,
     fingerprint TEXT NOT NULL DEFAULT '',
     meta TEXT NOT NULL DEFAULT '',
+    game_id TEXT NOT NULL DEFAULT '',
+    world_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_memories_bucket ON memories (bucket, char_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_dedupe ON memories (bucket, char_id, fingerprint);
+CREATE TABLE IF NOT EXISTS game_sessions (
+    game_id TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (game_id, world_id)
+);
+CREATE TABLE IF NOT EXISTS game_api_configs (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    api_key TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_game_api_config_name ON game_api_configs (game_id, name);
+CREATE TABLE IF NOT EXISTS game_commands (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    character_id TEXT NOT NULL DEFAULT '',
+    command TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    result TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_game_commands_queue ON game_commands (game_id, world_id, status, created_at);
+CREATE TABLE IF NOT EXISTS game_play_sessions (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    player_id TEXT NOT NULL DEFAULT '',
+    character_ids TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active',
+    record TEXT NOT NULL DEFAULT '{}',
+    summary TEXT NOT NULL DEFAULT '',
+    summary_memory_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_game_play_sessions_scope ON game_play_sessions (game_id, world_id, created_at);
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id TEXT PRIMARY KEY,
+    sender TEXT NOT NULL,
+    recipient TEXT NOT NULL DEFAULT '*',
+    conversation_id TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'message',
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'queued',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    handled_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_inbox ON agent_messages (recipient, status, created_at);
 CREATE TABLE IF NOT EXISTS gallery (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL DEFAULT '',
@@ -139,6 +206,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE worldbook ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
     for sql in _WORLDBOOK_INDEXES:
         conn.execute(sql)
+    mem_cols = {r["name"] for r in conn.execute("PRAGMA table_info(memories)")}
+    if "game_id" not in mem_cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN game_id TEXT NOT NULL DEFAULT ''")
+    if "world_id" not in mem_cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN world_id TEXT NOT NULL DEFAULT ''")
+    # 必须在 ALTER TABLE 补列之后建索引；旧库的 memories 表此时还没有游戏隔离字段。
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_game ON memories (game_id, world_id, bucket, char_id)")
+    # 旧版唯一索引没有游戏范围，会把不同游戏/世界的同文记忆错误视为重复。
+    conn.execute("DROP INDEX IF EXISTS idx_memories_dedupe")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_dedupe ON memories (bucket, char_id, fingerprint, game_id, world_id)")
 
 
 def _read_tombstones(conn: sqlite3.Connection) -> list[str]:
@@ -627,6 +704,8 @@ def _row_to_memory(row: sqlite3.Row) -> dict:
         "dim": row["dim"],
         "vector": row["vector"],
         "meta": meta,
+        "game_id": row["game_id"],
+        "world_id": row["world_id"],
         "created_at": row["created_at"],
     }
 
@@ -641,19 +720,21 @@ def add_memory(
     dim: int = 0,
     fingerprint: str = "",
     meta: dict | None = None,
+    game_id: str = "",
+    world_id: str = "",
 ) -> dict | None:
     """写一条记忆。同桶内指纹重复 → 返回 None（幂等去重）。"""
     mem_id = f"mem-{uuid.uuid4().hex[:12]}"
     with _tx() as conn:
         existing = conn.execute(
-            "SELECT id FROM memories WHERE bucket = ? AND char_id = ? AND fingerprint = ?",
-            (bucket, char_id, fingerprint),
+            "SELECT id FROM memories WHERE bucket = ? AND char_id = ? AND fingerprint = ? AND game_id = ? AND world_id = ?",
+            (bucket, char_id, fingerprint, game_id, world_id),
         ).fetchone()
         if existing:
             return None
         conn.execute(
             "INSERT INTO memories (id, bucket, char_id, text, source, engine, dim, vector, "
-            "fingerprint, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "fingerprint, meta, game_id, world_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 mem_id,
                 bucket,
@@ -665,6 +746,8 @@ def add_memory(
                 vector,
                 fingerprint,
                 json.dumps(meta or {}, ensure_ascii=False),
+                game_id,
+                world_id,
             ),
         )
     return {
@@ -677,6 +760,8 @@ def add_memory(
         "dim": dim,
         "vector": vector,
         "meta": meta or {},
+        "game_id": game_id,
+        "world_id": world_id,
     }
 
 
@@ -684,6 +769,8 @@ def list_memories(
     bucket: str | None = None,
     char_id: str | None = None,
     limit: int = 200,
+    game_id: str | None = None,
+    world_id: str | None = None,
 ) -> list[dict]:
     sql = "SELECT * FROM memories"
     where: list[str] = []
@@ -694,6 +781,12 @@ def list_memories(
     if char_id is not None:
         where.append("char_id = ?")
         args.append(char_id)
+    if game_id is not None:
+        where.append("game_id = ?")
+        args.append(game_id)
+    if world_id is not None:
+        where.append("world_id = ?")
+        args.append(world_id)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY rowid DESC LIMIT ?"
@@ -744,12 +837,14 @@ def count_memories(bucket: str | None = None) -> int:
     return int(row[0])
 
 
-def get_memory_by_fingerprint(bucket: str, char_id: str, fingerprint: str) -> dict | None:
+def get_memory_by_fingerprint(
+    bucket: str, char_id: str, fingerprint: str, game_id: str = "", world_id: str = ""
+) -> dict | None:
     """按「桶 + 角色 + 内容指纹」查一条记忆（§9.4 画廊去重时复用已有记忆）。"""
     with _tx() as conn:
         row = conn.execute(
-            "SELECT * FROM memories WHERE bucket = ? AND char_id = ? AND fingerprint = ?",
-            (bucket, char_id, fingerprint),
+            "SELECT * FROM memories WHERE bucket = ? AND char_id = ? AND fingerprint = ? AND game_id = ? AND world_id = ?",
+            (bucket, char_id, fingerprint, game_id, world_id),
         ).fetchone()
     return _row_to_memory(row) if row else None
 
@@ -761,6 +856,134 @@ def update_memory_vector(mem_id: str, engine: str, vector: bytes, dim: int) -> N
             "UPDATE memories SET engine = ?, vector = ?, dim = ? WHERE id = ?",
             (engine, vector, int(dim), mem_id),
         )
+
+
+# ---- 通用游戏接入状态（不包含任何具体游戏实现）----
+def upsert_game_session(game_id: str, world_id: str, state: dict) -> dict:
+    with _tx() as conn:
+        conn.execute("""INSERT INTO game_sessions (game_id, world_id, state, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(game_id, world_id) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at""",
+            (game_id, world_id, json.dumps(state or {}, ensure_ascii=False)))
+        row = conn.execute("SELECT * FROM game_sessions WHERE game_id=? AND world_id=?", (game_id, world_id)).fetchone()
+    return {"game_id": row["game_id"], "world_id": row["world_id"], "state": json.loads(row["state"]), "updated_at": row["updated_at"]}
+
+
+def get_game_session(game_id: str, world_id: str) -> dict | None:
+    with _tx() as conn:
+        row = conn.execute("SELECT * FROM game_sessions WHERE game_id=? AND world_id=?", (game_id, world_id)).fetchone()
+    if not row:
+        return None
+    return {"game_id": row["game_id"], "world_id": row["world_id"], "state": json.loads(row["state"]), "updated_at": row["updated_at"]}
+
+def upsert_game_api_config(game_id: str, name: str, base_url: str, api_key: str, model: str) -> dict:
+    cid = f"gapi-{uuid.uuid4().hex[:12]}"
+    with _tx() as conn:
+        old = conn.execute("SELECT id FROM game_api_configs WHERE game_id=? AND name=?", (game_id, name)).fetchone()
+        if old:
+            cid = old["id"]
+        conn.execute("INSERT INTO game_api_configs (id,game_id,name,base_url,api_key,model) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET base_url=excluded.base_url,api_key=excluded.api_key,model=excluded.model,enabled=1,updated_at=datetime('now')", (cid, game_id, name, base_url, api_key or "", model or ""))
+    return get_game_api_config(cid)
+
+def get_game_api_config(config_id: str) -> dict | None:
+    with _tx() as conn:
+        row = conn.execute("SELECT * FROM game_api_configs WHERE id=?", (config_id,)).fetchone()
+    return dict(row) if row else None
+
+def list_game_api_configs(game_id: str) -> list[dict]:
+    with _tx() as conn:
+        rows = conn.execute("SELECT * FROM game_api_configs WHERE game_id=? AND enabled=1 ORDER BY updated_at DESC", (game_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def enqueue_game_command(game_id: str, world_id: str, character_id: str, command: dict) -> dict:
+    cid = f"cmd-{uuid.uuid4().hex[:12]}"
+    with _tx() as conn:
+        conn.execute("INSERT INTO game_commands (id, game_id, world_id, character_id, command) VALUES (?, ?, ?, ?, ?)",
+                     (cid, game_id, world_id, character_id or "", json.dumps(command or {}, ensure_ascii=False)))
+    return {"id": cid, "game_id": game_id, "world_id": world_id, "character_id": character_id or "", "command": command or {}, "status": "queued"}
+
+
+def list_game_commands(game_id: str, world_id: str, status: str = "queued", limit: int = 50) -> list[dict]:
+    with _tx() as conn:
+        rows = conn.execute("SELECT * FROM game_commands WHERE game_id=? AND world_id=? AND status=? ORDER BY created_at LIMIT ?",
+                            (game_id, world_id, status, max(1, min(limit, 100)))).fetchall()
+    return [{"id": r["id"], "game_id": r["game_id"], "world_id": r["world_id"], "character_id": r["character_id"],
+             "command": json.loads(r["command"]), "status": r["status"], "result": json.loads(r["result"])} for r in rows]
+
+
+def update_game_command(command_id: str, status: str, result: dict | None = None) -> bool:
+    with _tx() as conn:
+        cur = conn.execute("UPDATE game_commands SET status=?, result=?, updated_at=datetime('now') WHERE id=?",
+                           (status, json.dumps(result or {}, ensure_ascii=False), command_id))
+        return bool(cur.rowcount)
+
+
+def create_game_play_session(game_id: str, world_id: str, player_id: str, character_ids: list[str], record: dict | None = None) -> dict:
+    sid = f"play-{uuid.uuid4().hex[:12]}"
+    with _tx() as conn:
+        conn.execute("INSERT INTO game_play_sessions (id,game_id,world_id,player_id,character_ids,record) VALUES (?,?,?,?,?,?)",
+                     (sid, game_id, world_id, player_id or "", json.dumps(character_ids or [], ensure_ascii=False), json.dumps(record or {}, ensure_ascii=False)))
+    return get_game_play_session(sid)
+
+
+def get_game_play_session(session_id: str) -> dict | None:
+    with _tx() as conn:
+        row = conn.execute("SELECT * FROM game_play_sessions WHERE id = ?", (session_id,)).fetchone()
+    if not row:
+        return None
+    return {"id": row["id"], "game_id": row["game_id"], "world_id": row["world_id"], "player_id": row["player_id"],
+            "character_ids": json.loads(row["character_ids"]), "status": row["status"], "record": json.loads(row["record"]),
+            "summary": row["summary"], "summary_memory_id": row["summary_memory_id"], "created_at": row["created_at"], "finished_at": row["finished_at"]}
+
+
+def finish_game_play_session(session_id: str, record: dict | None = None, summary: str | None = None) -> dict | None:
+    with _tx() as conn:
+        conn.execute("UPDATE game_play_sessions SET status='finished', record=?, summary=COALESCE(?, summary), finished_at=datetime('now') WHERE id=? AND status='active'",
+                     (json.dumps(record or {}, ensure_ascii=False), summary, session_id))
+    return get_game_play_session(session_id)
+
+
+def commit_game_play_summary(session_id: str, memory_id: str) -> bool:
+    with _tx() as conn:
+        cur = conn.execute("UPDATE game_play_sessions SET summary_memory_id=? WHERE id=? AND status='finished'", (memory_id, session_id))
+    return bool(cur.rowcount)
+
+
+def list_game_play_summaries(game_id: str, world_id: str, limit: int = 50) -> list[dict]:
+    with _tx() as conn:
+        rows = conn.execute("SELECT * FROM game_play_sessions WHERE game_id=? AND world_id=? AND status='finished' AND summary<>'' ORDER BY created_at DESC LIMIT ?", (game_id, world_id, max(1, min(limit, 100)))).fetchall()
+    return [get_game_play_session(r["id"]) for r in rows]
+
+
+# ---- 通用 Agent 协作消息（不绑定游戏）----
+def send_agent_message(sender: str, recipient: str, conversation_id: str, correlation_id: str, kind: str, payload: dict) -> dict:
+    mid = f"agent-{uuid.uuid4().hex[:12]}"
+    with _tx() as conn:
+        conn.execute("INSERT INTO agent_messages (id,sender,recipient,conversation_id,correlation_id,kind,payload) VALUES (?,?,?,?,?,?,?)",
+                     (mid, sender, recipient or "*", conversation_id or "", correlation_id or "", kind or "message", json.dumps(payload or {}, ensure_ascii=False)))
+    return {"id": mid, "sender": sender, "recipient": recipient or "*", "conversation_id": conversation_id or "", "correlation_id": correlation_id or "", "kind": kind or "message", "payload": payload or {}, "status": "queued"}
+
+
+def list_agent_messages(agent_id: str, status: str | None, conversation_id: str | None, limit: int) -> list[dict]:
+    where = ["(recipient = ? OR recipient = '*')"]
+    args: list = [agent_id]
+    if status:
+        where.append("status = ?")
+        args.append(status)
+    if conversation_id:
+        where.append("conversation_id = ?")
+        args.append(conversation_id)
+    args.append(max(1, min(limit, 200)))
+    with _tx() as conn:
+        rows = conn.execute(f"SELECT * FROM agent_messages WHERE {' AND '.join(where)} ORDER BY created_at DESC LIMIT ?", args).fetchall()
+    return [{"id": r["id"], "sender": r["sender"], "recipient": r["recipient"], "conversation_id": r["conversation_id"], "correlation_id": r["correlation_id"], "kind": r["kind"], "payload": json.loads(r["payload"]), "status": r["status"], "created_at": r["created_at"], "handled_at": r["handled_at"]} for r in rows]
+
+
+def update_agent_message(message_id: str, status: str) -> bool:
+    with _tx() as conn:
+        cur = conn.execute("UPDATE agent_messages SET status=?, handled_at=datetime('now') WHERE id=?", (status, message_id))
+        return bool(cur.rowcount)
 
 
 # ---- 画廊（gallery，对应《项目要求》§9.4）----

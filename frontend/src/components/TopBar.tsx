@@ -5,6 +5,7 @@ type Props = {
   view: View
   onToggleTheme: () => void
   onView: (v: View) => void
+  title?: string
 }
 
 // 「糖人小窝」放最左（与介绍页成员切换行的顺序一致）；「我的私人空间」仅次于它 ——
@@ -18,20 +19,25 @@ const NAV: { v: View; label: string; short: string; emoji: string }[] = [
   { v: 'chat', label: '聊天', short: '聊天', emoji: '💬' },
 ]
 
-export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {
+export default function TopBar({ theme, view, onToggleTheme, onView, title }: Props) {
   return (
     // shrink-0（§19.24）：顶栏是列式 flex 的第一项，不写的话会被内容区挤扁。
     <header className="topbar z-10 shrink-0 border-b border-[var(--border)]">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-1.5 sm:px-4 sm:py-2.5">
         <div className="flex min-w-0 items-center gap-2 text-[15px] font-bold tracking-wide sm:gap-2.5 sm:text-[17px]">
+          {view === 'chat' ? (
+            <button aria-label="返回最近聊天" onClick={() => window.dispatchEvent(new Event('xtr-mobile-sessions'))} className="md:hidden text-xl leading-none">◁</button>
+          ) : (
+            <button aria-label="返回聊天" onClick={() => onView('chat')} className="md:hidden text-xl leading-none">◁</button>
+          )}
           <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[var(--pink)] to-[var(--pink-deep)] text-[14px] text-white shadow-[var(--shadow-sm)]">
             🍬
           </span>
-          <span className="truncate">小糖人之家</span>
+          <span className="truncate">{view === 'chat' ? (title || '聊天') : '小糖人之家'}</span>
         </div>
 
         <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
-          <nav className="flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-full border border-[var(--border)] bg-[var(--surface)] p-0.5 sm:gap-1 sm:p-1">
+          <nav className="hidden min-w-0 items-center gap-0.5 overflow-x-auto rounded-full border border-[var(--border)] bg-[var(--surface)] p-0.5 sm:gap-1 sm:p-1 md:flex">
             {NAV.map(({ v, label, short, emoji }) => (
               <button
                 key={v}

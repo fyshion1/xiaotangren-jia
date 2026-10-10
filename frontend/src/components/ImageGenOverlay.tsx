@@ -21,11 +21,6 @@ import {
   type GeneratedImage,
   type ImageEngine,
 } from '../api/imagegen'
-import {
-  attachmentStats,
-  clearOriginals,
-  type AttachmentStats,
-} from '../api/storage'
 import type { ModelConfig } from './ChatView'
 
 // Field 在 ChatView/JailbreakPanel/WorldbookPanel 里各有一份一样的；
@@ -84,14 +79,6 @@ export default function ImageGenOverlay({
   // 生图方式切换器（§7）：四个插槽。默认 local；具体哪个可用由后端探测决定（ready）。
   const [enginesList, setEnginesList] = useState<ImageEngine[]>([])
   const [genEngine, setGenEngine] = useState('local')
-  const [stats, setStats] = useState<AttachmentStats | null>(null)
-
-  // 打开生图浮层时刷新一次本地存储统计（原图/缩略图各占多少）
-  useEffect(() => {
-    if (!open) return
-    void attachmentStats().then(setStats)
-  }, [open])
-
   // 打开生图浮层时拉一次生图方式列表（§7）；后端没起来就用内置表兜底
   useEffect(() => {
     if (!open) return
@@ -351,21 +338,8 @@ export default function ImageGenOverlay({
             的中转地址 + 模型名（vsllm 无生图通道）。
           </p>
         )}
-        <div className="mt-3 flex items-center justify-between gap-2.5">
-          <span className="text-[11px] leading-snug text-[var(--text-3)]">
-            {stats
-              ? `本地：原图 ${(stats.orig_bytes / 1024 / 1024).toFixed(1)} MB · 缩略图 ${(stats.thumb_bytes / 1024).toFixed(0)} KB`
-              : '存储统计加载中…'}
-          </span>
+        <div className="mt-3 flex justify-end gap-2.5">
           <div className="flex shrink-0 items-center gap-2">
-            <button
-              className="btn ghost sm"
-              disabled={!stats?.orig_bytes}
-              title="清掉本地原图，只留缩略图（省空间；想看高清再重新生成/发送）"
-              onClick={() => void clearOriginals().then(() => attachmentStats().then(setStats))}
-            >
-              清理原图
-            </button>
             <button className="btn ghost sm" onClick={() => !genBusy && onClose()}>取消</button>
             <button className="btn sm" onClick={doGenerate} disabled={genBusy || !genPrompt.trim()}>
               {genBusy ? '生成中…' : '生成'}

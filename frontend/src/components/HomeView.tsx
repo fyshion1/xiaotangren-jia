@@ -5,6 +5,7 @@ import CharacterProfileCard from './CharacterProfileCard'
 import GalleryGrid from './GalleryGrid'
 import CharacterEditor from './CharacterEditor'
 import SelfProfilePanel from './SelfProfilePanel'
+import PersonalDatabasePanel from './PersonalDatabasePanel'
 import WorldbookPanel from './WorldbookPanel'
 import JailbreakPanel from './JailbreakPanel'
 import Avatar from './Avatar'
@@ -204,6 +205,7 @@ export default function HomeView({
 
       {/* 自我档案面板（§23）：私人空间里放在档案卡下方 */}
       {space && <SelfProfilePanel personaId={active.id} />}
+      {space && <PersonalDatabasePanel personaId={active.id} />}
 
       {/* 这位角色的专属画廊（§9.4 归属）；家共用的那部分在「糖人小窝」 */}
       <GalleryGrid owner={active?.id} />

@@ -22,6 +22,8 @@ class MemoryIn(BaseModel):
     character_ids: list[str] = Field(default_factory=list)
     source: str = "manual"
     meta: dict = Field(default_factory=dict)
+    game_id: str = ""
+    world_id: str = ""
 
 
 class Turn(BaseModel):
@@ -48,6 +50,8 @@ class RecallIn(BaseModel):
     session_kind: str = "group"
     topk_home: int | None = None
     topk_personal: int | None = None
+    game_id: str = ""
+    world_id: str = ""
 
 
 @router.get("/memories")
@@ -55,9 +59,11 @@ async def list_memories(
     bucket: str | None = Query(None),
     char: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
+    game_id: str | None = Query(None),
+    world_id: str | None = Query(None),
 ) -> dict:
     """列出记忆（不含向量）。bucket / char 可收窄。"""
-    items = db.list_memories(bucket=bucket, char_id=char, limit=limit)
+    items = db.list_memories(bucket=bucket, char_id=char, limit=limit, game_id=game_id, world_id=world_id)
     for m in items:
         m.pop("vector", None)
     return {
@@ -84,6 +90,8 @@ async def create_memory(body: MemoryIn) -> dict:
         char_id=char_id if bucket == mem.PERSONAL else "",
         source=body.source or "manual",
         meta=body.meta,
+        game_id=body.game_id,
+        world_id=body.world_id,
     )
     if saved is None:
         raise HTTPException(status_code=409, detail="这条记忆已存在（内容重复），或内容为空")
@@ -164,7 +172,10 @@ async def recall(body: RecallIn) -> dict:
     if not ids:
         raise HTTPException(status_code=400, detail="需要至少一位在场角色")
     start = time.perf_counter()
-    items = mem.recall_for(ids, body.query, session_kind=body.session_kind)
+    items = mem.recall_for(
+        ids, body.query, session_kind=body.session_kind,
+        game_id=body.game_id, world_id=body.world_id,
+    )
     return {"items": items, "count": len(items), "elapsed_ms": round((time.perf_counter() - start) * 1000, 1)}
 
 

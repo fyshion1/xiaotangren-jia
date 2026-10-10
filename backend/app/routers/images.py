@@ -76,7 +76,7 @@ async def images_chat(req: VisionRequest) -> StreamingResponse:
                 if ev["type"] == "text":
                     yield _sse("token", {"text": ev["text"]})
                 elif ev["type"] == "done":
-                    yield _sse("done", {})
+                    yield _sse("done", {"finish_reason": ev.get("finish_reason")})
                 else:
                     yield _sse("error", {"message": ev["message"]})
         except Exception as exc:  # noqa: BLE001

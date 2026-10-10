@@ -180,13 +180,15 @@ def delete_by_url(url: str) -> int:
     return removed
 
 
-def clear_originals(session_id: str | None = None) -> int:
-    """回收原图（缩略图永久保留，见 §15.3）。返回删除的文件数。"""
-    ensure_dir()
-    if session_id:
-        roots = [ATTACHMENTS_DIR / _safe_token(session_id) / "orig"]
-    else:
-        roots = [p / "orig" for p in ATTACHMENTS_DIR.iterdir() if p.is_dir()]
+def clear_originals(session_id: str) -> int:
+    """只回收明确指定会话的原图；空值绝不能扩大成全部会话。"""
+    if not session_id or not session_id.strip() or _safe_token(session_id) in {".", ".."}:
+        raise ValueError("必须指定有效的会话，不能清理全部会话")
+    session_dir = ATTACHMENTS_DIR / _safe_token(session_id)
+    root = session_dir / "orig"
+    if session_dir.is_symlink() or root.is_symlink() or not root.resolve().is_relative_to(ATTACHMENTS_DIR.resolve()):
+        raise ValueError("无效的附件目录")
+    roots = [root]
     removed = 0
     for root in roots:
         if not root.is_dir():
@@ -196,6 +198,6 @@ def clear_originals(session_id: str | None = None) -> int:
                 try:
                     f.unlink()
                     removed += 1
-                except OSError:
-                    pass
+                except OSError as exc:
+                    raise OSError(f"已清理 {removed} 个原图文件，部分文件无法删除，请刷新后重试") from exc
     return removed

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -117,7 +119,7 @@ async def upload_attachment(body: AttachmentIn) -> dict:
 
 
 @router.get("/attachments/stats")
-async def attachment_stats() -> dict:
+async def attachment_stats(session: str | None = Query(None)) -> dict:
     root = attachments.ATTACHMENTS_DIR
     sessions: list[dict] = []
     if root.is_dir():
@@ -126,14 +128,24 @@ async def attachment_stats() -> dict:
             thumb = sum(f.stat().st_size for f in (sess / "thumb").glob("*") if f.is_file()) if (sess / "thumb").is_dir() else 0
             sessions.append({"session": sess.name, "orig_bytes": orig, "thumb_bytes": thumb})
     return {
+        "current_session": attachments._safe_token(session) if session else None,
         "sessions": sessions,
         "orig_bytes": sum(s["orig_bytes"] for s in sessions),
         "thumb_bytes": sum(s["thumb_bytes"] for s in sessions),
     }
 
 
+class ClearOriginalsRequest(BaseModel):
+    confirmed: Literal[True]
+
+
 @router.post("/attachments/clear-originals")
-async def clear_originals(session: str | None = Query(None)) -> dict:
-    """回收原图（缩略图永久保留）。session 为空 = 全部会话。"""
-    removed = attachments.clear_originals(session)
+async def clear_originals(body: ClearOriginalsRequest, session: str = Query(..., min_length=1)) -> dict:
+    """必须明确会话和确认标记，旧版无参数请求也不能触发删除。"""
+    try:
+        removed = attachments.clear_originals(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"removed": removed}

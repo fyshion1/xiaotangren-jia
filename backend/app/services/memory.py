@@ -62,6 +62,8 @@ def remember(
     char_id: str = "",
     source: str = "manual",
     meta: dict | None = None,
+    game_id: str = "",
+    world_id: str = "",
 ) -> dict | None:
     """写入一条记忆：先算向量，再落库（同桶同内容自动去重）。
 
@@ -100,6 +102,8 @@ def remember(
         dim=dim,
         fingerprint=emb.text_fingerprint(text),
         meta=meta,
+        game_id=game_id,
+        world_id=world_id,
     )
 
 
@@ -141,6 +145,8 @@ def search(
     query: str,
     buckets: list[tuple[str, str]],
     topk: int = 4,
+    game_id: str = "",
+    world_id: str = "",
 ) -> list[dict]:
     """在给定桶集合里做向量检索 topk。
 
@@ -155,7 +161,9 @@ def search(
     # 把若干桶铺开成一次查询（bucket, char_id 精确匹配）
     candidates: list[dict] = []
     for b, cid in buckets:
-        candidates.extend(db.list_memories(bucket=b, char_id=cid or "", limit=500))
+        candidates.extend(db.list_memories(
+            bucket=b, char_id=cid or "", limit=500, game_id=game_id, world_id=world_id
+        ))
     if not candidates:
         return []
 
@@ -200,6 +208,8 @@ def recall_for(
     character_ids: list[str],
     query: str,
     session_kind: str = "group",
+    game_id: str = "",
+    world_id: str = "",
 ) -> list[dict]:
     """按「在场者」规则检索（§9.2.2/§9.2.3）。
 
@@ -211,11 +221,15 @@ def recall_for(
     if not ids:
         return []
 
-    home = search(query, [(HOME, "")], topk=cfg["topk_home"])
+    # 游戏记忆必须显式限制在同一个游戏世界；空值代表普通聊天记忆。
+    home = search(query, [(HOME, "")], topk=cfg["topk_home"], game_id=game_id, world_id=world_id)
     # 个人记忆：每位在场角色各自 topk（§9.2.3「各自控制条数」）
     personal: list[dict] = []
     for cid in ids:
-        personal.extend(search(query, [(PERSONAL, cid)], topk=cfg["topk_personal"]))
+        personal.extend(search(
+            query, [(PERSONAL, cid)], topk=cfg["topk_personal"],
+            game_id=game_id, world_id=world_id,
+        ))
     return home + personal
 
 

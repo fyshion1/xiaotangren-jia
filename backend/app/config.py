@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     model_api_key: str = ""
     model_chat: str = "gemini-3.8-flash"
     model_vision: str = "gemini-3.8-flash"
+    game_chat_timeout: int = 45
     # 生图：vsllm 无生图通道，默认留空（错填会报「没有配置生图模型」）。
     model_image: str = ""
     image_base_url: str = ""

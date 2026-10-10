@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import type { ChatSession, ChatMessage } from '../data/chats'
 import { buildSessions, personaSessionId, personasAsCast, suggestionsFor, MAIN_PERSONA_ID, SELF_CHARACTER_ID } from '../data/chats'
@@ -7,6 +7,7 @@ import SessionList from './SessionList'
 import StatusSidebar from './StatusSidebar'
 import PortraitCarousel from './PortraitCarousel'
 import ImageGenOverlay from './ImageGenOverlay'
+import StoragePanel from './StoragePanel'
 import MemoryPanel from './MemoryPanel'
 import GalleryPanel from './GalleryPanel'
 import GroupRosterPanel from './GroupRosterPanel'
@@ -15,6 +16,7 @@ import Avatar from './Avatar'
 import { useSpeechToText } from '../hooks/useSpeechToText'
 import { useResizable } from '../hooks/useResizable'
 import {
+  analyzeVideo,
   deleteMessages,
   loadMessages,
   previewDeleteMessages,
@@ -94,6 +96,9 @@ export function resolveRoute(c: ModelConfig) {
 const NAME_MARKER = /^\s*(\*\*([^*\n]+?)\*\*|【([^】\n]+?)】)\s*[:：]?/
 
 const STORAGE_KEY = 'xiaotangren.config'
+const API_PROFILES_KEY = 'xiaotangren.api-profiles'
+type ApiProfile = { id: string; name: string; config: ModelConfig }
+const loadApiProfiles = (): ApiProfile[] => { try { return JSON.parse(localStorage.getItem(API_PROFILES_KEY) || '[]') } catch { return [] } }
 
 // 每页条数（§15.2：启动预载最近 30 条，向上滚再按游标拉）
 const PAGE_SIZE = 30
@@ -391,9 +396,19 @@ type Props = {
   /** 当前正在用的身份（§22）：决定「在跟谁说话」以及聊天记录挂在哪条线上。 */
   activePersona?: CharacterProfile
   initialSessionId?: string
+  /**
+   * 手机端挂载时先显示哪一栏（§28）。底部导航的「消息 / 聊天 / 设置」都是先切 view 再派发
+   * window 事件 —— 从介绍页 / 小窝 / 私人空间点进来时 ChatView 还没挂载，事件早于 React
+   * 提交视图变化，监听器收不到。所以由 App 把这一栏作为挂载初值传进来，事件只负责
+   * ChatView 已挂载时的切换。桌面端忽略这个值。
+   */
+  initialMobileTab?: MobileTab
+  onTitleChange?: (title: string) => void
   onOpenProfile: (charId: string) => void
   /** 点自己那侧的署名人 → 进私人空间（§21）。 */
   onOpenSelf: () => void
+  /** 「消息」栏里的入口 → 糖人小窝（§9.6 / §28）。 */
+  onOpenNest: () => void
   /** 切换某角色的形态（§17）：写回后端，全局生效。 */
   onSwitchForm: (charId: string, formId: string) => void
 }
@@ -401,8 +416,10 @@ type Props = {
 type VoiceOption = { id: string; name: string }
 type EngineOption = { id: string; name: string; desc?: string; available: boolean }
 
-// 手机端底部 Tab（桌面端不用）
-type MobileTab = 'sessions' | 'chat' | 'status'
+// 手机端底部 Tab（桌面端不用）。§28 起「设置」也是一栏 —— 电脑端聊天顶栏右边那一排
+// 功能（成员 / 提示词 / 通话 / 自动记忆 / 画廊 / 删除 / 记忆 / 生成 / 模型设置 / 通道）
+// 全部搬进这一栏，手机顶栏不再单独开抽屉。
+type MobileTab = 'sessions' | 'chat' | 'settings' | 'status'
 
 // 手机端底部聊天栏的内联图标（§19.25）。
 // 参照图里 QQ 那排是细线图标；emoji 直接渲染在不同系统上胖瘦差太多、
@@ -418,7 +435,8 @@ function StickerIcon({ className }: { className?: string }) {
   )
 }
 
-export default function ChatView({ characters, personas = [], activePersona, initialSessionId, onOpenProfile, onOpenSelf, onSwitchForm }: Props) {
+export default function ChatView({ characters, personas = [], activePersona, initialSessionId, initialMobileTab, onOpenProfile, onOpenSelf, onOpenNest, onSwitchForm, onTitleChange }: Props) {
+  const [storageOpen, setStorageOpen] = useState(false)
   const activePersonaId = activePersona?.id ?? MAIN_PERSONA_ID
   // 当前视角下能出场的全部角色（§22）：小糖人 + 「别的身份」（汐子视角下的大老大）。
   // 后者不进屋里的成员表，只在这个视角下临时现身，会话 id 照旧，隔离交给 personaSessionId。
@@ -490,6 +508,10 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     [config.historyLimit],
   )
   const [showSettings, setShowSettings] = useState(false)
+  const [apiProfiles, setApiProfiles] = useState<ApiProfile[]>(loadApiProfiles)
+  const [profileName, setProfileName] = useState('')
+  const saveProfile = () => { if (!profileName.trim()) return; const next = [...apiProfiles, { id: crypto.randomUUID(), name: profileName.trim(), config }]; setApiProfiles(next); localStorage.setItem(API_PROFILES_KEY, JSON.stringify(next)); setProfileName('') }
+  const activateProfile = (p: ApiProfile) => saveConfig(p.config)
   const [showKey, setShowKey] = useState(false)
   const [showUncensoredKey, setShowUncensoredKey] = useState(false)
   const [errorText, setErrorText] = useState('')
@@ -499,6 +521,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   /** 消息滚动容器（§19.14）：载入 / 新消息时直接定位到这里的最下面。 */
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const videoRef = useRef<HTMLInputElement>(null)
 
   // 侧边栏拖宽（§19.11）：宽度写进 CSS 变量 --sb-w，两侧 aside 只认它，拖动只改这一个数。
   const navResize = useResizable('xtr.w.nav', 230, 160, 420, 1) // 左栏：把手在右，往右拖变宽
@@ -576,9 +599,10 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 看提示词（§24）：把「此刻会发给模型的东西」摊开看 —— 改完档案不生效时用它核对。
   const [promptOpen, setPromptOpen] = useState(false)
 
-  // 看图轮（§15.5）：这条助手回复前一句是带图的消息 —— 原图 base64 没落库，
-  // 所以重新生成 / 编辑重发都不支持。
-  const isImageTurn = (i: number) => Boolean(messages[i - 1] && messages[i - 1].role === 'user' && messages[i - 1].image)
+  // 看图轮（§15.5）：这条助手回复前一句是带图/带视频帧的消息 —— 原图 base64 没落库、
+  // 帧只在内存里，所以重新生成 / 编辑重发都不支持。
+  const isImageTurn = (i: number) =>
+    Boolean(messages[i - 1] && messages[i - 1].role === 'user' && (messages[i - 1].image || messages[i - 1].frames?.length))
 
   // 时间戳显示（§19）：库里 created_at 是 SQLite 的 datetime('now')，UTC，形如
   // '2026-10-02 05:39:12'。先按 UTC 解析再交给本地时区，别让浏览器当成本地时间。
@@ -724,6 +748,30 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       setPaging((prev) => ({ ...prev, [sid]: { cursor: page.next_cursor, hasMore: page.has_more } }))
     })
   }, [active, sessionKey])
+
+  // 同步会话不产生本地回复；只合并远端最新页，保留向上加载的历史。
+  useEffect(() => {
+    if (active?.id !== 'gemini-test') return
+    let cancelled = false
+    let pending = false
+    const refresh = async () => {
+      if (pending) return
+      pending = true
+      try {
+        const page = await loadMessages(sessionKey, undefined, 200)
+        if (cancelled) return
+        setHistory(prev => {
+          const merged = new Map((prev[sessionKey] || []).map(m => [m.dbId, m]))
+          for (const row of page.items) merged.set(row.id, toChatMessage(row))
+          const next = [...merged.values()].sort((a, b) => (a.seq || 0) - (b.seq || 0))
+          return JSON.stringify(next) === JSON.stringify(prev[sessionKey] || []) ? prev : { ...prev, [sessionKey]: next }
+        })
+      } finally { pending = false }
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 3000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [active?.id, sessionKey])
 
   // 向上滚到顶 → 按游标拉更早的一页，插到最前面（不跳视口）
   const onScrollMessages = useCallback(
@@ -977,7 +1025,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 就不叫 LLM），所以这里的开销大多数时候只是一次本地判断。
   const autoExtract = useCallback(
     async (list: ChatMessage[]) => {
-      if (!active) return
+      if (!active || active.memoryDisabled) return
       const turns = list.slice(-12).map((m) => ({
         role: m.role,
         content: m.content,
@@ -1018,11 +1066,11 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     return ''
   }, [messages])
 
-  // 流式请求一段回复（§15.5）：sendText / onPickImage / 重新生成 / 编辑重发 共用。
+  // 流式请求一段回复（§15.5）：sendText / onPickImage / onPickVideo / 重新生成 / 编辑重发 共用。
   // 调用方负责**先把 history 准备好**（用户消息已在数组里），这里只负责：
   // 占位 → 打字机 → 收尾 → 落库（回填 dbId）→ 自动朗读 / 自动记忆。
   const streamAssistant = useCallback(
-    async (sid: string, next: ChatMessage[], endpoint: '/api/chat' | '/api/images/chat', body: Record<string, unknown>, isGroup: boolean) => {
+    async (sid: string, next: ChatMessage[], endpoint: '/api/chat' | '/api/images/chat' | '/api/media/video/chat', body: Record<string, unknown>, isGroup: boolean) => {
       setStreaming(true)
       push(sid, { role: 'assistant', content: '' })
       const acc = { value: '' }
@@ -1072,10 +1120,41 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     setPendingAtt({ file: f, url })
   }, [])
 
+  // ---- 视频（§19.17 +《项目要求》媒体-视频）：Ctrl+V / 🎞 先传后端抽帧，帧预览挂输入框上方 ----
+  // 抽帧失败 → 报错（用户可换视频）；成功 → 预览可选（「预览」/「直接发送」），帧不落库。
+  const [pendingVideo, setPendingVideo] = useState<{
+    file: File
+    taskId: string
+    frames: string[]
+    analyzing: boolean
+  } | null>(null)
+
+  /** 选视频（🎞 按钮 / Ctrl+V）：传后端抽帧（≤8 张，token 安全）。抽帧失败 → 报错，不挂预览。 */
+  const attachVideo = useCallback(
+    async (f: File) => {
+      if (!f.type.startsWith('video/')) return
+      setPendingVideo({ file: f, taskId: '', frames: [], analyzing: true })
+      setErrorText('')
+      try {
+        const r = await analyzeVideo(f)
+        if (r.frames.length === 0) throw new Error('没抽出任何帧，请换个视频试试')
+        setPendingVideo({ file: f, taskId: r.task_id, frames: r.frames, analyzing: false })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        setPendingVideo(null)
+        setErrorText(`抽帧失败：${msg}`)
+      }
+    },
+    [],
+  )
+
   // 切会话就丢掉没发出去的附件预览
   useEffect(() => () => clearAtt(), [activeId, clearAtt])
+  // 切会话也丢掉没发出去的视频帧
+  useEffect(() => () => setPendingVideo(null), [activeId])
 
   const sendText = useCallback(async () => {
+    if (active?.readOnly) return
     const text = input.trim()
     if (!text || streaming || !active) return
     const id = sessionKey
@@ -1107,6 +1186,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
   const onPickImage = useCallback(
     async (file: File) => {
+      if (active?.readOnly) return
       if (streaming || !active) return
       const id = sessionKey
       const text = input.trim()
@@ -1156,6 +1236,53 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant, clearAtt],
   )
 
+  /** 发视频（帧已抽好）：抽帧那轮跟图片一样走视觉通道，消息里存第一帧 + 内存帧列表。 */
+  const onPickVideo = useCallback(async () => {
+    if (active?.readOnly) return
+    if (streaming || !active) return
+    const pv = pendingVideo
+    if (!pv || pv.analyzing || pv.frames.length === 0) return
+    const id = sessionKey
+    const text = input.trim()
+    const prompt = config.visionPrompt?.trim() || DEFAULT_VISION_PROMPT
+    const caption = text || prompt
+    const first = pv.frames[0]
+    const userMsg: ChatMessage = {
+      role: 'user',
+      content: caption,
+      image: first,
+      imageOrig: first,
+      imageSource: 'video',
+      frames: pv.frames,
+    }
+    const next = [...messages, userMsg]
+    setHistory((prev) => ({ ...prev, [id]: next }))
+    setMsgError((prev) => ({ ...prev, [id]: '' }))
+    setInput('')
+    setPendingVideo(null) // 发送即弃帧：消息体已持有 frames 副本，预览条可清
+    void saveMessage(id, userMsg).then((s) => stampDb(id, userMsg, s))
+
+    const r = resolveRoute(config)
+    await streamAssistant(
+      id,
+      next,
+      '/api/media/video/chat',
+      {
+        task_id: pv.taskId,
+        frames: pv.frames,
+        prompt: caption,
+        character_ids: active.characterIds,
+        persona_id: activePersonaId,
+        base_url: r.vision.baseUrl,
+        api_key: r.vision.apiKey,
+        model: r.vision.model,
+        max_tokens: config.maxTokens || null,
+        uncensored: config.channel === 'uncensored',
+      },
+      active.kind === 'group',
+    )
+  }, [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant, pendingVideo])
+
   const onImport = useCallback((name: string) => {
     const imported: ChatSession = {
       id: `imported-${Date.now()}`,
@@ -1172,6 +1299,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 「记住这条」（§9.3 手动记忆）：桶由会话类型决定 —— 私聊进 TA 的个人记忆，群聊进家记忆。
   const rememberThis = useCallback(
     async (key: string, content: string) => {
+      if (active?.memoryDisabled) { setNotice('test 群聊不写入长期记忆'); return }
       const text = (content || '').trim()
       if (!text || !active) return
       setRememberMsg('')
@@ -1285,12 +1413,13 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 看图那一轮不支持：base64 没落库，重发不了（§15.5）。
   const regenerate = useCallback(
     async (i: number) => {
+      if (active?.readOnly) return
       if (!active || streaming || deleting) return
       const id = sessionKey
       const target = messages[i]
       if (!target || target.role !== 'assistant') return
       const prev = messages[i - 1]
-      const isImageTurn = Boolean(prev?.role === 'user' && prev.image)
+      const isImageTurn = Boolean(prev?.role === 'user' && (prev.image || prev.frames?.length))
       if (isImageTurn) {
         setErrorText('看图那一轮暂不支持重新生成（原图 base64 没有落库）')
         return
@@ -1333,6 +1462,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
   // 编辑并重发（§15.5，Gemini 式）：改这条 + 删掉它后面所有，再重新生成。
   const editResend = useCallback(async () => {
+    if (active?.readOnly) return
     if (!active || streaming || deleting || editingSeq === null) return
     const text = editDraft.trim()
     if (!text) return
@@ -1383,13 +1513,33 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const [sessionsExtra, setSessionsExtra] = useState<ChatSession[]>([])
   const allSessions = [...sessions, ...sessionsExtra]
 
-  // 手机端当前显示哪一栏（桌面端不生效）
-  const [mobileTab, setMobileTab] = useState<MobileTab>('chat')
+  // 手机端当前显示哪一栏（桌面端不生效）。挂载初值优先取 App 递进来的 initialMobileTab（§28）——
+  // 从别的视图切过来时事件早于挂载，收不到；只有已经在聊天页时事件才管用。
+  const [mobileTab, setMobileTab] = useState<MobileTab>(
+    () => (window.matchMedia('(max-width: 767px)').matches ? (initialMobileTab ?? 'sessions') : 'chat'),
+  )
+  useEffect(() => {
+    setMobileTab((cur) => (initialMobileTab && cur !== initialMobileTab ? initialMobileTab : cur))
+  }, [initialMobileTab])
+  useEffect(() => {
+    const showSessions = () => setMobileTab('sessions')
+    const showChat = () => setMobileTab('chat')
+    const showSettings = () => setMobileTab('settings')
+    window.addEventListener('xtr-mobile-sessions', showSessions)
+    window.addEventListener('xtr-mobile-chat', showChat)
+    window.addEventListener('xtr-mobile-settings', showSettings)
+    return () => {
+      window.removeEventListener('xtr-mobile-sessions', showSessions)
+      window.removeEventListener('xtr-mobile-chat', showChat)
+      window.removeEventListener('xtr-mobile-settings', showSettings)
+    }
+  }, [])
   // 手机端底部聊天栏（§19.25）：跟 QQ 一样，输入框下面再挂一行小图标。
   // trio = 右半边那三颗；recording = 是否已经点了麦克风、露出「按住说话」。
   const [micPanel, setMicPanel] = useState<'none' | 'trio' | 'recording'>('none')
 
   const suggestions = active ? suggestionsFor(active) : []
+  useEffect(() => { onTitleChange?.(active?.name || '信息') }, [active?.name, onTitleChange])
 
   if (!active) return null
 
@@ -1416,6 +1566,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
             setMobileTab('chat') // 手机上选完会话直接跳到聊天
           }}
           onImport={onImport}
+          onOpenNest={onOpenNest}
         />
         {/* 拖动把手：窄窄一条贴在右缘，鼠标划过去放大到 4px 高亮。手机端（<md）藏掉 */}
         <div
@@ -1430,25 +1581,11 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       {/* 中：对话框。min-h-0（§19.21）：列式 flex 子项默认 min-height:auto，
           里面的消息列表是 overflow-y-auto，缺了它会把这一节撑破外层、连输入栏一起滚出屏幕。 */}
       <section className={`flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--bg-soft)] ${tabCls('chat')}`}>
-        {/* 顶部：小糖人缩略头像，点击进个人介绍 */}
-        <header className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2">
-          {active.characterIds.length > 0 ? (
-            active.characterIds.map((cid) => {
-              const c = visibleCharacters.find((x) => x.id === cid)
-              if (!c) return null
-              return (
-                <button
-                  key={cid}
-                  onClick={() => onOpenProfile(cid)}
-                  className="group flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-2)] py-1 pl-1 pr-3 transition hover:border-[var(--pink)]"
-                  title={`查看 ${c.name} 的个人介绍`}
-                >
-                  <Avatar name={c.name} avatar={c.avatar} emoji={c.emoji} size={24} className="bg-white" />
-                  <span className="text-[12px] text-[var(--text-2)] group-hover:text-[var(--pink-deep)]">{c.name}</span>
-                </button>
-              )
-            })
-          ) : (
+        {/* 顶部：形态切换 + 右侧功能排（§28）。
+            以前这里还有一排「点进角色介绍」的缩略头像 —— 群聊里几位并排、私聊里一位，
+            占掉半行宽度。其实消息区里每位的头像/署名都能点进介绍，功能重复，去掉。 */}
+        <header className="hidden items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2 md:flex">
+          {active.characterIds.length === 0 && (
             <span className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-2)] py-1 pl-1 pr-3 text-[12px] text-[var(--text-2)]">
               <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-[13px]">🎴</span>
               {active.name}
@@ -1477,36 +1614,18 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 </span>
               )
             })()}
-          {/* 群聊阵容（§25）：手机端也留一个入口 —— 正是手机上会想改的东西 */}
+          {/* 群聊阵容（§25）：只改默认群聊的成员，存后端设置，刷新保持 */}
+          <span className="ml-auto hidden items-center gap-1.5 md:flex">
           {active.kind === 'group' && (
             <button
               onClick={() => setRosterOpen(true)}
-              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)] md:hidden"
-              title="改群聊成员：谁在这个群里"
+              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
+              title="改群聊成员：谁在「小糖人的家」里（§25）"
             >
-              👥
+              👥 成员 {active.characterIds.length}
             </button>
           )}
-          {/* 看提示词（§24）：手机端也留一个入口 —— debug 大多是在手机上遇到的 */}
-          <button
-            onClick={() => setPromptOpen(true)}
-            className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)] md:hidden"
-            title="看这次会发给模型的原始提示词"
-          >
-            🔍
-          </button>
-          <span className="ml-auto hidden items-center gap-1.5 md:flex">
-            {/* 群聊阵容（§25）：只改默认群聊的成员，存后端设置，刷新保持 */}
-            {active.kind === 'group' && (
-              <button
-                onClick={() => setRosterOpen(true)}
-                className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-                title="改群聊成员：谁在「小糖人的家」里（§25）"
-              >
-                👥 成员 {active.characterIds.length}
-              </button>
-            )}
-            {/* 看提示词（§24）：把此刻组装出的 system / messages 摊开，零 token 消耗 */}
+          {/* 看提示词（§24）：把此刻组装出的 system / messages 摊开，零 token 消耗 */}
             <button
               onClick={() => setPromptOpen(true)}
               className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
@@ -1524,6 +1643,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
             </button>
             <button
               onClick={() => setAutoMemory((v) => !v)}
+              disabled={active?.memoryDisabled}
               className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
                 autoMemory
                   ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
@@ -1531,7 +1651,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               }`}
               title="自动记忆：聊到「记得/以后/约定」这类长期信息时自动提炼进记忆"
             >
-              {autoMemory ? '🪄 自动记忆' : '🪄 自动记忆 关'}
+              {active?.memoryDisabled ? '🪄 测试会话不进记忆' : autoMemory ? '🪄 自动记忆' : '🪄 自动记忆 关'}
             </button>
             <button
               onClick={() => setGalleryOpen(true)}
@@ -1595,6 +1715,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
         {showSettings && (
           <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
+            <div className="mb-3 rounded-xl border border-[var(--border)] p-3"><div className="mb-2 text-[12px] font-semibold">API 快速切换</div><div className="flex flex-wrap gap-2">{apiProfiles.map(p => <button className="btn ghost sm" key={p.id} onClick={() => activateProfile(p)}>{p.name}</button>)}<input className="input max-w-[220px]" placeholder="新配置名称" value={profileName} onChange={e => setProfileName(e.target.value)} /><button className="btn sm" disabled={!profileName.trim()} onClick={saveProfile}>保存当前配置</button></div></div>
             <div className="eyebrow mb-1.5">模型来源（存入本地浏览器，不下发）</div>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
               <Field label="Base URL（OpenAI 兼容 /v1）">
@@ -2053,10 +2174,10 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                               >
                                 {playingKey === segKey ? '⏹ 停止' : '🔈 朗读'}
                               </button>
-                              <RememberButton
+                              {!active.memoryDisabled && <RememberButton
                                 done={Boolean(remembered[segKey])}
                                 onClick={() => void rememberThis(segKey, segText)}
-                              />
+                              />}
                             </div>
                           )}
                         </div>
@@ -2117,7 +2238,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                           type="button"
                           onClick={() => void starThis(`${sessionKey}:${i}`, m)}
                           disabled={starred[`${sessionKey}:${i}`] || starring === `${sessionKey}:${i}`}
-                          title="存入画廊"
+                          title={m.imageSource === 'video' ? '把视频首帧存入画廊' : '存入画廊'}
                           className={`absolute right-1 top-1 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]/85 px-1 py-0.5 text-[10px] leading-tight shadow backdrop-blur transition ${
                             starred[`${sessionKey}:${i}`]
                               ? 'border-[var(--pink)] text-[var(--pink-deep)]'
@@ -2126,6 +2247,23 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                         >
                           ⭐
                         </button>
+                        {/* 视频帧条（媒体-视频）：只在本次会话里显示 —— 帧不落库，刷新即回退成首帧一张。
+                            点任意一帧看大图。 */}
+                        {m.frames && m.frames.length > 1 && (
+                          <div className="mt-1 flex max-w-[100%] gap-1 overflow-x-auto">
+                            {m.frames.slice(1).map((fr, fi) => (
+                              <button
+                                key={`${sessionKey}:${i}:f${fi}`}
+                                type="button"
+                                onClick={() => setLightbox(fr)}
+                                title={`第 ${fi + 2} 帧`}
+                                className="shrink-0"
+                              >
+                                <img src={fr} alt={`第 ${fi + 2} 帧`} className="h-12 w-12 rounded object-cover" />
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                     {streaming && isLast && !m.content ? (
@@ -2144,7 +2282,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                             setEditingSeq(i)
                             setEditDraft(m.content)
                           }}
-                          disabled={streaming || deleting}
+                          disabled={streaming || deleting || active.readOnly}
                           className="text-[11px] text-white/75 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                           title={streaming ? '生成中，先等这一轮结束' : '改这句话，它之后的对话会被删掉并重新生成'}
                         >
@@ -2163,15 +2301,15 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                         >
                           {playingKey === `${sessionKey}:${i}` ? '⏹ 停止' : '🔈 朗读'}
                         </button>
-                        <RememberButton
+                        {!active.memoryDisabled && <RememberButton
                           done={Boolean(remembered[`${sessionKey}:${i}`])}
                           onClick={() => void rememberThis(`${sessionKey}:${i}`, m.content)}
-                        />
+                        />}
                         {/* 重新生成（§15.5）：删掉旧的这条真行，用截断的历史重新 POST。
                             看图轮没有原图 base64，不给入口。 */}
                         <button
                           onClick={() => void regenerate(i)}
-                          disabled={streaming || deleting || isImageTurn(i)}
+                          disabled={streaming || deleting || isImageTurn(i) || active.readOnly}
                           className="text-[11px] text-[var(--text-3)] transition hover:text-[var(--pink-deep)] disabled:cursor-not-allowed disabled:opacity-40"
                           title={isImageTurn(i) ? '看图那一轮暂不支持重新生成（原图没有落库）' : '重新生成这条回复（旧的会被替换掉）'}
                         >
@@ -2197,7 +2335,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         </div>
 
         {/* 推荐回复 + 输入区 */}
-        <footer className="border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+        {active?.readOnly ? <footer className="border-t border-[var(--border)] px-4 py-3 text-sm text-[var(--text-2)]">Gemini 网页同步测试：请在 Gemini 中继续对话。这里每 3 秒更新，不生成回复，不写入记忆。</footer> : <footer className="border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3">
           {/* 待发出去的图（§19.17）：选图 / Ctrl+V 后先挂在这里，
               配文可以接着打，按发送（或回车）才真的发出去。 */}
           {pendingAtt && (
@@ -2213,6 +2351,51 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               >
                 ✕ 移除
               </button>
+            </div>
+          )}
+          {/* 待发出去的视频（项目要求 媒体-视频）：选视频 / Ctrl+V 先传后端抽帧，
+              抽帧失败 → 报错；抽好的帧预览可选（预览 / 直接发送）。 */}
+          {pendingVideo && (
+            <div className="mb-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-2">
+              {pendingVideo.analyzing ? (
+                <div className="flex items-center gap-2 text-[12px] text-[var(--text-3)]">
+                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[var(--pink)] border-t-transparent" />
+                  正在抽帧（≤8 张，token 安全）…
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  {/* 第一帧缩略图 */}
+                  <img
+                    src={pendingVideo.frames[0]}
+                    alt="视频首帧"
+                    className="h-16 w-16 rounded-lg object-cover"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[12px] text-[var(--text-3)]">
+                      {pendingVideo.file.name || '已粘贴的视频'} · {pendingVideo.frames.length} 帧
+                    </div>
+                    <div className="mt-1 flex gap-2">
+                      <button
+                        onClick={() => {
+                          const first = pendingVideo.frames[0]
+                          if (first) setLightbox(first)
+                        }}
+                        className="rounded-lg border border-[var(--border-strong)] px-2 py-0.5 text-[11px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
+                      >
+                        👁 预览帧
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setPendingVideo(null)}
+                    title="不发这个视频了"
+                    className="shrink-0 rounded-lg border border-[var(--border-strong)] px-2 py-1 text-[12px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
+                  >
+                    ✕ 移除
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {/* 开场白建议（§19.24）：手机屏矮，这几颗 chip + 输入框上面那行东西一叠，
@@ -2238,16 +2421,23 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 onChange={(e) => setInput(e.target.value)}
                 rows={2}
                 onPaste={(e) => {
+                  const vf = [...e.clipboardData.files].find((x) => x.type.startsWith('video/'))
+                  if (vf) { e.preventDefault(); void attachVideo(vf); return }
                   const f = [...e.clipboardData.files].find((x) => x.type.startsWith('image/'))
                   if (!f) return
                   e.preventDefault()
                   attachImage(f)
                 }}
-                placeholder={pendingAtt ? '给这张图配句话，发出去' : '和小糖人说点什么…'}
+                placeholder={pendingAtt ? '给这张图配句话，发出去' : pendingVideo ? (pendingVideo.analyzing ? '正在抽帧…' : '给这个视频配句话，发出去') : '和小糖人说点什么…'}
                 className="input min-w-0 flex-1 resize-none rounded-xl px-3 py-2 text-[15px] placeholder:text-[var(--text-3)]"
               />
               <button
-                onClick={() => (pendingAtt ? void onPickImage(pendingAtt.file) : void sendText())}
+                onClick={() => {
+                  if (pendingVideo?.analyzing) return // 还在抽帧，等一下
+                  if (pendingAtt) void onPickImage(pendingAtt.file)
+                  else if (pendingVideo) void onPickVideo()
+                  else void sendText()
+                }}
                 disabled={streaming}
                 className="btn shrink-0 rounded-xl px-5 py-2 text-sm disabled:opacity-50"
               >
@@ -2313,6 +2503,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                   [
                     ['mic', '🎤', '按住说话'],
                     ['image', '🖼', '发图片'],
+                    ['video', '🎞', '发视频'],
                     ['sticker', '✎', '表情包'],
                     ['plus', '＋', '更多'],
                   ] as const
@@ -2324,6 +2515,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                     onClick={() => {
                       if (key === 'mic') setMicPanel('recording')
                       else if (key === 'image') fileRef.current?.click()
+                      else if (key === 'video') videoRef.current?.click()
                       else if (key === 'sticker') setInput((v) => v + '✎ ')
                       else setNotice('更多功能规划中：语音 / 视频通话（§18）、表情包、小游戏。')
                     }}
@@ -2354,6 +2546,25 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               onChange={(e) => {
                 const f = e.target.files?.[0]
                 if (f) attachImage(f)
+                e.target.value = ''
+              }}
+            />
+            <button
+              onClick={() => videoRef.current?.click()}
+              disabled={streaming}
+              title="选一段视频发给小糖人看（先抽帧，完整视频不发给模型）"
+              className="rounded-xl border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-2)] hover:border-[var(--pink)] disabled:opacity-50"
+            >
+              🎞
+            </button>
+            <input
+              ref={videoRef}
+              type="file"
+              accept="video/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) void attachVideo(f)
                 e.target.value = ''
               }}
             />
@@ -2397,14 +2608,18 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
-                  // 挂了图（§19.17）：回车 = 连图带字一起发；纯文字还是走原来的 sendText
+                  // 挂了图（§19.17）/ 挂了视频：回车 = 连帧带字一起发；纯文字还是走原来的 sendText
+                  if (pendingVideo?.analyzing) return // 还在抽帧，等一下
                   if (pendingAtt) void onPickImage(pendingAtt.file)
+                  else if (pendingVideo) void onPickVideo()
                   else void sendText()
                 }
               }}
               rows={2}
-              // Ctrl+V 粘图（§16.11 / §19.17）：先挂到待发区，可以接着写配文再发。
+              // Ctrl+V 粘图 / 粘视频（§16.11 / §19.17 / 媒体-视频）：先挂到待发区，可以接着写配文再发。
               onPaste={(e) => {
+                const vf = [...e.clipboardData.files].find((x) => x.type.startsWith('video/'))
+                if (vf) { e.preventDefault(); void attachVideo(vf); return }
                 const f = [...e.clipboardData.files].find((x) => x.type.startsWith('image/'))
                 if (!f) return
                 e.preventDefault()
@@ -2413,19 +2628,130 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               placeholder={
                 pendingAtt
                   ? '给这张图配句话，回车一起发出去（留空也可以直接发）'
-                  : '和小糖人说点什么…（Enter 发送，Shift+Enter 换行，Ctrl+V 粘图）'
+                  : pendingVideo
+                    ? (pendingVideo.analyzing ? '正在抽帧…' : '给这个视频配句话，发出去')
+                    : '和小糖人说点什么…（Enter 发送，Shift+Enter 换行，Ctrl+V 粘图/粘视频）'
               }
               className="input flex-1 resize-none rounded-xl px-3 py-2 text-[15px] placeholder:text-[var(--text-3)]"
             />
             <button
-              onClick={() => (pendingAtt ? void onPickImage(pendingAtt.file) : void sendText())}
+              onClick={() => {
+                if (pendingVideo?.analyzing) return // 还在抽帧，等一下
+                if (pendingAtt) void onPickImage(pendingAtt.file)
+                else if (pendingVideo) void onPickVideo()
+                else void sendText()
+              }}
               disabled={streaming}
               className="btn rounded-xl px-5 py-2 text-sm disabled:opacity-50"
             >
               发送
             </button>
           </div>
-        </footer>
+        </footer>}
+      </section>
+
+      {/* 手机端「设置」栏（§28）：电脑端聊天顶栏右边那一排功能（成员 / 提示词 / 通话 /
+          自动记忆 / 画廊 / 删除 / 记忆 / 生成 / 模型设置 / 通道）整块搬进来。
+          只加 md:hidden —— 桌面端顶栏已有同样一套，不重复铺。 */}
+      <section className={`flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--bg-soft)] md:hidden ${tabCls('settings')}`}>
+        <div className="mobile-settings overflow-y-auto px-4 py-4">
+          <div className="mb-3 text-[12px] font-semibold tracking-wide text-[var(--text-3)]">设置</div>
+
+          <div className="mobile-settings-card">
+            <span className="eyebrow">功能</span>
+            <div className="mobile-settings-grid">
+              {active.kind === 'group' && (
+                <button
+                  className="status-action"
+                  onClick={() => setRosterOpen(true)}
+                  title="改群聊成员：谁在「小糖人的家」里（§25）"
+                >
+                  <span className="text-[16px]">👥</span>成员
+                </button>
+              )}
+              <button
+                className="status-action"
+                onClick={() => setPromptOpen(true)}
+                title="看提示词：此刻会发给模型的 system / 完整消息数组（不消耗 token）"
+              >
+                <span className="text-[16px]">🔍</span>提示词
+              </button>
+              <button
+                className="status-action"
+                onClick={() => setNotice('📞 实时通话规划中：先做「按住说话 → 回复自动朗读」的半自动版，方案见《项目要求》§18。')}
+                title="规划中：和小糖人实时通话"
+              >
+                <span className="text-[16px]">📞</span>通话
+              </button>
+              <button
+                className={`status-action disabled:opacity-40 ${autoMemory && !active?.memoryDisabled ? 'on' : ''}`}
+                onClick={() => setAutoMemory((v) => !v)}
+                disabled={active?.memoryDisabled}
+                title="自动记忆：聊到「记得/以后/约定」这类长期信息时自动提炼进记忆"
+              >
+                <span className="text-[16px]">🪄</span>
+                {active?.memoryDisabled ? '测试会话不进记忆' : autoMemory ? '自动记忆' : '自动记忆 关'}
+              </button>
+              <button
+                className="status-action"
+                onClick={() => setGalleryOpen(true)}
+                title="画廊：你主动收藏的重要图片（§9.4）"
+              >
+                <span className="text-[16px]">🖼</span>画廊
+              </button>
+              <button
+                className={`status-action disabled:opacity-40 ${selectMode ? 'on' : ''}`}
+                onClick={() => setSelectMode((v) => !v)}
+                disabled={streaming || messages.length === 0}
+                title="多选删除：勾选要删的消息（你自己的和小糖人的都行），真删（连带图片文件 / 画廊收藏 / 照片记忆）"
+              >
+                <span className="text-[16px]">🗑</span>删除
+              </button>
+              <button
+                className="status-action"
+                onClick={() => setMemoryOpen(true)}
+                title="记忆：家记忆 / 各人的个人记忆"
+              >
+                <span className="text-[16px]">🧠</span>记忆
+              </button>
+              <button
+                className="status-action"
+                onClick={() => setGenOpen(true)}
+                title="生成照片"
+              >
+                <span className="text-[16px]">🎨</span>生成
+              </button>
+              <button
+                className={`status-action ${showSettings ? 'on' : ''}`}
+                onClick={() => { setShowSettings(true); setMobileTab('chat') }}
+                title="模型设置：Base URL / Key / 模型 / 单条回复上限 / 看图提示词"
+              >
+                <span className="text-[16px]">⚙</span>模型设置
+              </button>
+            </div>
+          </div>
+
+          {/* 通道切换（§7）：常规 = 商业 API；无审查 = 另配的无审查中转/本地模型 */}
+          <div className="mobile-settings-card mt-3">
+            <span className="eyebrow">通道</span>
+            <div className="flex gap-1.5">
+              {(['normal', 'uncensored'] as Channel[]).map((ch) => (
+                <button
+                  key={ch}
+                  onClick={() => saveConfig({ ...config, channel: ch })}
+                  title={ch === 'normal' ? '常规通道（商业 API）' : '无审查通道（中转 / 本地无审查模型）'}
+                  className={`flex-1 rounded-lg border px-2 py-1.5 text-[12px] transition ${
+                    config.channel === ch
+                      ? 'border-[var(--pink)] bg-[var(--pink)] text-white'
+                      : 'border-[var(--border-strong)] text-[var(--text-2)] hover:border-[var(--pink)]'
+                  }`}
+                >
+                  {ch === 'normal' ? '常规' : '🔓 无审查'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       </section>
 
       {/* 右：状态栏。左缘同样有一条把手（§19.11）—— 这一栏靠右，所以往左拖才是变宽（dir=-1）。 */}
@@ -2453,6 +2779,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           onStop={() => stopSpeak()}
           onPickVoice={openVoicePicker}
           onGeneratePhoto={() => setGenOpen(true)}
+          onManageStorage={() => setStorageOpen(true)}
         />
         <div
           {...sideResize.handleProps}
@@ -2637,27 +2964,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         </div>
       )}
 
-      {/* 手机端底部 Tab：一次只显示一栏（会话 / 聊天 / 状态）；桌面端隐藏 */}
-      <nav className="flex shrink-0 border-t border-[var(--border)] bg-[var(--surface)] pb-[env(safe-area-inset-bottom)] md:hidden">
-        {(
-          [
-            ['sessions', '💬', '会话'],
-            ['chat', '🐾', '聊天'],
-            ['status', '📊', '状态'],
-          ] as const
-        ).map(([tab, icon, label]) => (
-          <button
-            key={tab}
-            onClick={() => setMobileTab(tab)}
-            className={`flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] transition ${
-              mobileTab === tab ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)]'
-            }`}
-          >
-            <span className="text-[18px] leading-none">{icon}</span>
-            {label}
-          </button>
-        ))}
-      </nav>
+      {storageOpen && active && <StoragePanel sessionKey={sessionKey} sessionName={active.name} onClose={() => setStorageOpen(false)} />}
     </div>
   )
 }

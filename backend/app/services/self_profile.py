@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import re
+import os
 from datetime import date
 from pathlib import Path
 
@@ -254,6 +255,17 @@ def get_injectable_texts(persona_id: str, char_ids_present: list[str]) -> list[d
     """
     texts: list[dict] = []
 
+    # 已批准的个人数据库 AI 注入层：只读取 approved + inject=true 的 Markdown。
+    external_root = Path(os.getenv("PERSONAL_DATABASE_ROOT", str(_SELF_PROFILE_ROOT.parents[2] / "个人数据库"))) / "03_AI注入层"
+    if external_root.is_dir():
+        for p in sorted(external_root.rglob("*.md")):
+            try:
+                block = read_external_block(p)
+            except (OSError, UnicodeError):
+                continue
+            if block.get("inject") and block.get("review_status") == "approved" and _is_visible(block.get("visible_to", "all"), char_ids_present):
+                texts.append(block)
+
     # _shared
     shared = _SELF_PROFILE_ROOT / _SHARED_DIR
     if shared.is_dir():
@@ -279,6 +291,17 @@ def get_injectable_texts(persona_id: str, char_ids_present: list[str]) -> list[d
     # 按创建时间排序（先写先注入）
     texts.sort(key=lambda b: b.get("created_at", ""))
     return texts
+
+def read_external_block(path: Path) -> dict:
+    raw = path.read_text(encoding="utf-8-sig")
+    meta, body_lines = _split_front(raw)
+    # _parse_front ignores custom review_status; preserve it for injection gating.
+    if raw.startswith("---"):
+        lines = raw.splitlines()
+        for line in lines[1:]:
+            if line.strip() == "---": break
+            if line.startswith("review_status:"): meta["review_status"] = line.split(":", 1)[1].strip()
+    return {**meta, "filename": path.name, "persona_id": "database", "content": "\n".join(body_lines), "source_path": str(path)}
 
 
 def _is_visible(visible_to: str | list, char_ids_present: list[str]) -> bool:

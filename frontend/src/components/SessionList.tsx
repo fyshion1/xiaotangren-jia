@@ -10,9 +10,11 @@ type Props = {
   onImport: (name: string) => void
   /** 角色列表：单聊会话按 characterIds[0] 反查头像（未传则退回 emoji）。 */
   characters?: CharacterProfile[]
+  /** 「消息」栏里的入口 → 糖人小窝（§28）：手机端从小窝也能走回这栏，再从这栏进小窝。 */
+  onOpenNest?: () => void
 }
 
-export default function SessionList({ sessions, activeId, onSelect, onImport, characters = [] }: Props) {
+export default function SessionList({ sessions, activeId, onSelect, onImport, characters = [], onOpenNest }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
 
   // 单聊用对方头像（QQ 式）；群聊 / 导入会话没有单一角色，保留 emoji 图标。
@@ -44,6 +46,16 @@ export default function SessionList({ sessions, activeId, onSelect, onImport, ch
       </div>
 
       <div className="border-t border-[var(--border)] p-2">
+        {onOpenNest && (
+          <button
+            className="session-item w-full"
+            onClick={onOpenNest}
+            title="糖人小窝：全家的共同回忆（共用画廊）+ 以后的小游戏 / 互动小家"
+          >
+            <span className="session-emoji">🏠</span>
+            <span className="text-[13px] text-[var(--text-2)]">糖人小窝</span>
+          </button>
+        )}
         <button className="session-item w-full" onClick={() => fileRef.current?.click()} title="导入酒馆角色卡（阶段 2 解析人设，先占位）">
           <span className="session-emoji">🎴</span>
           <span className="text-[13px] text-[var(--text-2)]">导入角色卡（酒馆）</span>

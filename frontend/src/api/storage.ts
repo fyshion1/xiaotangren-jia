@@ -30,7 +30,7 @@ export function toChatMessage(s: StoredMessage): ChatMessage {
     content: s.content,
     image: s.image ? thumbOf(s.image) : undefined,
     imageOrig: s.image || undefined,
-    imageSource: (s.image_source as 'upload' | 'generated') || undefined,
+    imageSource: (s.image_source as 'upload' | 'generated' | 'video') || undefined,
     kind: s.kind === 'groups' ? 'groups' : 'text',
     segments: s.segments?.length ? s.segments : undefined,
     seq: s.seq,
@@ -148,28 +148,52 @@ export async function uploadAttachment(
 }
 
 export type AttachmentStats = {
+  current_session: string | null
   sessions: { session: string; orig_bytes: number; thumb_bytes: number }[]
   orig_bytes: number
   thumb_bytes: number
 }
 
-export async function attachmentStats(): Promise<AttachmentStats | null> {
-  try {
-    const resp = await fetch('/api/attachments/stats')
-    if (!resp.ok) return null
-    return (await resp.json()) as AttachmentStats
-  } catch {
-    return null
-  }
+export async function attachmentStats(session: string): Promise<AttachmentStats> {
+  const resp = await fetch(`/api/attachments/stats?session=${encodeURIComponent(session)}`)
+  if (!resp.ok) throw new Error(`存储统计加载失败（HTTP ${resp.status}）`)
+  return (await resp.json()) as AttachmentStats
 }
 
-export async function clearOriginals(session?: string): Promise<number> {
-  const qs = session ? `?session=${encodeURIComponent(session)}` : ''
-  try {
-    const resp = await fetch(`/api/attachments/clear-originals${qs}`, { method: 'POST' })
-    if (!resp.ok) return 0
-    return ((await resp.json()) as { removed: number }).removed
-  } catch {
-    return 0
+export type VideoAnalyze = {
+  task_id: string
+  status: string
+  frame_count: number
+  frames: string[]
+  commit_required: boolean
+}
+
+/** 上传视频 → 本地抽帧（后端 ffmpeg，完整视频不上模型）。失败抛 Error（后端 detail）。 */
+export async function analyzeVideo(file: File): Promise<VideoAnalyze> {
+  const fd = new FormData()
+  fd.append('file', file)
+  const resp = await fetch('/api/media/video/analyze', { method: 'POST', body: fd })
+  if (!resp.ok) {
+    let msg = `抽帧失败（HTTP ${resp.status}）`
+    try {
+      const data = (await resp.json()) as { detail?: unknown }
+      if (data?.detail) msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)
+    } catch {
+      /* 拿不到 detail 就用上面的兜底文案 */
+    }
+    throw new Error(msg)
   }
+  return (await resp.json()) as VideoAnalyze
+}
+
+export async function clearOriginals(session: string): Promise<number> {
+  if (!session.trim()) throw new Error('请先选择要清理的会话')
+  const resp = await fetch(`/api/attachments/clear-originals?session=${encodeURIComponent(session)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true }),
+  })
+  const data = await resp.json().catch(() => null)
+  if (!resp.ok) throw new Error(data?.detail ?? `清理失败（HTTP ${resp.status}）`)
+  return data.removed as number
 }

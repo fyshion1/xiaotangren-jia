@@ -39,11 +39,21 @@ export default function App() {
   // 跨页导航：从聊天页点「缩略头像」跳去某角色的介绍；从介绍页「进入聊天」跳去某会话
   const [profileCharId, setProfileCharId] = useState<string | undefined>(undefined)
   const [chatSessionId, setChatSessionId] = useState<string | undefined>(undefined)
+  const [chatTitle, setChatTitle] = useState('聊天')
+  /** 手机端挂载 ChatView 时先显示哪一栏（§28）：底部导航先切 view 再派发事件，ChatView
+      没挂载时事件收不到 —— 把这个作为挂载初值递下去，事件只负责已挂载后的切换。 */
+  const [chatMobileTab, setChatMobileTab] = useState<'sessions' | 'chat' | 'settings' | 'status'>('sessions')
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
     localStorage.setItem(THEME_KEY, theme)
   }, [theme])
+
+  // §28：离开聊天视图后，下次进来默认回到「消息」栏 —— 顶栏 ◁（从小窝 / 介绍 / 私人空间
+  // 返回）只 setView('chat')，不碰聊天内的 tab；这个回落保证它落回消息栏而不是上次的 tab。
+  useEffect(() => {
+    if (view !== 'chat') setChatMobileTab('sessions')
+  }, [view])
 
   // 人设唯一真相源在后端 SQLite：启动时拉取一次。
   useEffect(() => {
@@ -141,7 +151,7 @@ export default function App() {
   // 键盘弹出），会让整页产生一层可滚区间，顶栏跟着滚走。dvh 跟着真实可视高度走。
   return (
     <div className="flex h-[100dvh] flex-col">
-      <TopBar theme={theme} view={view} onToggleTheme={toggleTheme} onView={setView} />
+      <TopBar theme={theme} view={view} title={chatTitle} onToggleTheme={toggleTheme} onView={setView} />
       {/* 内容区自己滚（§19.23）：聊天页撑满 h-full 在内部滚；介绍页 / 小窝 / 私人空间
           是长文档，溢出的部分交给这一层 —— 以前它们靠 body 滚，body 一锁就整页滑不动。 */}
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -178,12 +188,21 @@ export default function App() {
             personas={personas}
             activePersona={activePersona}
             initialSessionId={chatSessionId}
+            initialMobileTab={chatMobileTab}
             onOpenProfile={openProfile}
             onOpenSelf={() => setView('space')}
+            onOpenNest={() => setView('nest')}
             onSwitchForm={onSwitchForm}
+            onTitleChange={setChatTitle}
           />
         )}
       </div>
+      <nav className="app-mobile-nav" aria-label="手机端主导航">
+        <button onClick={() => { setChatMobileTab('sessions'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-sessions')) }}><span>💬</span>消息</button>
+        <button onClick={() => { setChatMobileTab('chat'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-chat')) }}><span>🐾</span>聊天</button>
+        <button onClick={() => { setChatMobileTab('settings'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-settings')) }}><span>⚙️</span>设置</button>
+        <button onClick={() => setView('space')}><span>🔒</span>隐私</button>
+      </nav>
     </div>
   )
 }

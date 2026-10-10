@@ -12,6 +12,8 @@ export type ChatSession = {
   emoji: string
   subtitle: string
   characterIds: string[] // 在场角色（imported 为空，暂无人设）
+  readOnly?: boolean
+  memoryDisabled?: boolean
 }
 
 export type ChatMessage = {
@@ -20,7 +22,10 @@ export type ChatMessage = {
   // 图片：image = 显示用缩略图 URL；imageOrig = 原图 URL（原图被清理后为空，自动降级用缩略图）
   image?: string
   imageOrig?: string
-  imageSource?: 'upload' | 'generated'
+  imageSource?: 'upload' | 'generated' | 'video'
+  // 视频帧：从上传视频抽出的帧 URL 列表（《项目要求》媒体-视频一节）；
+  // 抽帧结果只保存在内存里，不落库 —— 刷新后回退为只显示 image（第一帧）。
+  frames?: string[]
   // 群聊「一人分饰多角」回复：渲染用分段（按 **角色名** 拆分），content 为去掉角色名后的拼接正文（供朗读）
   kind?: 'text' | 'groups'
   segments?: { speaker: string; text: string }[]
@@ -48,6 +53,7 @@ export const SELF_CHARACTER_ID = MAIN_PERSONA_ID
  * 记忆不受影响 —— 记忆以角色 id 为键，与用户视角无关。
  */
 export function personaSessionId(personaId: string, sessionId: string): string {
+  if (sessionId === 'gemini-test') return sessionId
   return !personaId || personaId === MAIN_PERSONA_ID ? sessionId : `${personaId}@${sessionId}`
 }
 
@@ -99,7 +105,12 @@ export function buildSessions(
     subtitle: p.alias || '另一份身份档案',
     characterIds: [p.id],
   }))
-  return [group, ...singles, ...extraSingles]
+  const geminiTest: ChatSession = {
+    id: 'gemini-test', kind: 'group', name: 'test · Gemini', emoji: '🔄',
+    subtitle: '网页同步 · 不进入记忆', characterIds: everyone,
+    readOnly: true, memoryDisabled: true,
+  }
+  return [group, geminiTest, ...singles, ...extraSingles]
 }
 
 // ---- 右侧状态栏（壳子）----

@@ -2,6 +2,18 @@ import type { CharacterProfile } from '../data/characters'
 import type { ChatSession, CharacterStatus } from '../data/chats'
 import { DEFAULT_STATUS } from '../data/chats'
 
+/** 状态栏里的一个快捷入口（§27.5）。 */
+export type SidebarAction = {
+  key: string
+  icon: string
+  label: string
+  /** 当前是「开着」的开关（自动记忆 / 多选删除 / 无审查通道）→ 高亮 */
+  on?: boolean
+  disabled?: boolean
+  title?: string
+  onClick: () => void
+}
+
 type Props = {
   session: ChatSession
   characters: CharacterProfile[]
@@ -13,6 +25,18 @@ type Props = {
   onStop: () => void
   onPickVoice: () => void
   onGeneratePhoto: () => void
+  onManageStorage: () => void
+  /**
+   * 手机端专属的「快捷」按钮组（§27.5）。
+   *
+   * 桌面顶栏那一排（成员 / 提示词 / 记忆 / 画廊 / 删除 / 自动记忆 / 通话 / 设置 / 通道）
+   * 整块包在 `hidden … md:flex` 里，手机上一个都摸不到 —— 这里把它们挪进「状态」这个
+   * 本来就有的 Tab，省得再为手机单独开一个抽屉。
+   *
+   * 只在手机上渲染（`md:hidden`）：桌面端顶栏已经有同样一套，重复铺一遍只是噪音。
+   * 判断宽窄这件事收在这个组件里、不往外漏 —— ChatView 只管把动作表递进来。
+   */
+  actions?: SidebarAction[]
 }
 
 export default function StatusSidebar({
@@ -26,6 +50,8 @@ export default function StatusSidebar({
   onStop,
   onPickVoice,
   onGeneratePhoto,
+  onManageStorage,
+  actions = [],
 }: Props) {
   const members = session.characterIds
     .map((id) => characters.find((c) => c.id === id))
@@ -37,7 +63,7 @@ export default function StatusSidebar({
     // min-h-0 flex-1 而不是 h-full（§19.21）：h-full 是按「整栏高度」算的，
     // 不扣掉上面那个立绘轮播（shrink-0），于是内部滚动区的可用高度被高估、
     // 下半截落到父级 overflow-hidden 之外被裁掉 —— 手机上看着就是「滑到底了但下面还有字」。
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 shrink-0 flex-col md:flex-1 md:overflow-y-auto">
       <div className="px-4 pb-2 pt-3 text-[12px] font-semibold tracking-wide text-[var(--text-3)]">状态</div>
 
       {/* 操作：生成照片 / 朗读·停止 / 自动朗读 */}
@@ -66,9 +92,32 @@ export default function StatusSidebar({
         >
           🗣 语音：{voiceName}
         </button>
+        <button className="btn ghost sm mt-2 w-full" onClick={onManageStorage}>存储管理</button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      {/* 手机端快捷入口（§27.5）：桌面顶栏那一排在这儿的等价物 */}
+      {actions.length > 0 && (
+        <div className="mt-3 px-4 md:hidden">
+          <div className="eyebrow mb-1.5">快捷</div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {actions.map((a) => (
+              <button
+                key={a.key}
+                onClick={a.onClick}
+                disabled={a.disabled}
+                aria-pressed={a.on}
+                title={a.title ?? a.label}
+                className={`status-action disabled:opacity-40 ${a.on ? 'on' : ''}`}
+              >
+                <span className="text-[15px]">{a.icon}</span>
+                <span className="text-[11px] leading-tight">{a.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 py-3">
         {single && status ? (
           <>
             {/* 羁绊 & 渴望 */}
