@@ -4,16 +4,17 @@
 // 这里可以手动改（用户原话：「不用自动识别，我会自己手动分类」）。
 // B 方案（多模态 CLIP）在 backend/app/services/multimodal.py 留了接口占位，默认关闭。
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   deleteGallery,
   describeImage,
   fetchGallery,
   updateGallery,
-  uploadToGallery,
+  uploadManyToGallery,
   type GalleryItem,
 } from '../api/gallery'
 import { ownerLabel, type Owner } from '../lib/owner'
+import GalleryLightbox from './GalleryLightbox'
 
 type Props = {
   onClose: () => void
@@ -46,7 +47,6 @@ export default function GalleryPanel({
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
-  const [lightbox, setLightbox] = useState<string | null>(null)
   // 归属筛选：'all' = 不看归属全列（默认，便于把一张图改到别的归属）
   const [filter, setFilter] = useState<'all' | Owner>('all')
   // 层级筛选（§26）：'public' 公开层 / 'private' 私密层 / 'all' 两层都看。
@@ -56,6 +56,8 @@ export default function GalleryPanel({
   const [uploadPrivate, setUploadPrivate] = useState(false)
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  // 单张详阅浮层（§9.4）：点缩略图打开，带整套画廊动作（自动描述 / 归属 / 私密…）。
+  const [openId, setOpenId] = useState('')
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -70,31 +72,46 @@ export default function GalleryPanel({
   const shown = items.filter(
     (g) => (filter === 'all' || g.owner === filter) && (tier === 'all' || g.private === (tier === 'private')),
   )
+  // 详阅浮层用的当前项（列表刷新后按 id 重新取，拿到最新的描述 / 层级）。
+  // 必须 useMemo，且只依赖 items（reload 时才换引用）：浮层内部按「传入的项」重置编辑态，
+  // 若每次渲染都造一个新对象，用户刚敲进编辑框的内容会被立刻清掉。
+  const openItem = useMemo(() => items.find((g) => g.id === openId) ?? null, [items, openId])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (lightbox) setLightbox(null)
+        // 详阅浮层开着时，Esc 先关它，不要连面板一起关掉。
+        if (openId) setOpenId('')
         else onClose()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, lightbox])
+  }, [onClose, openId])
 
   function flash(msg: string) {
     setNotice(msg)
     setTimeout(() => setNotice(''), 4000)
   }
 
-  async function pickAndUpload(file: File) {
+  async function pickAndUpload(files: File[]) {
+    if (!files.length) return
     setUploading(true)
     setError('')
     try {
-      await uploadToGallery(file, { owner: uploadOwner, private: uploadPrivate })
+      const { items: added, errors } = await uploadManyToGallery(files, {
+        owner: uploadOwner,
+        private: uploadPrivate,
+      })
       await reload()
       onChanged?.()
-      flash(`已上传到「${ownerLabel(uploadOwner, characters)}」${uploadPrivate ? '的私密层 🔒' : ' ✓'}`)
+      if (errors.length) {
+        setError(`${added.length} 个成功、${errors.length} 个失败：${errors[0].error}`)
+      } else {
+        flash(
+          `已上传 ${added.length} 个到「${ownerLabel(uploadOwner, characters)}」${uploadPrivate ? '的私密层 🔒' : ' ✓'}`,
+        )
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -301,18 +318,19 @@ export default function GalleryPanel({
               className="btn sm"
               disabled={uploading}
               onClick={() => fileRef.current?.click()}
-              title="从本地选图上传进画廊（在别处生的图也能收进来）"
+              title="从本地选照片 / 视频上传进画廊，可多选（在别处生的图也能收进来）"
             >
-              {uploading ? '上传中…' : '＋ 上传图片'}
+              {uploading ? '上传中…' : '＋ 上传图片 / 视频'}
             </button>
             <input
               ref={fileRef}
               type="file"
-              accept="image/*"
+              accept="image/*,video/*"
+              multiple
               className="hidden"
               onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) void pickAndUpload(f)
+                const fs = Array.from(e.target.files ?? [])
+                if (fs.length) void pickAndUpload(fs)
               }}
             />
           </div>
@@ -355,15 +373,28 @@ export default function GalleryPanel({
                 >
                   <button
                     type="button"
-                    onClick={() => setLightbox(g.orig || g.thumb)}
+                    onClick={() => setOpenId(g.id)}
                     className="relative shrink-0"
-                    title="点开看大图"
+                    title={g.kind === 'video' ? '点开看视频（带画廊动作）' : '点开看大图（带画廊动作）'}
                   >
-                    <img
-                      src={thumb}
-                      alt={g.description || '画廊图片'}
-                      className="h-[110px] w-[110px] rounded-lg border border-[var(--border)] object-cover"
-                    />
+                    {g.kind === 'video' ? (
+                      // eslint-disable-next-line jsx-a11y/media-has-caption
+                      <video src={g.orig} muted playsInline preload="metadata" className="h-[110px] w-[110px] rounded-lg border border-[var(--border)] object-cover" />
+                    ) : (
+                      <img
+                        src={thumb}
+                        alt={g.description || '画廊图片'}
+                        className="h-[110px] w-[110px] rounded-lg border border-[var(--border)] object-cover"
+                      />
+                    )}
+                    {g.kind === 'video' && (
+                      <span
+                        className="absolute left-1 top-1 flex h-[20px] w-[20px] items-center justify-center rounded-md border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_75%,transparent)] text-[11px]"
+                        title="视频"
+                      >
+                        ▶
+                      </span>
+                    )}
                     {g.private && (
                       <span
                         className="absolute right-1 top-1 flex h-[20px] w-[20px] items-center justify-center rounded-md border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_75%,transparent)] text-[11px]"
@@ -410,9 +441,9 @@ export default function GalleryPanel({
                         <>
                           <button
                             className="btn ghost sm"
-                            disabled={busyId === g.id}
+                            disabled={busyId === g.id || g.kind === 'video'}
                             onClick={() => void autoDescribe(g.id)}
-                            title="让看图模型看一眼，自动写一段中文描述"
+                            title={g.kind === 'video' ? '视频不支持自动描述，请手写一句' : '让看图模型看一眼，自动写一段中文描述'}
                           >
                             {busyId === g.id ? '看图…' : '自动描述'}
                           </button>
@@ -496,16 +527,22 @@ export default function GalleryPanel({
         </p>
       </div>
 
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-6 backdrop-blur-sm"
-          onClick={(e) => {
-            e.stopPropagation()
-            setLightbox(null)
+      {/* 单张详阅浮层（§9.4）：点缩略图打开，动作和介绍页立绘浮层共用一套组件 */}
+      {openItem && (
+        <GalleryLightbox
+          item={openItem}
+          characters={characters}
+          baseUrl={baseUrl}
+          apiKey={apiKey}
+          visionModel={visionModel}
+          uncensored={uncensored}
+          onClose={() => setOpenId('')}
+          onChanged={async (next) => {
+            await reload()
+            onChanged?.()
+            if (next === null) setOpenId('')
           }}
-        >
-          <img src={lightbox} alt="大图" className="max-h-[88vh] max-w-[88vw] rounded-xl shadow-2xl" />
-        </div>
+        />
       )}
     </div>
   )

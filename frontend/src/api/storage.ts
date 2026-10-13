@@ -197,3 +197,79 @@ export async function clearOriginals(session: string): Promise<number> {
   if (!resp.ok) throw new Error(data?.detail ?? `清理失败（HTTP ${resp.status}）`)
   return data.removed as number
 }
+
+// ---- §9.4 画廊多文件上传（多选照片 + 多选视频）----
+// 走 multipart 批量接口，不再一条一份 dataURL；后端按文件类型分流到 save_image / save_video。
+
+export type SavedAttachment = {
+  id: string
+  session: string
+  source: string
+  kind: 'image' | 'video'
+  width: number
+  height: number
+  size: number
+  thumb: string
+  orig: string
+}
+
+export type BatchUploadResult = {
+  saved: SavedAttachment[]
+  errors: { name: string; error: string }[]
+}
+
+/** 多文件上传（照片 / 视频混选都行）。单个文件超限不会拖垮整批 —— 只看 errors。 */
+export async function uploadAttachmentsBatch(
+  sessionId: string,
+  files: File[],
+  source: 'upload' | 'generated' = 'upload',
+): Promise<BatchUploadResult> {
+  const fd = new FormData()
+  fd.append('session_id', sessionId)
+  fd.append('source', source)
+  for (const f of files) fd.append('files', f, f.name)
+  const resp = await fetch('/api/attachments/batch', { method: 'POST', body: fd })
+  const data = await resp.json().catch(() => null)
+  if (!resp.ok) {
+    const detail = data?.detail
+    throw new Error(typeof detail === 'string' ? detail : `上传失败（HTTP ${resp.status}）`)
+  }
+  return { saved: data?.saved ?? [], errors: data?.errors ?? [] }
+}
+
+// ---- 存储管理（§15.3）：列出磁盘文件 → 用户勾选 → 确认后只删勾中的 ----
+
+export type AttachmentFile = {
+  name: string
+  stem: string
+  ext: string
+  kind: 'image' | 'video'
+  size: number
+  mtime: number
+  orig: string
+  thumb: string
+  /** 还被几处引用（幸存消息 + 画廊收藏）；> 0 表示删了会出现空图。 */
+  refs: number
+}
+
+export type AttachmentList = { session: string; items: AttachmentFile[]; count: number }
+
+export async function listAttachments(session: string): Promise<AttachmentList> {
+  const resp = await fetch(`/api/attachments/list?session=${encodeURIComponent(session)}`)
+  if (!resp.ok) throw new Error(`文件列表加载失败（HTTP ${resp.status}）`)
+  return (await resp.json()) as AttachmentList
+}
+
+export type SelectiveDeleteResult = { removed: number; skipped: string[]; gallery_rows: number }
+
+/** 只删勾选的文件（连带清理它们的画廊收藏）。names 为空后端会拒，绝不会「一点删光」。 */
+export async function deleteAttachments(session: string, names: string[]): Promise<SelectiveDeleteResult> {
+  const resp = await fetch('/api/attachments/delete-selected', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: session, names, confirmed: true }),
+  })
+  const data = await resp.json().catch(() => null)
+  if (!resp.ok) throw new Error(data?.detail ?? `删除失败（HTTP ${resp.status}）`)
+  return data as SelectiveDeleteResult
+}

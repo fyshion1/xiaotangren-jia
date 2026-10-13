@@ -208,22 +208,31 @@ def star(
     orig: str,
     session_id: str = "",
     message_id: str = "",
+    kind: str = "image",
     description: str = "",
     owner: str = "",
     in_memory: bool = True,
     private: bool = False,
 ) -> dict | None:
-    """「⭐ 存入画廊」：同一归属下同一张原图重复收藏 → 返回已存在的那条（幂等）。"""
+    """「⭐ 存入画廊」：同一归属下同一张原图重复收藏 → 返回已存在的那条（幂等）。
+
+    kind（§9.4）：image = 图片（默认）| video = 视频。视频不自动进记忆
+    （视频没有「一句话描述」可作记忆正文，等用户给描述再说）。
+    """
     owner = (owner or "").strip()
     existing = db.get_gallery_by_orig(orig, owner=owner)
     if existing:
         return existing
+    kind = "video" if (kind or "").lower() == "video" else "image"
     created = db.add_gallery(
         orig=orig,
-        thumb=attachments.thumb_url(orig),
+        # 视频没有缩略图（save_video 的 thumb 就是原文件），直接拿原 URL 当封面；
+        # 图片才走 /orig/ → /thumb/ 的推导。
+        thumb=orig if kind == "video" else attachments.thumb_url(orig),
         description=_norm(description),
         session_id=session_id,
         message_id=message_id,
+        kind=kind,
         owner=owner,
         # 先记下「要不要进记忆」的意向；描述为空时暂不建记忆（避免留一条空正文的孤儿记忆），
         # 等描述补上（用户手写或自动描述）再真正建。

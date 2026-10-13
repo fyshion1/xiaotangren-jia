@@ -26,6 +26,7 @@ class StarIn(BaseModel):
     thumb: str = ""  # 可省略，缺省由 orig 推导
     session_id: str = ""
     message_id: str = ""
+    kind: str = "image"  # §9.4 媒体类型：image（默认）| video（画廊视频）
     description: str = ""
     owner: str = ""  # '' = 家共用，<charId> = 角色专属
     in_memory: bool = True
@@ -67,6 +68,7 @@ async def add_to_gallery(body: StarIn) -> dict:
         orig=body.orig.strip(),
         session_id=body.session_id,
         message_id=body.message_id,
+        kind=body.kind,
         description=body.description,
         owner=body.owner,
         in_memory=body.in_memory,
@@ -85,6 +87,9 @@ async def describe(gallery_id: str, body: DescribeIn) -> dict:
     g = db.get_gallery(gallery_id)
     if g is None:
         raise HTTPException(status_code=404, detail="画廊里没有这张图")
+    if g.get("kind") == "video":
+        # 视频不给「自动描述」：vision 模型看图，喂一段视频它读不了。
+        raise HTTPException(status_code=400, detail="视频不支持自动描述，请手写一句")
     s = get_settings()
     try:
         text = await gal.describe_image(

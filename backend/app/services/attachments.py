@@ -13,11 +13,16 @@ import base64
 import hashlib
 import io
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 ATTACHMENTS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "attachments"
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20MB
+# 画廊视频（§9.4）：一般 30 秒出头、100MB 以内。这里只做「存得住 + 播得出」，
+# 不抽帧 —— 抽帧那条链是聊天的 /api/media/video/*，门槛更紧（15s / 50MB）。
+MAX_VIDEO_BYTES = 100 * 1024 * 1024  # 100MB
 
 THUMB_MAX = 512  # 缩略图最长边（px）
 THUMB_QUALITY = 82
@@ -31,6 +36,16 @@ _MIME_EXT = {
     "image/webp": "webp",
     "image/gif": "gif",
     "image/bmp": "bmp",
+}
+
+# 画廊视频：只认这几种容器；存的是原文件，靠浏览器 <video> 直接播。
+VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+_VIDEO_MIME_EXT = {
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "video/webm": "webm",
+    "video/x-matroska": "mkv",
+    "video/x-msvideo": "avi",
 }
 
 _DATA_URL_RE = re.compile(r"^data:(?P<mime>[^;,]+)?;base64,(?P<b64>.+)$", re.S)
@@ -131,11 +146,55 @@ def save_image(session_id: str, raw: bytes, mime: str, source: str = "upload") -
         "id": image_id,
         "session": sess,
         "source": source or "upload",
+        "kind": "image",
         "width": width,
         "height": height,
         "size": len(raw),
         "thumb": f"{URL_PREFIX}/{sess}/thumb/{thumb_name}",
         "orig": f"{URL_PREFIX}/{sess}/orig/{orig_name}",
+    }
+
+
+def save_video(session_id: str, raw: bytes, ext_or_mime: str = "", source: str = "upload") -> dict:
+    """落盘一个视频（画廊用），返回引用信息。**不抽帧、不做缩略图**。
+
+    与 save_image 的区别：视频不做 Pillow 缩略图，thumb 直接指向原文件 —— 前端用
+    `<video>` 播它，只靠原 URL 就行。扩展名优先按 mime 推，推不出再按传入的扩展名兜底。
+    """
+    ensure_dir()
+    sess = _safe_token(session_id)
+    video_id = hashlib.sha1(raw).hexdigest()[:16]
+    token = (ext_or_mime or "").lower().strip()
+    if token.startswith("."):
+        ext = token.lstrip(".")[:8] or "mp4"
+    else:
+        ext = _VIDEO_MIME_EXT.get(token, "") or (token[:8] if token else "") or "mp4"
+    if not ext.startswith("."):  # 统一成裸扩展名再存盘
+        ext = ext.lstrip(".")
+    ext = re.sub(r"[^A-Za-z0-9]", "", ext) or "mp4"
+
+    orig_dir = ATTACHMENTS_DIR / sess / "orig"
+    thumb_dir = ATTACHMENTS_DIR / sess / "thumb"
+    orig_dir.mkdir(parents=True, exist_ok=True)
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+
+    orig_name = f"{video_id}.{ext}"
+    orig_path = orig_dir / orig_name
+    if not orig_path.exists():
+        orig_path.write_bytes(raw)
+
+    orig_url = f"{URL_PREFIX}/{sess}/orig/{orig_name}"
+    return {
+        "id": video_id,
+        "session": sess,
+        "source": source or "upload",
+        "kind": "video",
+        "width": 0,
+        "height": 0,
+        "size": len(raw),
+        # 视频不给缩略图，前端拿 thumb 当封面时可用时长/首帧兜底；这里先指向原文件。
+        "thumb": orig_url,
+        "orig": orig_url,
     }
 
 
@@ -178,6 +237,80 @@ def delete_by_url(url: str) -> int:
         except OSError:
             pass
     return removed
+
+
+def list_session_files(session_id: str) -> dict:
+    """列出某会话下的原图文件（存储管理用），带大小 / 类型 / 被引用次数。
+
+    只列 `orig/` 里的文件 —— 缩略图是衍生物、不单独给用户删（删原图时按 hash 一并回收）。
+    引用次数（消息里还挂着 / 画廊里还有收藏）由 routers 层补齐，这里只给磁盘事实。
+    """
+    sess = _safe_token(session_id)
+    root = ATTACHMENTS_DIR / sess / "orig"
+    items: list[dict] = []
+    if root.is_dir():
+        for f in sorted(root.iterdir(), key=lambda p: p.name):
+            if not f.is_file() or f.is_symlink():
+                continue
+            ext = f.suffix.lower()
+            try:
+                size = f.stat().st_size
+                mtime = f.stat().st_mtime
+            except OSError:
+                continue
+            items.append({
+                "name": f.name,
+                "stem": f.stem,
+                "ext": ext,
+                "kind": "video" if ext in VIDEO_EXT else "image",
+                "size": size,
+                "mtime": mtime,
+                "orig": f"{URL_PREFIX}/{sess}/orig/{f.name}",
+                "thumb": (
+                    f"{URL_PREFIX}/{sess}/orig/{f.name}"
+                    if ext in VIDEO_EXT
+                    else f"{URL_PREFIX}/{sess}/thumb/{f.stem}.jpg"
+                ),
+            })
+    return {"session": sess, "items": items, "count": len(items)}
+
+
+def delete_selected(session_id: str, names: list[str]) -> dict:
+    """只删用户点名的那几个文件（存储管理「选择删什么」）。
+
+    names 是 orig 目录里的文件名（含扩展名）。文件名先白名单校验（防路径穿越），
+    再按 hash 把同名缩略图一并回收。返回删掉的文件数与被忽略的名字。
+    """
+    sess = _safe_token(session_id)
+    root = (ATTACHMENTS_DIR / sess / "orig").resolve()
+    if not root.is_dir():
+        return {"removed": 0, "skipped": list(names or [])}
+    removed = 0
+    skipped: list[str] = []
+    for name in names or []:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "", (name or "").strip())
+        if not safe or safe in {".", ".."}:
+            skipped.append(name)
+            continue
+        path = (root / safe).resolve()
+        if root not in path.parents or not path.is_file():
+            skipped.append(name)
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            skipped.append(name)
+            continue
+        # 缩略图恒为 {hash}.jpg
+        thumb = path.parent.parent / "thumb" / f"{path.stem}.jpg"
+        try:
+            if thumb.is_file():
+                thumb.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return {"removed": removed, "skipped": skipped}
 
 
 def clear_originals(session_id: str) -> int:

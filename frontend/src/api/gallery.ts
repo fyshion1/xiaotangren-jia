@@ -5,7 +5,7 @@
 // 私密层（private，§26）：纯界面开关，1 = 收进私密层、展示端默认不列出；
 // 与 owner（归属）、in_memory（进记忆）互相独立 —— 私密只防别人瞥屏，不瞒角色。
 
-import { uploadAttachment } from './storage'
+import { uploadAttachmentsBatch } from './storage'
 
 export type GalleryItem = {
   id: string
@@ -14,6 +14,8 @@ export type GalleryItem = {
   owner: string
   orig: string
   thumb: string
+  /** §9.4 媒体类型：image（默认，图片）| video（画廊视频，<video> 直接播）。 */
+  kind: 'image' | 'video'
   description: string
   in_memory: boolean
   memory_id: string
@@ -51,6 +53,7 @@ export async function starImage(payload: {
   orig: string
   session_id?: string
   message_id?: string
+  kind?: 'image' | 'video'
   description?: string
   owner?: string
   in_memory?: boolean
@@ -63,30 +66,43 @@ export async function starImage(payload: {
   })
 }
 
-// 本地上传一张图进画廊：FileReader → dataURL → 落盘（/api/attachments）→ 收藏。
+// 本地多选进画廊（§9.4）：照片和视频混选都行 → 批量落盘 → 逐条收藏。
 // 落盘目录用固定的 "gallery" 会话名 —— 画廊图不隶属任何聊天会话。
+// 返回：成功收藏的项 + 失败清单（单个文件超限不拖垮整批）。
+export async function uploadManyToGallery(
+  files: File[],
+  opts: { owner?: string; private?: boolean } = {},
+): Promise<{ items: GalleryItem[]; errors: { name: string; error: string }[] }> {
+  if (!files.length) return { items: [], errors: [] }
+  const batch = await uploadAttachmentsBatch('gallery', files)
+  const items: GalleryItem[] = []
+  for (const saved of batch.saved) {
+    try {
+      items.push(
+        await starImage({
+          orig: saved.orig,
+          kind: saved.kind,
+          owner: opts.owner ?? '',
+          private: opts.private ?? false,
+        }),
+      )
+    } catch (e) {
+      batch.errors.push({ name: saved.id, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+  return { items, errors: batch.errors }
+}
+
+// 单文件上传（右键「上传一张」等旧路径仍走它）。
 export async function uploadToGallery(
   file: File,
   opts: { owner?: string; description?: string; private?: boolean } = {},
 ): Promise<GalleryItem> {
-  const dataUrl = await readAsDataUrl(file)
-  const saved = await uploadAttachment('gallery', dataUrl)
-  if (!saved) throw new Error('图片上传失败（后端没起？或格式不支持）')
-  return starImage({
-    orig: saved.orig,
-    description: opts.description ?? '',
-    owner: opts.owner ?? '',
-    private: opts.private ?? false,
-  })
-}
-
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(new Error('读取本地文件失败'))
-    reader.readAsDataURL(file)
-  })
+  const { items } = await uploadManyToGallery([file], { owner: opts.owner, private: opts.private })
+  const first = items[0]
+  if (!first) throw new Error('图片上传失败（后端没起？或格式不支持）')
+  if (opts.description) return updateGallery(first.id, { description: opts.description })
+  return first
 }
 
 // 让 vision 模型看图写描述（save=true 时直接落库并同步那条照片记忆）
@@ -121,4 +137,12 @@ export async function updateGallery(
 
 export async function deleteGallery(id: string): Promise<void> {
   await asJson(`/api/gallery/${id}`, { method: 'DELETE' })
+}
+
+/** 按图片 URL 找画廊里已有的那条（orig 或 thumb 任一命中）。
+ *  介绍页的立绘浮层靠它判断「这张图收进画廊了没」—— 收过就直接摊开画廊动作。 */
+export async function findGalleryByOrig(url: string): Promise<GalleryItem | null> {
+  if (!url) return null
+  const rows = await fetchGallery()
+  return rows.find((g) => g.orig === url || g.thumb === url) ?? null
 }
