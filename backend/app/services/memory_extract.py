@@ -164,6 +164,7 @@ async def extract(
     model: str = "",
     force: bool = False,
     save: bool = True,
+    feature_id: str = "",
 ) -> dict:
     """从聊天片段里提炼记忆并（可选）落库。
 
@@ -171,6 +172,9 @@ async def extract(
     name_of：{char_id: 名字}，用于让模型知道是谁在说话、以及把 who 映回 id。
     force=True 时跳过触发词预筛（用户手动点「提炼记忆」用）。
     save=False 时只返回提炼结果不落库（预览用）。
+    feature_id：记忆归属的功能命名空间。普通聊天留空（存 game_id=''）；
+        游戏 / 小窝外设传入自己的 id，这样提炼出的记忆只在同一个功能里召回，
+        **不会漏进日常聊天**（§9.6 记忆隔离）。
     """
     name_of = name_of or {}
     candidates = pick_candidates(messages)
@@ -221,6 +225,9 @@ async def extract(
             char_id=char_id,
             source="auto",
             meta={"private": item["private"], "who": item["who"]},
+            # 功能命名空间写进 game_id 列（列名历史原因叫 game_id，语义是「功能隔离键」，见 §9.6）。
+            # 普通聊天留空 → game_id=''，与游戏/外设的记忆互相召回不到。
+            game_id=feature_id,
         )
         if record:
             record.pop("vector", None)

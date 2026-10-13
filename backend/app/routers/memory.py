@@ -42,6 +42,9 @@ class ExtractIn(BaseModel):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
+    # 功能命名空间（§9.6）：普通聊天留空；游戏 / 小窝外设传自己的 id，
+    # 提炼出的记忆只在同一功能内召回，不会漏进日常聊天。
+    feature_id: str = ""
 
 
 class RecallIn(BaseModel):
@@ -129,6 +132,7 @@ async def extract_memories(body: ExtractIn) -> dict:
             model=body.model or s.model_chat,
             force=body.force,
             save=not body.preview,
+            feature_id=body.feature_id,
         )
     except Exception as exc:  # noqa: BLE001
         # 提炼失败不该打断聊天：如实回报，前端静默处理

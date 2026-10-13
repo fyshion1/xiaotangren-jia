@@ -57,3 +57,9 @@ Thumbs.db
 # Agent 联调中间 JSON（暂存数据，不进 git）
 docs/agent-game-handoff.json
 docs/pending-agent-response-*.json
+
+# 小窝功能（§9.6）：每个功能是独立项目、单独 git，本体仓库不收它们的内容。
+# 只保留一个 README，说明这个目录是干什么的。
+/features/*
+!/features/README.md
+!/features/.gitkeep

@@ -174,6 +174,12 @@ class GameApiConfigIn(BaseModel):
     base_url: str = Field(min_length=1, max_length=500)
     api_key: str = ""
     model: str = ""
+    # 视觉路（§9.6）：留空 = 回退「小窝大脑默认」的 vision。
+    vision_model: str = ""
+    vision_base_url: str = ""
+    vision_api_key: str = ""
+    # 这个功能要不要用视觉（看图 / 看视频抽帧）。False = 前端「屏蔽视觉」开关生效，不注入多模态。
+    needs_vision: bool = True
 
 @router.get("/api-configs")
 async def list_api_configs(game_id: str = Query(..., min_length=1)) -> dict:
@@ -181,7 +187,11 @@ async def list_api_configs(game_id: str = Query(..., min_length=1)) -> dict:
 
 @router.post("/api-configs")
 async def save_api_config(body: GameApiConfigIn) -> dict:
-    return db.upsert_game_api_config(body.game_id, body.name, body.base_url, body.api_key, body.model)
+    return db.upsert_game_api_config(
+        body.game_id, body.name, body.base_url, body.api_key, body.model,
+        vision_model=body.vision_model, vision_base_url=body.vision_base_url,
+        vision_api_key=body.vision_api_key, needs_vision=body.needs_vision,
+    )
 
 
 @router.post("/play-sessions")

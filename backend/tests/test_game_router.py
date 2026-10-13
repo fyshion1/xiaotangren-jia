@@ -118,3 +118,32 @@ class GameRouterTests(unittest.TestCase):
         self.assertIsNotNone(two)
         self.assertEqual(len(db.list_memories(game_id="g1", world_id="w1")), 1)
         self.assertEqual(db.list_memories(game_id="g1", world_id="w2"), [])
+
+    def test_auto_extract_can_tag_feature_namespace(self):
+        """§9.6：提炼记忆带 feature_id 时落进功能命名空间，普通聊天召回不到。"""
+        def remember(text, bucket="home", char_id="", source="manual", meta=None,
+                     game_id="", world_id=""):
+            return {"id": f"m-{game_id or 'chat'}", "text": text, "bucket": bucket,
+                    "char_id": char_id, "game_id": game_id, "world_id": world_id}
+
+        with patch("app.services.memory_extract.mem.remember", side_effect=remember), \
+             patch("app.services.memory_extract.openai.complete_chat",
+                   return_value='{"memories":[{"text":"我们把基地建在河边","private":false,"who":""}]}'):
+            import asyncio
+
+            from app.services import memory_extract
+            result = asyncio.run(memory_extract.extract(
+                messages=[{"role": "user", "content": "以后我们就在河边建基地吧，记得哦"}],
+                character_ids=["dashiyin"], session_kind="single", name_of={"dashiyin": "大诗音"},
+                base_url="https://x/v1", api_key="k", model="m", feature_id="dont_starve_together",
+            ))
+            self.assertTrue(result["triggered"])
+            self.assertEqual(result["saved"][0]["game_id"], "dont_starve_together")
+
+            chat = asyncio.run(memory_extract.extract(
+                messages=[{"role": "user", "content": "以后我们就在河边建基地吧，记得哦"}],
+                character_ids=["dashiyin"], session_kind="single", name_of={"dashiyin": "大诗音"},
+                base_url="https://x/v1", api_key="k", model="m",
+            ))
+            self.assertEqual(chat["saved"][0]["game_id"], "")
+

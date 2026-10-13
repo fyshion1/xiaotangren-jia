@@ -110,6 +110,8 @@ export async function extractMemories(payload: {
   base_url?: string
   api_key?: string
   model?: string
+  /** 功能命名空间（§9.6）：普通聊天留空；游戏 / 小窝外设传自己的 id，记忆互不串门。 */
+  feature_id?: string
 }): Promise<ExtractResult> {
   return asJson<ExtractResult>('/api/memories/extract', {
     method: 'POST',
