@@ -63,3 +63,6 @@ docs/pending-agent-response-*.json
 /features/*
 !/features/README.md
 !/features/.gitkeep
+
+# 本地编辑器配置（tasks 里可能指向临时 worktree，不进仓库）
+.vscode/

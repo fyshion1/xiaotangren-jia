@@ -67,6 +67,9 @@ class FeatureApiConfigIn(BaseModel):
 def _effective_config(feature_id: str) -> dict:
     """把「全局默认 + 功能覆盖」合并成适配器实际要用的一份配置。
 
+    **不回退到服务端 .env / 聊天配置** —— 大老大明确要求：小窝大脑用的是小窝自己的通用接口配置，
+    不是聊天接口那份 API。没配就是没配，让功能拿到明确的 409 去提示用户填，别偷偷借用。
+
     返回值包含 api_key / vision_api_key 明文，仅限本机桥接端调用，别写日志、别外发。
     """
     base = db.get_brain_default()

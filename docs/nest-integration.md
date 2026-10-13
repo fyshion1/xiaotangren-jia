@@ -57,12 +57,46 @@ POST /api/nest/chat
 
 与游戏层 `POST /api/game/chat` 同构，`game_id` → `feature_id`。字段：
 `feature_id`、`world_id`（可空）、`player_id`（可空）、`character_id`、`character_ids`（可选，最多 8 位，一次模型调用分饰多角）、
-`conversation_id`、`messages`、`state`、`stream`、`max_tokens`。
+`conversation_id`、`messages`、`images`（可选）、`state`、`stream`、`max_tokens`。
 
-- 上游由**该功能合并后的配置**决定；没配任何上游 → 409，**不回退到普通聊天配置**。
+- 上游由**该功能合并后的配置**决定；没配任何上游 → 409。
+  **不会回退到服务端的 .env 或聊天页配置** —— 小窝大脑和聊天接口是两份独立的配置，这是刻意的。
 - 不调用普通聊天组装器，避免把家庭记忆和私人聊天上下文带进功能会话。
 - `stream: true` 走 SSE，事件 `token` / `done` / `error`，每帧带 `conversation_id`。
 - 多角色回复的 `message.content` 是 JSON 字符串：`{"replies":[{"character_id":"…","text":"…"}]}`。
+
+### 带图调用（视觉路）
+
+`images` 是 **data URL** 列表（`data:image/png;base64,…`），最多 8 张 —— 与视频抽帧同一条 token 安全线。
+
+- 传了 `images` → 走该功能的**视觉路**（`vision_model` / `vision_base_url` / `vision_api_key`）；
+  没传 → 走普通路。两条路可以完全不同的中转站和模型。
+- 该功能 `needs_vision: false`（被「屏蔽视觉」）或没配视觉模型时，带图直接 **409**，不默默降级。
+- **必须 data URL**：裸 base64 会被 vsllm / New API 这类中转打成 400（和 `/api/media/video/chat` 同一个坑）。
+- 非 `data:image/` 开头 → 422；单张超 8 MB → 413。不接受任意外链，防 SSRF。
+
+> 这就是「一起看」的口子：把视频抽成 ≤8 帧（ffmpeg）转 data URL 传进来即可。
+> 实时逐帧 token 太贵，按 §9.6.3 暂不做。
+
+## 功能动态流（推给人看的东西）
+
+```
+POST   /api/nest/feed                 # 功能推一条动态
+GET    /api/nest/feed                 # 列出（?feature_id=&status=&limit=）
+PUT    /api/nest/feed/{item_id}       # 改状态：new / seen / saved / dismissed
+DELETE /api/nest/feed/{item_id}       # 删
+```
+
+独立功能（B站刷到的视频、QQ 里聊到的…）把**给人看的产出**推进来，小窝渲染成卡片。
+后端**只当中转站**：不解释 `payload`、不校验业务含义、不替功能决定什么值得推。
+
+字段：`feature_id`、`kind`（`video` / `note` / 任意短串）、`title`、`url`、`summary`、
+`cover`、`payload`（不透明 JSON，原样存回）。
+
+- **同一个功能下 `url` 相同 → 覆盖更新**，不会把同一个视频堆两条。
+- `status` 是大老大的反馈：`saved` / `dismissed` 是给功能的偏好信号，
+  功能可以 `GET …?status=saved` 读回去（例如 B站采集端用它把口味画像养准）。
+- 未登记的功能 id 也照收，返回 `registered: false` 提醒调用方 —— 方便接自己写的功能。
 
 ## 记忆隔离
 
