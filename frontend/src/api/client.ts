@@ -95,6 +95,20 @@ export async function launchInteractiveHome(): Promise<{ ok: boolean; project: s
 // 功能的唯一清单来自后端注册表（代码级真相源），前端按它渲染小窝入口列表。
 // 配置分两层：全局默认（小窝大脑默认，带 vision）+ 每功能可覆盖。
 
+/** 功能自己提供的子命令：前端按它渲染按钮，命令串由后端按白名单拼，前端传不了任意命令。 */
+export type NestRunnerCommand = {
+  name: string
+  label: string
+  desc: string
+  params: string[]
+}
+
+export type NestRunner = {
+  folder: string
+  module: string
+  commands: NestRunnerCommand[]
+}
+
 export type NestFeature = {
   id: string
   name: string
@@ -104,6 +118,8 @@ export type NestFeature = {
   desc: string
   needs_vision: boolean
   folder: string
+  /** 有 runner = 能在小窝里直接启动（本体只开进程，逻辑在独立项目里）。 */
+  runner: NestRunner | null
 }
 
 export type NestBrainConfig = {
@@ -192,6 +208,59 @@ export async function setNestFeedStatus(itemId: string, status: NestFeedItem['st
 
 export async function deleteNestFeedItem(itemId: string): Promise<void> {
   await asJson(`/api/nest/feed/${encodeURIComponent(itemId)}`, { method: 'DELETE' })
+}
+
+// ---- 在小窝里把独立功能跑起来（§9.6）----
+// 前端只传「功能 id + 注册表里列出的子命令 + 白名单参数」，命令串由后端按注册表拼出。
+
+export type NestRunResult = {
+  ok: boolean
+  running: boolean
+  pid?: number
+  exit_code?: number
+  log?: string
+  output?: string
+  message?: string
+}
+
+export type NestRunStatus = {
+  feature_id: string
+  running: boolean
+  pid: number
+  command: string
+  started_at: string
+}
+
+export type NestRunBody = {
+  command: string
+  limit?: number
+  interval?: number
+  character_ids?: string[]
+  memory?: boolean
+}
+
+export async function runNestFeature(featureId: string, body: NestRunBody): Promise<NestRunResult> {
+  return asJson<NestRunResult>(`/api/nest/features/${encodeURIComponent(featureId)}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function fetchNestRunStatus(featureId: string): Promise<NestRunStatus> {
+  return asJson<NestRunStatus>(`/api/nest/features/${encodeURIComponent(featureId)}/run`)
+}
+
+/** 读功能最近的运行日志（后端按 utf-8 读，中文不会乱码 —— 终端里跑不出东西的那个毛病）。 */
+export async function fetchNestRunLog(featureId: string, lines = 400): Promise<string> {
+  const result = await asJson<{ log: string }>(
+    `/api/nest/features/${encodeURIComponent(featureId)}/run-log?lines=${lines}`,
+  )
+  return result.log || ''
+}
+
+export async function stopNestFeature(featureId: string): Promise<{ ok: boolean; stopped: boolean; message?: string }> {
+  return asJson(`/api/nest/features/${encodeURIComponent(featureId)}/run`, { method: 'DELETE' })
 }
 
 // ---- 个人档案（私人空间 / 用户身份，§22）----

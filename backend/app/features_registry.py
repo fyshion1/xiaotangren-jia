@@ -20,6 +20,26 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 
+class RunnerCommand(TypedDict):
+    """功能自己提供的子命令（`python -m <module> <name>`）—— 前端按它渲染按钮。"""
+    name: str
+    label: str
+    desc: str
+    params: list[str]  # 支持哪些附加参数：limit / characters / memory
+
+
+class Runner(TypedDict):
+    """怎么把「本体外那个独立项目」跑起来。
+
+    本体**不实现功能逻辑**，只是替大老大按一下启动键：在 `features/<folder>/` 下
+    用当前 Python 起 `python -m <module> <子命令>`，把输出收进日志给前端看。
+    module / 子命令都来自这份注册表，**不接受前端传来的任意命令**（见 routers/nest.py）。
+    """
+    folder: str
+    module: str
+    commands: list[RunnerCommand]
+
+
 class Feature(TypedDict):
     id: str
     name: str
@@ -29,6 +49,8 @@ class Feature(TypedDict):
     desc: str
     needs_vision: bool
     folder: str
+    # 有 runner = 这个功能可以在小窝里直接启动（本体只开进程，逻辑在独立项目里）。
+    runner: Runner | None
 
 
 # ---- 功能清单 ----
@@ -43,16 +65,27 @@ FEATURES: list[Feature] = [
         "desc": "让小糖人陪你一起玩饥荒：她给建议、吐槽、记住你们建过的基地。游戏本体在独立项目实现。",
         "needs_vision": False,
         "folder": "dont-starve-together",
+        "runner": None,
     },
     {
         "id": "bilibili_scout",
         "name": "小糖人逛 B站",
         "emoji": "📺",
         "kind": "media",
-        "status": "planned",
+        "status": "available",
         "desc": "让小糖人去 B站到处看视频，挑出值得大老大看的，攒成推荐。先做「自己刷」，「一起看」留位。",
-        "needs_vision": True,
+        "needs_vision": False,  # 只读标题/简介/弹幕，不看图 —— 视觉路留给以后的「一起看」
         "folder": "bilibili-scout",
+        # 采集端是独立项目（features/bilibili-scout），本体只负责把它跑起来。
+        "runner": {
+            "folder": "bilibili-scout",
+            "module": "scout",
+            "commands": [
+                {"name": "dry", "label": "试跑（不花钱）", "desc": "只抓取 + 打分，不调模型、不推小窝 —— 先看挑得准不准", "params": ["limit"]},
+                {"name": "run", "label": "逛一轮", "desc": "真的逛一轮：挑出值得看的，请小糖人写一句推荐语，推回小窝", "params": ["limit", "characters", "memory"]},
+                {"name": "watch", "label": "一直逛（循环）", "desc": "每 N 分钟一轮，关掉窗口才停；日志在下面滚动", "params": ["interval", "limit", "characters"]},
+            ],
+        },
     },
     {
         "id": "qq_bridge",
@@ -63,6 +96,7 @@ FEATURES: list[Feature] = [
         "desc": "小糖人无聊时来骚扰你：QQ 消息接入，回复发回 QQ。看图看视频都走大脑的多模态。",
         "needs_vision": True,
         "folder": "qq-bridge",
+        "runner": None,
     },
     {
         "id": "interactive_home",
@@ -73,6 +107,7 @@ FEATURES: list[Feature] = [
         "desc": "把「家」渲染成能走动的三维场景（Unity）。启动入口已接，场景内容在独立工程里做。",
         "needs_vision": False,
         "folder": "",
+        "runner": None,
     },
     {
         "id": "gemini_sync",
@@ -83,6 +118,7 @@ FEATURES: list[Feature] = [
         "desc": "采集本机浏览器已打开的 Gemini 会话文字，推进 test 群聊。浏览器扩展在 extensions/ 里。",
         "needs_vision": False,
         "folder": "",
+        "runner": None,
     },
 ]
 
@@ -105,3 +141,9 @@ def default_needs_vision(feature_id: str) -> bool:
     """功能在注册表里是否声明需要视觉。未知功能不敢替用户决定，默认关。"""
     f = get_feature(feature_id)
     return bool(f["needs_vision"]) if f else False
+
+
+def runner_of(feature_id: str) -> Runner | None:
+    """这个功能的启动方式（没有 = 前端不给启动按钮）。"""
+    f = get_feature(feature_id)
+    return f.get("runner") if f else None

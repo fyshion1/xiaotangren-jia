@@ -18,7 +18,12 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -27,11 +32,17 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..config import get_settings
-from ..features_registry import all_features, default_needs_vision, get_feature
+from ..features_registry import all_features, default_needs_vision, get_feature, runner_of
 from ..providers import openai
 from ..services.prompt.forms import resolve_form
 
 router = APIRouter(prefix="/nest", tags=["nest"])
+
+# 启动独立功能项目时的落地目录与日志目录。
+# 后端在 backend/ 下跑，仓库根是它的上一级；`data/nest_runs/` 存每个进程的输出日志。
+REPO_ROOT = Path(__file__).resolve().parents[3]
+FEATURES_DIR = REPO_ROOT / "features"
+RUNS_DIR = REPO_ROOT / "backend" / "data" / "nest_runs"
 
 # 合并配置时，功能覆盖可用的字段（普通路 + 视觉路）。
 _OVERRIDE_FIELDS = (
@@ -356,11 +367,149 @@ async def delete_feed(item_id: str) -> dict:
     return {"ok": True, "id": item_id}
 
 
+# ---- 启动独立功能项目（本体只开进程，逻辑全在 `features/<folder>/`）----
+#
+# 大老大想在小窝里点一下就把功能跑起来，而不是自己去终端敲命令（终端里中文还会变乱码）。
+# **安全边界**：命令串完全由后端注册表拼出 —— 前端只能传「功能 id + 注册表里列出的子命令 + 白名单参数」，
+# 不接受任意命令、任意路径、任意 shell 元字符。进程 cwd 固定在该功能的目录里，日志落 `data/nest_runs/<id>.log`。
+
+
+class RunIn(BaseModel):
+    command: str = Field(min_length=1, max_length=40)
+    limit: int = Field(default=3, ge=1, le=20)
+    interval: int = Field(default=30, ge=1, le=1440)
+    character_ids: list[str] = Field(default_factory=list, max_length=8)
+    memory: bool = False
+
+
+def _runner(feature_id: str) -> dict:
+    runner = runner_of(feature_id)
+    if not runner:
+        raise HTTPException(404, "这个功能没有启动入口（实现是独立项目，还没接进来）")
+    folder = (FEATURES_DIR / runner["folder"]).resolve()
+    if FEATURES_DIR.resolve() not in folder.parents or not folder.is_dir():
+        raise HTTPException(503, f"功能目录不存在：features/{runner['folder']}/（独立项目还没放进来？）")
+    return {"runner": runner, "cwd": folder}
+
+
+def _build_command(runner: dict, cur: dict | None, body: RunIn) -> tuple[list[str], dict]:
+    """按注册表声明拼命令 —— 只认白名单参数，不认识的一律不理。"""
+    spec = next((c for c in runner["commands"] if c["name"] == cur["name"]), None)
+    if spec is None:
+        raise HTTPException(422, f"不认识子命令 {cur['name']}")
+    allowed = set(spec.get("params") or [])
+    argv = [sys.executable, "-m", runner["module"], cur["name"]]
+    if "limit" in allowed:
+        argv += ["--limit", str(body.limit)]
+    if "interval" in allowed:
+        argv += ["--interval", str(body.interval)]
+    if "characters" in allowed:
+        # 空 = 用功能自己的默认口味；给了就传一份逗号分隔的角色 id。
+        ids = [c for c in body.character_ids if c and c.isascii()]
+        argv += ["--characters", ",".join(ids or ["auto"])]
+    if "memory" in allowed and body.memory:
+        argv.append("--memory")
+    return argv, spec
+
+
+def _log_path(feature_id: str) -> Path:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    return RUNS_DIR / f"{feature_id}.log"
+
+
+@router.post("/features/{feature_id}/run")
+async def run_feature(feature_id: str, body: RunIn) -> dict:
+    """把独立功能项目跑起来：非流式（run / dry）等它跑完回结果；循环（watch）立刻返回 pid。
+
+    重复点不会起一堆进程：同一个功能已经有在跑 → 409，让你先停。
+    """
+    info = _runner(feature_id)
+    argv, spec = _build_command(info["runner"], {"name": body.command}, body)
+    if db.latest_feature_run(feature_id) and _running_pid(feature_id):
+        raise HTTPException(409, "这个功能已经在跑了，先停掉再来")
+    log = _log_path(feature_id)
+    with log.open("ab") as fp:
+        fp.write(f"\n===== {datetime.now().isoformat(timespec='seconds')}  "
+                 f"{feature_id} / {body.command} =====\n".encode())
+        fp.flush()
+        proc = subprocess.Popen(  # noqa: S603 - argv 全部由注册表白名单拼出
+            argv, cwd=str(info["cwd"]), stdout=fp, stderr=subprocess.STDOUT,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
+        )
+    db.record_feature_run(feature_id, spec["name"], proc.pid)
+    if spec["name"] == "watch":
+        return {"ok": True, "running": True, "pid": proc.pid, "log": str(log),
+                "message": f"{spec['label']}已启动，日志在下面滚动"}
+    try:
+        code = proc.wait(timeout=600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        db.stop_feature_runs(feature_id)
+        raise HTTPException(504, "跑太久了（超过 10 分钟），已停掉 —— 看看日志") from None
+    db.stop_feature_runs(feature_id)
+    return {"ok": code == 0, "running": False, "exit_code": code, "log": str(log),
+            "output": _tail(log)}
+
+
+def _running_pid(feature_id: str) -> int:
+    row = db.latest_feature_run(feature_id)
+    if not row or not row.get("pid") or row.get("stopped_at"):
+        return 0
+    pid = int(row["pid"])
+    try:
+        import psutil  # type: ignore
+        return pid if psutil.pid_exists(pid) else 0
+    except ImportError:
+        return pid
+
+
+def _tail(log: Path, lines: int = 400) -> str:
+    if not log.is_file():
+        return ""
+    text = log.read_text(encoding="utf-8", errors="replace")
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def _run_status(feature_id: str) -> dict:
+    row = db.latest_feature_run(feature_id)
+    pid = _running_pid(feature_id)
+    return {"running": bool(pid), "pid": pid or 0, "command": (row or {}).get("command", ""),
+            "started_at": (row or {}).get("started_at", "")}
+
+
+@router.get("/features/{feature_id}/run")
+async def feature_run_status(feature_id: str) -> dict:
+    """这个功能是不是已经在跑了（前端据此切换「启动 / 停止」按钮）。"""
+    return {"feature_id": feature_id, **_run_status(feature_id)}
+
+
+@router.get("/features/{feature_id}/run-log")
+async def feature_run_log(feature_id: str, lines: int = Query(400, ge=1, le=4000)) -> dict:
+    """读功能最近的运行日志（前端「看输出」用）。中文按 utf-8 读，不会变乱码。"""
+    return {"feature_id": feature_id, "log": _tail(_log_path(feature_id), lines)}
+
+
+@router.delete("/features/{feature_id}/run")
+async def stop_feature(feature_id: str) -> dict:
+    """停掉这个功能的循环进程。"""
+    pid = _running_pid(feature_id)
+    if not pid:
+        return {"ok": True, "stopped": False, "message": "本来就没在跑"}
+    try:
+        import psutil  # type: ignore
+        psutil.Process(pid).terminate()
+    except ImportError:
+        os.kill(pid, 15)  # noqa: S603 - pid 来自我们自己记的表
+    db.stop_feature_runs(feature_id)
+    return {"ok": True, "stopped": True, "pid": pid}
+
+
 @router.get("/capabilities")
 async def capabilities() -> dict:
     return {
-        "contract_version": "0.2.0",
-        "implemented": ["features", "api_config_global", "api_config_feature", "chat", "chat_sse", "feed"],
+        "contract_version": "0.2.1",
+        "implemented": ["features", "api_config_global", "api_config_feature", "chat", "chat_sse",
+                        "feed", "feature_run"],
         "namespace": "feature_id（记忆隔离键，落 memories.game_id 列）",
         "config_layers": ["nest_brain_default（全局，带 vision）", "feature_override（每功能可覆盖任意字段）"],
         "vision": {"global_default_has_vision": True, "per_feature_block_toggle": True},

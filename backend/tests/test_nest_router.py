@@ -36,8 +36,42 @@ class NestRouterTests(unittest.TestCase):
         self.assertIn("qq_bridge", ids)
         # 视觉需求是注册表声明的事实，不是前端写死的
         vision = {f["id"]: f["needs_vision"] for f in payload["items"]}
-        self.assertTrue(vision["bilibili_scout"])
+        # 逛 B站 只读标题/简介/弹幕（文字），不吃视觉 —— 视觉路留给以后的「一起看」
+        self.assertFalse(vision["bilibili_scout"])
+        self.assertTrue(vision["qq_bridge"])
         self.assertFalse(vision["dont_starve_together"])
+
+    def test_runner_commands_come_from_registry(self):
+        """启动按钮的命令清单来自注册表；本体不接受前端传任意命令。"""
+        payload = self.client.get("/api/nest/features").json()
+        scout = next(f for f in payload["items"] if f["id"] == "bilibili_scout")
+        names = [c["name"] for c in scout["runner"]["commands"]]
+        self.assertEqual(names, ["dry", "run", "watch"])
+        characters_cmd = next(c for c in scout["runner"]["commands"] if c["name"] == "run")
+        self.assertIn("characters", characters_cmd["params"])
+        # 还没接 runner 的功能不该冒出启动入口
+        dst = next(f for f in payload["items"] if f["id"] == "dont_starve_together")
+        self.assertIsNone(dst["runner"])
+
+    def test_run_rejects_unknown_command(self):
+        """白名单之外子命令一律拒 —— 前端拼不出任意命令。"""
+        r = self.client.post("/api/nest/features/bilibili_scout/run",
+                             json={"command": "rm -rf /", "limit": 3})
+        self.assertEqual(r.status_code, 422)
+
+    def test_run_404_for_feature_without_runner(self):
+        r = self.client.post("/api/nest/features/qq_bridge/run", json={"command": "run"})
+        self.assertEqual(r.status_code, 404)
+
+    def test_build_command_only_whitelisted_flags(self):
+        """argv 由注册表拼出：没声明的参数（这里 dry 不接受 characters）不出现。"""
+        runner = nest.runner_of("bilibili_scout")
+        body = nest.RunIn(command="dry", limit=7, interval=9, character_ids=["x"])
+        argv, spec = nest._build_command(runner, {"name": "dry"}, body)
+        self.assertIn("--limit", argv)
+        self.assertEqual(argv[argv.index("--limit") + 1], "7")
+        self.assertNotIn("--characters", argv)   # dry 的 params 里没有 characters
+        self.assertNotIn("--interval", argv)
 
     def test_feature_config_falls_back_to_global_default(self):
         self.client.put("/api/nest/api-config", json={
@@ -133,8 +167,22 @@ class NestRouterTests(unittest.TestCase):
     # ---- 通用对话的视觉路（§9.6）----
 
     def _chat_body(self, **extra):
-        return {"feature_id": "bilibili_scout", "character_id": "test",
+        # 用 qq_bridge 试视觉路：它在注册表里声明 needs_vision=True。
+        return {"feature_id": "qq_bridge", "character_id": "test",
                 "messages": [{"role": "user", "content": "看看这个"}], **extra}
+
+    def test_chat_images_rejected_for_text_only_feature(self):
+        """逛 B站 只读文字（needs_vision=False）→ 带图直接拒，不偷偷走视觉路。"""
+        self.client.put("/api/nest/api-config", json={
+            "base_url": "https://brain/v1", "api_key": "k", "model": "m", "vision_model": "vm"})
+        with patch.object(nest.db, "get_character", return_value={"name": "t", "about": "x"}), \
+             patch.object(nest.openai, "stream_chat_retry") as upstream:
+            r = self.client.post("/api/nest/chat", json={
+                "feature_id": "bilibili_scout", "character_id": "test",
+                "messages": [{"role": "user", "content": "看图"}],
+                "images": ["data:image/png;base64,AAAA"]})
+            self.assertEqual(r.status_code, 409)
+            upstream.assert_not_called()
 
     def test_chat_rejects_non_data_url_images(self):
         self.client.put("/api/nest/api-config", json={

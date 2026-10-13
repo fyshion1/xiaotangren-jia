@@ -9,12 +9,13 @@ import WorldbookPanel from './WorldbookPanel'
 import GeminiSyncPanel from './GeminiSyncPanel'
 import NestApiPanel from './NestApiPanel'
 import NestFeedPanel from './NestFeedPanel'
+import NestRunnerPanel from './NestRunnerPanel'
 import { fetchAgentInbox, sendAgentMessage, type AgentMessage } from '../api/agents'
 import { fetchNestFeatures, launchInteractiveHome, type NestFeature } from '../api/client'
 
 // 只有后端注册表里 status='available' 的功能才有可点的入口；planned 的点了给一句规划中提示。
 // 小窝本地的动作（Unity 启动 / 弹面板）在这里挂钩，不塞进后端注册表。
-const AVAILABLE_ACTION: Record<string, 'unity' | 'panel'> = {
+const AVAILABLE_ACTION: Record<string, 'unity' | 'panel' | 'runner'> = {
   interactive_home: 'unity',
   gemini_sync: 'panel',
 }
@@ -25,6 +26,8 @@ export default function NestView() {
   const [agentText, setAgentText] = useState('')
   const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([])
   const [agentBusy, setAgentBusy] = useState(false)
+  // 「让功能跑起来」面板当前选中的功能 id（点卡片时滚过去并选中它）。
+  const [runnerId, setRunnerId] = useState('')
 
   useEffect(() => { void fetchNestFeatures().then(setFeatures).catch(() => setFeatures([])) }, [])
   useEffect(() => { void fetchAgentInbox('xiaotangren-ui').then(setAgentMessages).catch(() => {}) }, [])
@@ -54,6 +57,13 @@ export default function NestView() {
       // Gemini 同步的采集端是浏览器扩展，这里只把面板位置点出来。
       flash('Gemini 网页同步面板在下面「🔗 Gemini 网页同步」——先装浏览器扩展再回来配对。')
       document.getElementById('gemini-sync-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+    // 注册表里声明了 runner 的功能（如逛 B站）→ 在小窝里配置 + 启动，不用去终端敲命令。
+    if (f.runner && f.runner.commands.length > 0) {
+      setRunnerId(f.id)
+      document.getElementById('nest-runner-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      flash(`「${f.name}」在下面「🚀 让功能跑起来」里配置并启动 —— 选谁去看、怎么跑、日志都在那儿。`)
       return
     }
     // 其余都是独立项目：本体只提供大脑 API，不实现它的逻辑。
@@ -103,6 +113,7 @@ export default function NestView() {
                 <p className="text-[13px] leading-relaxed text-[var(--text-2)]">{f.desc}</p>
                 <p className="mt-2 text-[11px] text-[var(--text-3)]">
                   {f.needs_vision ? '👁 用视觉' : '🙈 不用视觉'} · {f.folder ? `features/${f.folder}` : '在本体内'}
+                  {f.runner ? ' · 🚀 可在小窝里启动' : ''}
                 </p>
               </button>
             ))}
@@ -123,6 +134,9 @@ export default function NestView() {
 
       {/* 小窝大脑 API：全局默认 + 每功能覆盖 */}
       <NestApiPanel />
+
+      {/* 让独立功能跑起来：选谁去看 + 启动 + 看日志（不用去终端敲命令） */}
+      <NestRunnerPanel features={features} activeId={runnerId} onActiveChange={setRunnerId} />
 
       {/* 功能动态流：独立功能推回来的产出（§9.6） */}
       <NestFeedPanel features={features} />

@@ -196,6 +196,17 @@ CREATE TABLE IF NOT EXISTS feature_feed (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_feature_feed_scope ON feature_feed (feature_id, status, created_at);
+-- §9.6 功能运行记录：在小窝里点了「逛一轮 / 一直逛」时，本体只负责开进程并记一笔，
+-- 用来判断「是不是已经在跑了」，避免重复点出一堆进程。真正的逻辑在 features/<folder>/ 里。
+CREATE TABLE IF NOT EXISTS feature_runs (
+    id TEXT PRIMARY KEY,
+    feature_id TEXT NOT NULL,
+    command TEXT NOT NULL DEFAULT '',
+    pid INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    stopped_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_feature_runs_scope ON feature_runs (feature_id, started_at);
 """
 
 # gallery 的索引单列出来、由 _migrate 统一建：老库还没有 owner 列时，必须先 ALTER 补列
@@ -1092,6 +1103,34 @@ def update_agent_message(message_id: str, status: str) -> bool:
     with _tx() as conn:
         cur = conn.execute("UPDATE agent_messages SET status=?, handled_at=datetime('now') WHERE id=?", (status, message_id))
         return bool(cur.rowcount)
+
+
+# ---- 功能运行记录（feature_runs，§9.6）----
+#
+# 只记「本体替大老大开过哪个功能的哪个子命令、pid 是多少」—— 判断是否已在跑，别无他用。
+# 功能进程自己死了这里不会立刻知道（读的时候用 psutil 探一下 pid 更准）。
+
+
+def record_feature_run(feature_id: str, command: str, pid: int) -> dict:
+    rid = f"run-{uuid.uuid4().hex[:12]}"
+    with _tx() as conn:
+        conn.execute("INSERT INTO feature_runs (id,feature_id,command,pid) VALUES (?,?,?,?)",
+                     (rid, feature_id, command, int(pid or 0)))
+    return {"id": rid, "feature_id": feature_id, "command": command, "pid": int(pid or 0)}
+
+
+def latest_feature_run(feature_id: str) -> dict | None:
+    with _tx() as conn:
+        row = conn.execute("SELECT * FROM feature_runs WHERE feature_id=? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                           (feature_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def stop_feature_runs(feature_id: str) -> int:
+    with _tx() as conn:
+        cur = conn.execute("UPDATE feature_runs SET stopped_at=datetime('now') WHERE feature_id=? AND stopped_at=''",
+                           (feature_id,))
+        return cur.rowcount
 
 
 # ---- 通用「功能动态」流（feature_feed，§9.6）----

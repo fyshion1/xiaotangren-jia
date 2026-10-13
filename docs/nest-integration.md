@@ -78,6 +78,57 @@ POST /api/nest/chat
 > 这就是「一起看」的口子：把视频抽成 ≤8 帧（ffmpeg）转 data URL 传进来即可。
 > 实时逐帧 token 太贵，按 §9.6.3 暂不做。
 
+## 刻意留的口子（做了要花钱 / 有风险，默认关）
+
+功能项目里有些能力在代码上留了**位置**但**不实现**，免得哪天有人误触。目前两个：
+
+| 口子 | 位置 | 状态 |
+| --- | --- | --- |
+| 「一起看」（同步看视频） | `scout/runner.py::watch_together_stub` | **只抛 `NotImplementedError`** —— 路是通的（同 `chat` 的 `images`），实时逐帧 token 太贵，按 §9.6.3 不做 |
+| 去**别人的视频下**发评论并 @ 主人 | `scout/runner.py::post_comment` | **默认关**（`POST_COMMENT_ENABLED = False`）；默认只生成「评论草稿」推回小窝，**有话在小窝前端说**，别去污染别人的评论区 |
+
+要真开评论，得自己补：B站登录 Cookie（`SESSDATA`，**绝不进仓库**）、频控（每天几条）、前端二次确认。
+**这些不该由大脑代劳**，是功能项目自己的责任。
+
+## 在本体里把功能跑起来（前端「🚀 让功能跑起来」）
+
+独立功能的实现不在本体里，但大老大不想为了跑它去开终端（终端里中文还会变乱码）。
+本体只当**按一下启动键的人**：
+
+```
+POST   /api/nest/features/{feature_id}/run         # 启动（非流式命令等它跑完，循环命令立刻回 pid）
+GET    /api/nest/features/{feature_id}/run         # 在不在跑
+GET    /api/nest/features/{feature_id}/run-log     # 读最近的输出（?lines=）
+DELETE /api/nest/features/{feature_id}/run         # 停掉循环进程
+```
+
+**怎么知道一个功能能不能启动**：`GET /api/nest/features` 里那条功能带不带 `runner`。
+
+```json
+{
+  "folder": "bilibili-scout",
+  "module": "scout",
+  "commands": [
+    {"name": "dry",   "label": "试跑（不花钱）", "desc": "只抓取 + 打分",        "params": ["limit"]},
+    {"name": "run",   "label": "逛一轮",        "desc": "挑出来推回小窝",       "params": ["limit", "characters", "memory"]},
+    {"name": "watch", "label": "一直逛（循环）", "desc": "每 N 分钟一轮",       "params": ["interval", "limit", "characters"]}
+  ]
+}
+```
+
+请求体：`command`（必须是上面列出的名字）、`limit`、`interval`、`character_ids`、`memory`。
+**只传参数，不传命令** —— 真 argv 是后端按 `runner` 拼的：`[python, -m, <module>, <command>, ...白名单参数]`。
+
+安全边界（别放开）：
+
+- 命令名 / 路径 / 参数名**全部**来自 `backend/app/features_registry.py`，白名单之外一律 422；
+- 进程 cwd 锁在 `features/<folder>/` 内（`resolve()` 后必须还在 `features/` 下），日志落 `backend/data/nest_runs/<feature_id>.log`；
+- 同一功能已在跑 → 409，避免点出一堆进程；循环进程用 `DELETE` 停。
+- 日志一律按 **utf-8** 读回（`PYTHONIOENCODING=utf-8` 起进程），前端不会看到乱码。
+
+前端「选谁去看」的候选来自 `GET /api/characters`（= 角色介绍里的人），传的就是 `character_ids`。
+**人设只有角色介绍一个来源**：功能项目不许复制人设，只传 `character_id`，人格由大脑组装。
+
 ## 功能动态流（推给人看的东西）
 
 ```
