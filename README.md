@@ -447,6 +447,7 @@ Live2D / 3D 形象还没做（§5 远期计划），素材先攒着。
 - **共同回忆 · 画廊** —— 只放归属为「家 · 共用」的图（每人专属的在各自介绍页里）
 - **家 · 共用世界书** —— 群聊里生效的就是这一档
 - **Gemini 网页同步测试** —— 采集本机浏览器已打开的 Gemini 会话文字，推送到固定 `test · Gemini` 群聊。**不用 Gemini API Key**，只需本机配对凭证；该会话保留角色署名但**不写入长期记忆**。安装与说明见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)
+- 📬 **小糖人找到了什么** —— 功能动态流。独立功能（逛 B站…）把挑好的东西推回来，这里渲染成卡片（封面 / 推荐语 / 外链）；**收藏 / 不感兴趣**会写回给功能当偏好信号
 - 🎮 **一起玩** —— 功能入口列表（游戏 / 逛 B站 / QQ 桥…）。清单来自后端注册表，加功能只要加一条 + 建一个独立项目
 - 🧠 **小窝大脑 API** —— 小窝所有功能共用的模型配置，**与聊天页的模型设置分开**（见下）
 - **Agent 协作** —— 跨项目 Agent 通用消息中转（`/api/agents/messages`，具体功能字段由独立项目解析）
@@ -461,6 +462,9 @@ Live2D / 3D 形象还没做（§5 远期计划），素材先攒着。
 - **每个功能是独立项目**：本体只提供大脑 API（人格 / 记忆 / 模型调用 / 命令队列），
   功能各自的逻辑（游戏 Mod、B站抓取、QQ 桥）在 `features/<folder>/` 里，**各自单独 git**、不进本体仓库。
 - **记忆隔离** —— 功能攒下的记忆按功能命名空间存（`feature_id`），**不会漏进日常聊天**；QQ 这种「想让它记住」的可以主动不隔离。
+- **两条通用能力**：`POST /api/nest/feed`（功能把产出推给小窝，见「📬 小糖人找到了什么」）；
+  `POST /api/nest/chat` 支持 `images`（data URL ≤8 张）—— 有图走该功能的**视觉路**，没图走普通路。
+  > 📺 这就是「一起看」的口子：视频抽成 ≤8 帧传进来即可；实时逐帧 token 太贵，按 §9.6.3 暂不做。
 
 > 📌 功能本身**不造假功能**：注册表里 `planned` 的点了会说明「实现是独立项目」，`available` 的才有真入口。
 > 协议见 [通用外设接入层](./docs/nest-integration.md)（旧的[游戏专用协议](./docs/game-integration.md)仍兼容）。
@@ -616,6 +620,8 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 - [x] 通用外设接入层（§9.6：`/api/nest/*` —— 全局默认 API（带视觉）+ 每功能可覆盖 / 屏蔽视觉 + 功能注册表；游戏专用的 `/api/game/*` 原样保留，见 [`docs/nest-integration.md`](./docs/nest-integration.md)）
 - [x] 记忆功能隔离（§9.6：记忆按功能命名空间存 —— 自动提炼可带 `feature_id` 落到 `memories.game_id`，普通聊天留空；玩游戏 / 用外设攒下的记忆召回时不串进日常聊天）
 - [x] 功能独立仓库约定（§9.6：每个功能是独立 git 项目、放 `features/<folder>/`，本体仓库 gitignore 掉；见 [`features/README.md`](./features/README.md)）
+- [x] 功能动态流（§9.6：`/api/nest/feed` —— 功能把「给人看的产出」推回小窝渲染成卡片；同功能下同 url 覆盖更新；收藏 / 不感兴趣写回 status 当功能的偏好信号；小窝新增「📬 小糖人找到了什么」）
+- [x] 带图功能对话（§9.6：`/api/nest/chat` 支持 `images`（data URL ≤8 张）—— 有图走该功能的视觉路，没图走普通路；功能被「屏蔽视觉」时带图直接 409。这也是「一起看」的口子）
 - [x] Gemini 网页同步（浏览器扩展采集已打开的 Gemini 会话文字 → `test · Gemini` 群聊；不用 Gemini API Key，只需本机配对凭证，见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)）
 - [x] 无审查通道（§7.1：常规 / 🔓 无审查双通道独立配 base_url/key/model，聊天·看图·画廊自动描述一键切；无审查专属越狱规则）
 - [x] 人设「粘贴模板填充」（编辑器里粘贴《角色设定.md》某角色整段或「标签：值」逐行，解析 → 预览勾选 → 填入表单）
@@ -634,6 +640,8 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 - Live2D / VRM 3D 可视化
 - 提示词词典（§9.5：中文→英文标签映射、可扩展、按类别分，存后端 SQLite）+ 提示词预览图（小类手动裁剪上传 / 大类前端拼贴；自动生成留钩子）
 - 糖人小窝里的具体功能（§9.6：接入层与配置已就绪，每个功能是独立项目 —— 逛 B站 / 饥荒 / QQ 桥等，逐个在 `features/<folder>/` 里做）
+  - 逛 B站：采集端已落地（[`features/bilibili-scout/`](./features/bilibili-scout/)，**独立 git 仓库**）—— 小糖人自己刷热门 / 排行 / 分区 / 相关推荐，本地打分挑出值得看的，请小糖人写一句推荐语推回小窝；「一起看」按 §9.6.3 只留口子不做
+  - 饥荒联机 / QQ 桥：尚未开工（位置登记见 `features/dont-starve-together/`）
 - 小糖人「一起看」B站（先做「自己刷 → 推荐」；实时逐帧太贵，前端已留位）
 - Live2D / VRM 3D 可视化
 - 提示词词典（§9.5：中文→英文标签映射、可扩展、按类别分，存后端 SQLite）+ 提示词预览图（小类手动裁剪上传 / 大类前端拼贴；自动生成留钩子）
@@ -663,7 +671,8 @@ Gemini 网页实时文字同步的入口在「糖人小窝 → Gemini 网页同�
 │   ├── game-integration.md   # 旧的游戏专用协议（仍兼容，等价于 feature_id=game_id）
 │   └── media-import-plan.md  # 媒体导入（视频抽帧）方案
 ├── features/             # 小窝功能（§9.6）：每个功能一个独立 git 项目，**不进本体仓库**
-│                         # 只有 README 被本体收录；见 features/README.md
+│   ├── README.md         # 只有 README 被本体收录（说明这个目录是干什么的）
+│   └── bilibili-scout/   # 小糖人逛 B站 · 采集端（独立 git 仓库，见其 README）
 ├── extensions/
 │   └── gemini-sync/      # Chrome/Edge 扩展：Gemini 网页文字同步（见其 README）
 ├── backend/              # FastAPI
