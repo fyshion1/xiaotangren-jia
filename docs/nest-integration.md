@@ -190,6 +190,23 @@ DELETE /api/nest/feed/{item_id}       # 删
   功能可以 `GET …?status=saved` 读回去（例如 B站采集端用它把口味画像养准）。
 - 未登记的功能 id 也照收，返回 `registered: false` 提醒调用方 —— 方便接自己写的功能。
 
+## 功能方向说明（大老大写一句「主要看什么」）
+
+```
+GET    /api/nest/features/{feature_id}/directive   # 读（没写过返回空串）
+PUT    /api/nest/features/{feature_id}/directive   # 写（{look_for, avoid}，各 ≤4000 字）
+```
+
+小窝前端「🚀 让功能跑起来」面板里的 **🎯 主要看什么** 两个框写的就是这里，存 `feature_directives` 表。
+
+**本体只存原文，不解释** —— 怎么用完全由功能自己定（和 feed 的 `payload` 同一个态度）：
+
+- 逛 B站 把它当**最高权重**的方向（`DIRECTIVE_WEIGHT = 8.0`，压过从收藏行为学来的兴趣词），
+  `avoid` 命中直接淘汰，并且**每轮重读一次** —— 大老大改完下一轮生效，不用重启循环；
+- 别的功能可以完全无视它（不读就是没这个需求）。
+
+功能侧读不到（大脑没起 / 没写过）时**照常跑**，别把这一项做成硬依赖。
+
 ## 记忆隔离
 
 记忆按**功能命名空间**存 —— 列名历史原因叫 `game_id`，语义是「功能隔离键」：
