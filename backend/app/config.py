@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     memory_topk_home: int = 4  # 家记忆每次注入条数上限
     memory_topk_personal: int = 4  # 每位在场角色个人记忆注入条数上限
 
+    # 成果巡检（任务①）：后台低频轮询「成果」目录，发现新文件生成待确认卡片。
+    # 只做「检测到新文件→弹卡」，不做内容推断；账单推断等敏感动作另说。
+    harvest_enabled: bool = True
+    harvest_interval: int = 60  # 秒
+
     # 跨域（本地留空即可；部署时填前端域名，逗号分隔）
     cors_origins: str = ""
 

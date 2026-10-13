@@ -91,6 +91,73 @@ export async function launchInteractiveHome(): Promise<{ ok: boolean; project: s
   return asJson('/api/interactive-home/launch', { method: 'POST' })
 }
 
+// ---- 糖人小窝 · 通用外设接入层（§9.6）----
+// 功能的唯一清单来自后端注册表（代码级真相源），前端按它渲染小窝入口列表。
+// 配置分两层：全局默认（小窝大脑默认，带 vision）+ 每功能可覆盖。
+
+export type NestFeature = {
+  id: string
+  name: string
+  emoji: string
+  kind: 'game' | 'media' | 'im' | 'home' | 'other'
+  status: 'available' | 'planned'
+  desc: string
+  needs_vision: boolean
+  folder: string
+}
+
+export type NestBrainConfig = {
+  configured: boolean
+  config: Record<string, string>
+}
+
+/** 该功能实际生效的配置（后端已把「全局默认 + 功能覆盖」合并好）。 */
+export type NestEffectiveConfig = {
+  feature_id: string
+  name: string
+  base_url: string
+  api_key: string
+  model: string
+  vision_base_url: string
+  vision_api_key: string
+  vision_model: string
+  needs_vision: boolean
+  source: 'global_default' | 'feature_override'
+  override: { id: string; name: string } | null
+}
+
+export async function fetchNestFeatures(): Promise<NestFeature[]> {
+  const result = await asJson<{ items: NestFeature[] }>('/api/nest/features')
+  return result.items || []
+}
+export async function fetchNestBrainDefault(): Promise<NestBrainConfig> {
+  return asJson<NestBrainConfig>('/api/nest/api-config')
+}
+export async function saveNestBrainDefault(body: Record<string, string>): Promise<NestBrainConfig> {
+  return asJson<NestBrainConfig>('/api/nest/api-config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+export async function fetchNestFeatureConfig(featureId: string): Promise<NestEffectiveConfig> {
+  return asJson<NestEffectiveConfig>(`/api/nest/features/${encodeURIComponent(featureId)}/api-config`)
+}
+export async function saveNestFeatureConfig(featureId: string, body: Record<string, unknown>): Promise<NestEffectiveConfig> {
+  return asJson<NestEffectiveConfig>(`/api/nest/features/${encodeURIComponent(featureId)}/api-config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+/** 删掉功能覆盖 → 回落「小窝大脑默认」。 */
+export async function clearNestFeatureConfig(featureId: string, configId: string): Promise<NestEffectiveConfig> {
+  return asJson<NestEffectiveConfig>(
+    `/api/nest/features/${encodeURIComponent(featureId)}/api-config/${encodeURIComponent(configId)}`,
+    { method: 'DELETE' },
+  )
+}
+
 // ---- 个人档案（私人空间 / 用户身份，§22）----
 // 和 characters 是一对镜像，多一个「当前身份」和删除。当前身份存在后端 settings 里，
 // 所以全局一处切换，私聊群聊一起走。
@@ -226,3 +293,45 @@ export async function movePersonalDbPath(path:string,destination:string):Promise
 export async function renamePersonalDbFolder(path:string,new_name:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/rename-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,new_name})})}
 export async function copyToAiLayer(source:string,destination:string,title?:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/layer/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,destination,title})})}
 export async function approveAiLayer(source:string,destination:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/layer/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,destination})})}
+
+// ── 成果巡检（任务①，§28.1）─────────────────────────────────────────────────
+
+export type HarvestEvent = {
+  id: string
+  kind: string
+  source_path: string
+  title: string
+  date_done: string
+  detected_at: string
+  status: 'pending' | 'confirmed' | 'ignored'
+  note: string
+  card?: string
+  index?: string
+}
+
+export type HarvestStatus = {
+  enabled: boolean
+  interval: number
+  watch_dirs: string[]
+  last_scan: string
+  last_error: string
+}
+
+export async function fetchPatrolStatus(): Promise<HarvestStatus> { return asJson('/api/patrol/status') }
+export async function fetchPatrolEvents(status?: string): Promise<HarvestEvent[]> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
+  return asJson(`/api/patrol/events${qs}`)
+}
+export async function confirmPatrolEvent(id: string, body: { date_done?: string; title?: string }): Promise<HarvestEvent> {
+  return asJson(`/api/patrol/confirm/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+}
+export async function ignorePatrolEvent(id: string): Promise<HarvestEvent> {
+  return asJson(`/api/patrol/ignore/${encodeURIComponent(id)}`, { method: 'POST' })
+}
+export async function setPatrolEventDate(id: string, date_done: string): Promise<HarvestEvent> {
+  return asJson(`/api/patrol/events/${encodeURIComponent(id)}/date`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date_done }) })
+}
+export async function fetchWatchDirs(): Promise<{ watch_dirs: string[] }> { return asJson('/api/patrol/watch-dirs') }
+export async function saveWatchDirs(watch_dirs: string[]): Promise<{ watch_dirs: string[] }> {
+  return asJson('/api/patrol/watch-dirs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ watch_dirs }) })
+}

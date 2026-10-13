@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import { MAIN_PERSONA_ID } from '../data/chats'
+import { findGalleryByOrig, type GalleryItem } from '../api/gallery'
+import { isUncensoredChannel, visionRoute } from '../lib/visionRoute'
 import CharacterProfileCard from './CharacterProfileCard'
 import GalleryGrid from './GalleryGrid'
+import GalleryLightbox from './GalleryLightbox'
 import CharacterEditor from './CharacterEditor'
 import SelfProfilePanel from './SelfProfilePanel'
 import PersonalDatabasePanel from './PersonalDatabasePanel'
+import PatrolPanel from './PatrolPanel'
 import WorldbookPanel from './WorldbookPanel'
 import JailbreakPanel from './JailbreakPanel'
 import Avatar from './Avatar'
@@ -85,7 +89,14 @@ export default function HomeView({
   const [activeId, setActiveId] = useState(initialCharId ?? list[0]?.id)
   const [editing, setEditing] = useState<CharacterProfile | null>(null)
   // 看立绘原图（§19.13）：介绍页自己的浮层，跟画廊那个同款。Esc 也能关。
+  // 若这张立绘也收进了画廊（§9.4），浮层就升级成完整画廊浮层 —— 直接能写描述 / 改归属 /
+  // 切私密，不用再跑去聊天的 🖼 画廊里翻。
   const [lightbox, setLightbox] = useState<string | null>(null)
+  const [galleryHit, setGalleryHit] = useState<GalleryItem | null>(null)
+
+  // 自动描述 / 越狱判定用的 vision 上游（与聊天页共用同一份本地配置，§7）。
+  const route = visionRoute()
+  const uncensored = isUncensoredChannel()
 
   const active = list.find((c) => c.id === activeId) ?? list[0]
 
@@ -103,12 +114,32 @@ export default function HomeView({
   }, [space, activePersonaId])
 
   useEffect(() => {
-    if (!lightbox) return
+    // 画廊浮层会用同一个 Esc 做「编辑中先退编辑、否则关闭」的分层处理，这里别抢它的键。
+    if (!lightbox || galleryHit) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setLightbox(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+  }, [lightbox, galleryHit])
+
+  // 点开立绘时顺便问一句「这张进画廊了吗」—— 收过就摊开画廊动作，没收录就只看大图。
+  useEffect(() => {
+    if (!lightbox) {
+      setGalleryHit(null)
+      return
+    }
+    let cancelled = false
+    findGalleryByOrig(lightbox)
+      .then((hit) => {
+        if (!cancelled) setGalleryHit(hit)
+      })
+      .catch(() => {
+        /* 后端没起 / 查询失败 → 退回「只看大图」，不挡看图 */
+      })
+    return () => {
+      cancelled = true
+    }
   }, [lightbox])
 
   const onCreate = async () => {
@@ -205,6 +236,8 @@ export default function HomeView({
 
       {/* 自我档案面板（§23）：私人空间里放在档案卡下方 */}
       {space && <SelfProfilePanel personaId={active.id} />}
+      {/* 巡检 · 成果收录（任务①）：待确认卡片，接在自我档案下方，不改布局 */}
+      {space && <PatrolPanel />}
       {space && <PersonalDatabasePanel personaId={active.id} />}
 
       {/* 这位角色的专属画廊（§9.4 归属）；家共用的那部分在「糖人小窝」 */}
@@ -225,14 +258,30 @@ export default function HomeView({
         />
       )}
 
-      {/* 立绘原图浮层（§19.13）：点介绍页左侧立绘看高清大图 */}
-      {lightbox && (
+      {/* 立绘原图浮层（§19.13）：点介绍页左侧立绘看高清大图。
+          这张立绘若也收进了画廊（§9.4），就直接用画廊浮层 —— 摊开整套画廊动作
+          （自动描述 / 编辑 / 进小糖人记忆 / 🔒 私密 / 归属），省得再去聊天里翻。 */}
+      {lightbox && !galleryHit && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-6 backdrop-blur-sm"
           onClick={() => setLightbox(null)}
         >
           <img src={lightbox} alt="立绘原图" className="max-h-[88vh] max-w-[88vw] rounded-xl shadow-2xl" />
         </div>
+      )}
+      {lightbox && galleryHit && (
+        <GalleryLightbox
+          item={galleryHit}
+          characters={list.map((c) => ({ id: c.id, name: c.name }))}
+          baseUrl={route.baseUrl}
+          apiKey={route.apiKey}
+          visionModel={route.model}
+          uncensored={uncensored}
+          onClose={() => setLightbox(null)}
+          onChanged={(next) => {
+            if (next) setGalleryHit(next)
+          }}
+        />
       )}
     </main>
   )

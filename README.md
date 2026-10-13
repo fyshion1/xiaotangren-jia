@@ -81,13 +81,18 @@ http://192.168.x.x:5173
 聊天界面**顶栏下面那一栏路由角色介绍的部分已去掉**（§28）—— 头像/署名点击即可进角色介绍，不重复。
 **布局未经允许不要改**。
 
+手机端的画廊 / 存储管理（§9.4 / §15.3）：立绘浮层的动作行、存储清单里的小图都按 767px 断点收窄，
+动作按钮在窄屏上换行铺开、清单里的缩略图缩到 36px，面板内边距一并收紧，避免横溢。
+
 启动脚本打印的地址里，`169.254.x.x` 是系统自分配的无效地址、`172.x` 多为虚拟网卡
 （WSL/Hyper-V），**用手机所连网段对应的那个 IP**。
 
 **原图清理**在「设置 → 存储管理」（电脑端在右侧状态栏），生图窗口不再提供删除入口。
-仅清理当前会话，展示占用与不可恢复提示后再次确认；保留缩略图、聊天和收藏记录。
-画廊收藏引用的原图也在清理范围内，共享同一原图的其他消息会降级显示缩略图。
-后端拒绝未指定会话或未带确认标记的清理请求，旧页面不能再以空参数清空全部原图。
+打开后会**列出当前会话落盘的每个原文件**（图片 / 视频，带尺寸和被引用次数），
+**勾选你要删的那些，再点删除、二次确认** —— 只会删掉勾中的，不会再出现「一点就全清空」。
+删原图会连带删掉它的缩略图、它在画廊里的收藏和对应照片记忆；聊天记录保留，但那张图会变成打不开的空图。
+缩略图是原图的衍生物，不单独列出（删原图时按 hash 一并回收）。
+后端也拒绝未指定会话、未勾选文件或未带确认标记的删除请求，旧页面不能再以空参数清空全部原图。
 
 **回复突然结束**时，界面会提示上游返回的长度限制、内容过滤或连接中断，并保存已收到的文字。
 模型设置中的回复上限 `0` 表示使用上游默认值，并非无限长度。历史消息未记录结束原因，无法据此追溯当时的具体原因。
@@ -290,7 +295,28 @@ COMFYUI_TIMEOUT=180                     # 单张图总预算（秒）
 
 ## 画廊与照片记忆
 
-聊天里的图片气泡右上角点 **⭐** 存入画廊（「🖼 画廊」按钮可管理）。画廊图 = 图片文件 + 一段文字描述。
+聊天里的图片气泡右上角点 **⭐** 存入画廊（「🖼 画廊」按钮可管理）。画廊图 = 图片 / 视频文件 + 一段文字描述。
+
+### 多选上传：照片和视频一起挑（§9.4）
+
+画廊的「**＋ 上传图片 / 视频**」（聊天 🖼 浮层、角色介绍页、糖人小窝三处都有）支持**一次多选**，
+照片和视频可以混在一批里，选完一次全传：
+
+- 前端走 `POST /api/attachments/batch`（multipart，一次多个文件），后端**按文件类型分流**：
+  图片 → 落盘 + 生成缩略图；视频 → 原样存盘、**不抽帧**，靠浏览器 `<video>` 直接播。
+- **单个文件失败不拖垮整批**：超限 / 类型不支持的记进 `errors`，其余照常入库，界面会提示「N 个成功、M 个失败」。
+- 视频上限 **100 MB**（一般是 30 秒出头那种），容器认 `.mp4 / .mov / .webm / .mkv / .avi`；
+  图片上限仍是 20 MB。那条链路（`/api/media/video/*` 抽帧看图）门槛更紧（15 秒 / 50 MB / ≤8 帧），
+  两条互不影响 —— **这里是「存得住 + 播得出」，那边是「送给模型看」**。
+- 画廊里的视频带 **▶** 角标，鼠标移上去会静音预览，点开是能播的 `<video controls>`（不再只显示一张缩略图）。
+- 视频**不支持「自动描述」**（vision 模型读不了视频），点它会提示「请手写一句」；描述、归属、私密、进记忆这些照常。
+
+### 点开就能改：介绍页立绘浮层也带画廊动作（§9.4 / §19.13）
+
+从**角色介绍点开立绘 / 画廊图**，浮层不只是看大图 —— 如果这张图也收进了画廊，
+直接摊开画廊那一整套按钮：**自动描述 / 编辑 / 进小糖人记忆 / 🔒 私密 / 归属**，
+没有描述时显示「（还没有描述，点『自动描述』或『编辑』写一句）」。
+不用再跑去聊天的 🖼 画廊里翻同一张图。没收藏过的立绘仍只是看大图。
 
 ### 画廊是私人的：按归属分开放（§9.4.1）
 
@@ -304,7 +330,7 @@ COMFYUI_TIMEOUT=180                     # 单张图总预算（秒）
 - **自动归属**：私聊里 ⭐ 收藏的图，自动归给对话里的那位；群聊 / 导入会话收藏的归「家 · 共用」。
 - **手动改**：画廊面板里每张图带一个归属下拉，随时改到别的角色或「家 · 共用」——
   **不做自动识别，分类由你自己定**。聊天里的 🖼 浮层还是全量视图（带归属筛选），是「整理」的地方。
-- **自己上传图进画廊**：画廊面板有「**＋ 上传图片**」。在别的地方生的图也能收进来，成为记忆的一部分 ——
+- **自己上传图进画廊**：画廊面板有「**＋ 上传图片 / 视频**」（可多选）。在别的地方生的图也能收进来，成为记忆的一部分 ——
   不再只能「先发出去再收藏」。
 - **照片记忆跟着归属走**：私人画廊的描述进 `personal/<角色>` 桶，**只有她本人在场时**才检索得到
   （群里聊到这个话题，其他小糖人不会知道）；家共用的描述进 `home` 桶。改归属会连带重建记忆。
@@ -314,7 +340,7 @@ COMFYUI_TIMEOUT=180                     # 单张图总预算（秒）
 每张画廊图可以标成**私密层**（`private: true`），防的是**别人瞥屏**，不是瞒着小糖人：
 
 - **私密只影响显示，不影响记忆** —— 该进她照片记忆的描述照常进。
-- **公开层照常铺开**；私密层收在画廊下方**一条折叠行**（「🔒 私密 N 张」），
+- **公开层照常铺开**；私密层收在画廊下方**一条折叠行**（「🔒 私密 N 项」），
   默认收起、点了才渲染，且**展开状态不持久化** —— 刷新页面自动收回，私密图不会一进页面就摊在屏幕上。
 - 公开层空了会提示「这里的图都收在私密层了（下面那条展开）」，而不是显示成空白。
 - 写入 / 切换走 `PATCH /api/gallery/{id}` 的 `private` 字段；`GET /api/gallery?private=true|false` 只取一层，不传 = 两层都取。
@@ -329,7 +355,9 @@ COMFYUI_TIMEOUT=180                     # 单张图总预算（秒）
 - 描述可手写，也可点「自动描述」让 vision 模型看图写一句。
 
 接口：`GET/POST /api/gallery`（`GET` 支持 `?owner=` / `?private=` 过滤）、`POST /api/gallery/{id}/describe`、`PATCH/DELETE /api/gallery/{id}`。
-上传走 `POST /api/attachments`（`session_id="gallery"`）落盘后再 `POST /api/gallery`，后端无新增上传接口。
+上传走 `POST /api/attachments/batch`（multipart，`session_id="gallery"`，图片 / 视频混传）落盘后再 `POST /api/gallery`（带 `kind`）；
+旧的单文件 `POST /api/attachments`（data URL）仍保留给聊天贴图那条路。
+画廊表新增 `kind` 列（`image` / `video`），老库升级时 `_migrate` 自动补列、老行全部落成 `image`，行为不变。
 
 ---
 
@@ -419,13 +447,23 @@ Live2D / 3D 形象还没做（§5 远期计划），素材先攒着。
 - **共同回忆 · 画廊** —— 只放归属为「家 · 共用」的图（每人专属的在各自介绍页里）
 - **家 · 共用世界书** —— 群聊里生效的就是这一档
 - **Gemini 网页同步测试** —— 采集本机浏览器已打开的 Gemini 会话文字，推送到固定 `test · Gemini` 群聊。**不用 Gemini API Key**，只需本机配对凭证；该会话保留角色署名但**不写入长期记忆**。安装与说明见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)
-- 🏡 **互动小家（Unity 渲染）** —— 点开确认后会调 `launchInteractiveHome` **启动 Unity 项目**（场景内容后续做）
-- 🎮 **一起玩的小游戏** —— 点开后展开一块「游戏面板」，里面是：
-  - **Agent 协作** —— 跨项目 Agent 通用消息中转（`/api/agents/messages`，具体游戏字段由独立项目解析）
-  - **游戏专用 API 配置** —— 每个游戏独立保存一份模型 API（base_url / key / model），不影响普通聊天配置，按 `game_id` 隔离
+- 🎮 **一起玩** —— 功能入口列表（游戏 / 逛 B站 / QQ 桥…）。清单来自后端注册表，加功能只要加一条 + 建一个独立项目
+- 🧠 **小窝大脑 API** —— 小窝所有功能共用的模型配置，**与聊天页的模型设置分开**（见下）
+- **Agent 协作** —— 跨项目 Agent 通用消息中转（`/api/agents/messages`，具体功能字段由独立项目解析）
 
-> 📌 小游戏本身仍是**占位**（不造假功能）；游戏相关能力都走 [通用游戏接入层](./docs/game-integration.md)：
-> 本项目只提供大脑 API（人格 / 记忆 / 模型调用 / 命令队列），具体游戏 Mod 在独立项目实现。
+### 小窝大脑 API（§9.6 通用外设接入层）
+
+小窝的定位是「全家共同的**放松 + 玩耍**入口，以后会集成很多功能」，所以模型 API 单独管一套：
+
+- **跟聊天分开** —— 聊天页那份 `xiaotangren.config` 是聊天用的；小窝走**后端** `/api/nest/api-config`。
+- **两层配置**：一份「**全局默认**」（**默认带视觉路**，看图 / 看视频抽帧）+ 每个功能可**单独覆盖**任意字段。
+  功能留空 = 用全局默认；想彻底不用视觉，勾掉那个功能的「用视觉」即可（`needs_vision=false`）。
+- **每个功能是独立项目**：本体只提供大脑 API（人格 / 记忆 / 模型调用 / 命令队列），
+  功能各自的逻辑（游戏 Mod、B站抓取、QQ 桥）在 `features/<folder>/` 里，**各自单独 git**、不进本体仓库。
+- **记忆隔离** —— 功能攒下的记忆按功能命名空间存（`feature_id`），**不会漏进日常聊天**；QQ 这种「想让它记住」的可以主动不隔离。
+
+> 📌 功能本身**不造假功能**：注册表里 `planned` 的点了会说明「实现是独立项目」，`available` 的才有真入口。
+> 协议见 [通用外设接入层](./docs/nest-integration.md)（旧的[游戏专用协议](./docs/game-integration.md)仍兼容）。
 
 **Unity 互动小家的路径**在 `.env` 里配（不配就用代码里的默认值）：
 
@@ -549,10 +587,13 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 - [x] 形态切换（§20：一个角色多套人设，`id` 不变；生图外观提示词跟着当前形态走）
 - [x] 聊天记录持久化（§15：SQLite + SSE 落库 + 附件落盘/缩略图 + 向上翻页）
 - [x] 记忆三层 RAG（§9.2：家记忆 / 个人记忆 / 会话上下文；本地 embedding 检索注入）
-- [x] 自动记忆提炼（§9.3：一条回复结束后规则预筛 + LLM 提炼落库）
+- [x] 自动记忆提炼（§9.3：一条回复结束后规则预筛 + LLM 提炼落库；可带 `feature_id` 落到功能命名空间，见 §9.6 记忆隔离）
 - [x] 画廊 + 照片记忆（§9.4：图片气泡 ⭐ 收藏、描述走 RAG 注入、B 方案多模态占位）
 - [x] 画廊归属（§9.4.1：私聊自动归属 + 手动改；私人画廊的描述只进那位的记忆）+ 自定义上传图片进画廊
 - [x] 画廊分层（§26：公开 / 私密两层，私密层默认折叠防瞥屏；**私密不影响照片记忆**）
+- [x] 画廊多选上传（§9.4：`POST /api/attachments/batch` 一次多选，照片 + 视频混传；单个失败不拖垮整批；视频 ≤100MB / 30s 级别，`kind` 列区分，`<video>` 直接播）
+- [x] 介绍页立绘浮层带画廊动作（§9.4：收藏过的图点开即摊开 自动描述 / 编辑 / 进小糖人记忆 / 🔒 私密 / 归属）
+- [x] 存储管理可勾选删除（§15.3：列出每个原文件 + 引用数，勾选 → 二次确认 → 只删勾中的；杜绝「一点全清空」）
 - [x] 视频抽帧看图（🎞 按钮 / Ctrl+V；本地 ffmpeg 抽 ≤8 帧 → 视觉模型，**完整视频不发模型**；帧不落库）
 - [x] 自我档案（§23：身份卡下方的私人笔记，磁盘上真 `.md` + frontmatter；`inject` 注入 / `visible_to` 限定可见 / zip 导出；Obsidian 集成仅规划）
 - [x] 消息真删（§15.4：右键「删除这条」/ 多选批量，连带图片文件 + 画廊收藏 + 照片记忆；共享图有引用就保留；**助手回复也能删**）
@@ -566,19 +607,23 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 - [x] 打开会话直接贴底（§19.14：`scrollTop` 直赋值 + 图片 `load` 补偿，不再有"从上往下滚一段"的动画）
 - [x] 多选顺手化（§19.16：多选模式下点整条消息即可勾选）
 - [x] 侧边栏拖动改宽（§19.11：`useResizable` + `setPointerCapture`，宽度存 localStorage，双击把手恢复默认）
-- [x] 介绍页画廊直接上传（§9.4：介绍页 / 糖人小窝的画廊自带「＋ 上传图片」，归属随当前页面）
+- [x] 介绍页画廊直接上传（§9.4：介绍页 / 糖人小窝的画廊自带「＋ 上传图片 / 视频」，可多选，归属随当前页面）
 - [x] 立绘 / 头像上传（§8.6：浏览器选图，立绘吃 GIF；头像接入聊天 / 群聊分段 / 会话列表）
 - [x] 大老大角色卡（§8.5：用户本人，两个形态；老库逐条幂等补种，不覆盖已有修改）
 - [x] 私人空间（§21：大老大独立成页，复用介绍页全部内容、只钉在他一个人身上；顶部导航 🐻 进入）
 - [x] 个人档案身份系统（§22：私人空间是一排**身份卡**，「成为这个身份」全局换视角 —— 小糖人们的反应跟着变；私聊群聊各自身份一条记录，记忆不随视角变；`relation` 单独喂给模型；`asCharacter` 决定她要不要现身当角色）
-- [x] 糖人小窝（§9.6：共同回忆画廊 + Gemini 网页同步测试 + Agent 协作 + 游戏专用 API 配置；小游戏仍是占位卡片，Unity 互动小家已接入启动）
-- [x] 通用游戏接入层（只提供协议、世界状态、命令队列和隔离记忆；具体游戏 Mod 在独立项目实现，见 [`docs/game-integration.md`](./docs/game-integration.md)）
+- [x] 糖人小窝（§9.6：共同回忆画廊 + Gemini 网页同步测试 + Agent 协作 + 一起玩功能列表 + 小窝大脑 API；功能清单来自后端注册表，`planned` 的不造假功能）
+- [x] 通用外设接入层（§9.6：`/api/nest/*` —— 全局默认 API（带视觉）+ 每功能可覆盖 / 屏蔽视觉 + 功能注册表；游戏专用的 `/api/game/*` 原样保留，见 [`docs/nest-integration.md`](./docs/nest-integration.md)）
+- [x] 记忆功能隔离（§9.6：记忆按功能命名空间存 —— 自动提炼可带 `feature_id` 落到 `memories.game_id`，普通聊天留空；玩游戏 / 用外设攒下的记忆召回时不串进日常聊天）
+- [x] 功能独立仓库约定（§9.6：每个功能是独立 git 项目、放 `features/<folder>/`，本体仓库 gitignore 掉；见 [`features/README.md`](./features/README.md)）
 - [x] Gemini 网页同步（浏览器扩展采集已打开的 Gemini 会话文字 → `test · Gemini` 群聊；不用 Gemini API Key，只需本机配对凭证，见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)）
 - [x] 无审查通道（§7.1：常规 / 🔓 无审查双通道独立配 base_url/key/model，聊天·看图·画廊自动描述一键切；无审查专属越狱规则）
 - [x] 人设「粘贴模板填充」（编辑器里粘贴《角色设定.md》某角色整段或「标签：值」逐行，解析 → 预览勾选 → 填入表单）
 - [x] 看提示词（§24：`POST /api/chat/preview` 只组装不调上游，零 token 摊开 system + 外发历史；档案 / 世界书不生效时用它排查）
 - [x] 群聊阵容（§25：改谁在群里、谁先退场，存 `settings.group_roster`；不在场≠删除，历史层清洗兜底，至少留 1 人）
 - [x] 聊天手感三改（§27：注入条数可调 / 不在场的人前端也不渲染 / 等待提示跳三点 + 轮换文案）
+- [x] 手机端底部导航改版（§28：底部 消息 / 聊天 / 设置 / 隐私 四栏 + 聊天里的 ◁ 返回消息栏；电脑端顶栏那排功能在手机上收进「设置」页；**布局自 §28 起固定，未经允许不改**）
+- [x] 成果巡检（任务①：后台低频轮询本机产出目录，发现新文件在「私人空间」弹出待确认卡片 —— 确认 / 忽略，落 `harvest_known` + `harvest_events`；前端 `PatrolPanel`）
 - [x] Google Takeout 导入预览（**仅后端** `POST /api/imports/google-takeout`：上传导出 ZIP 做安全预览，确认前不写入聊天 / 记忆；前端界面尚未接）
 - [x] 模型配置只读接口（`GET /api/model-config`：回显后端 `.env` 里的 base_url / chat / vision / provider，不含 key 明文）
 - [ ] 语音 ASR 唤醒词 / Live2D 立绘（下一阶段）
@@ -588,7 +633,10 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 - 实时语音通话（§18：聊天头部的 📞 是占位。先做「按住说话 → 回复自动朗读」的半自动版，全双工再上商用实时 API）
 - Live2D / VRM 3D 可视化
 - 提示词词典（§9.5：中文→英文标签映射、可扩展、按类别分，存后端 SQLite）+ 提示词预览图（小类手动裁剪上传 / 大类前端拼贴；自动生成留钩子）
-- 糖人小窝里的小游戏（§9.6 占位；Unity 互动小家已能启动，场景内容后续做）
+- 糖人小窝里的具体功能（§9.6：接入层与配置已就绪，每个功能是独立项目 —— 逛 B站 / 饥荒 / QQ 桥等，逐个在 `features/<folder>/` 里做）
+- 小糖人「一起看」B站（先做「自己刷 → 推荐」；实时逐帧太贵，前端已留位）
+- Live2D / VRM 3D 可视化
+- 提示词词典（§9.5：中文→英文标签映射、可扩展、按类别分，存后端 SQLite）+ 提示词预览图（小类手动裁剪上传 / 大类前端拼贴；自动生成留钩子）
 - 画廊 → LoRA → 生图认人（排期靠后：需生图通道实机 + 画廊攒图）
 - 生图引擎实机接入（用户试出后端后填地址：本地 3050 无审查模型 / NovelAI / 其他云算力）
 - 自我档案 ↔ Obsidian 同步（§23：档案已是磁盘 `.md`，同步功能未实现）
@@ -600,7 +648,9 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 
 ## 目录结构
 
-Gemini 网页实时文字同步的入口在「糖人小窝 → Gemini 网页同步测试」，安装说明见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)；游戏接入协议见 [docs/game-integration.md](./docs/game-integration.md)。
+Gemini 网页实时文字同步的入口在「糖人小窝 → Gemini 网页同步测试」，安装说明见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)；
+小窝通用外设接入层协议见 [docs/nest-integration.md](./docs/nest-integration.md)，旧的游戏专用协议见 [docs/game-integration.md](./docs/game-integration.md)，
+功能独立仓库约定见 [features/README.md](./features/README.md)。
 
 ```
 小糖人之家/
@@ -609,8 +659,11 @@ Gemini 网页实时文字同步的入口在「糖人小窝 → Gemini 网页同�
 ├── start.bat / start.sh  # 一键启动脚本
 ├── docker-compose.yml    # Docker（可选）
 ├── docs/
-│   ├── game-integration.md   # 通用游戏接入层协议（游戏 Mod 在独立项目）
+│   ├── nest-integration.md   # 通用外设接入层协议（§9.6；功能在独立项目）
+│   ├── game-integration.md   # 旧的游戏专用协议（仍兼容，等价于 feature_id=game_id）
 │   └── media-import-plan.md  # 媒体导入（视频抽帧）方案
+├── features/             # 小窝功能（§9.6）：每个功能一个独立 git 项目，**不进本体仓库**
+│                         # 只有 README 被本体收录；见 features/README.md
 ├── extensions/
 │   └── gemini-sync/      # Chrome/Edge 扩展：Gemini 网页文字同步（见其 README）
 ├── backend/              # FastAPI
@@ -620,20 +673,26 @@ Gemini 网页实时文字同步的入口在「糖人小窝 → Gemini 网页同�
 │   │   ├── routers/      # chat / images / imagegen / voice / memory / gallery / attachments /
 │   │   │                 # media(视频抽帧) / self(自我档案) / characters / profiles(身份) /
 │   │   │                 # worldbook / settings / imports / model_config / interactive /
-│   │   │                 # game(游戏接入) / agents(协作) / gemini_sync / messages
+│   │   │                 # nest(通用外设接入层) / game(游戏接入，旧协议) / agents(协作) /
+│   │   │                 # gemini_sync / messages / personal_db(个人资料库) / harvest(成果巡检)
+│   │   ├── features_registry.py  # 小窝功能清单（代码级真相源，§9.6）
 │   │   ├── providers/    # OpenAI 兼容适配器（多路切换）+ novelai 插槽
-│   │   └── services/     # prompt 组装、附件存储、comfyui 客户端、语音/记忆、
-│   │                     # self_profile、gemini_sync、cleanup（真删级联）
+│   │   └── services/     # prompt 组装、附件存储（图片/视频 + 存储管理）、comfyui 客户端、语音/记忆、
+│   │                     # self_profile、gemini_sync、harvest（成果巡检）、cleanup（真删级联）
 │   ├── examples/comfyui/ # 内置 API 格式示例工作流（导出说明见其 README）
 │   └── pyproject.toml
-├── frontend/             # React + TS + Vite（components/：Avatar / NestView / SelfProfilePanel /
-│                         # GeminiSyncPanel / StoragePanel / PromptInspector / GroupRosterPanel…；lib/owner.ts、lib/forms.ts）
+├── frontend/             # React + TS + Vite（components/：Avatar / NestView / NestApiPanel /
+│                         # SelfProfilePanel / GeminiSyncPanel / StoragePanel / GalleryPanel /
+│                         # GalleryLightbox / PatrolPanel / PromptInspector / GroupRosterPanel…；
+│                         # lib/owner.ts、lib/forms.ts、lib/visionRoute.ts）
 └── models/               # 角色模型文件（Live2D / .vrm，本地）
 ```
 
 数据目录（`backend/data/`，已 gitignore，不随仓库提交）：
 
 - `xiaotangren.db` —— 主库（人设 / 世界书 / 聊天 / 记忆 / 画廊）
+- `attachments/<session>/orig/<hash>.<ext>` + `attachments/<session>/thumb/<hash>.jpg` —— 图片 / 视频落盘（库里只存引用）；
+  视频原样存在 `orig/`（无缩略图，靠 `<video>` 播），存储管理的「勾选删除」就是删这里的文件
 - `self_profile/<身份id>/*.md` + `self_profile/_shared/*.md` —— 自我档案（§23）
 - `media_tasks/<task_id>/` —— 视频抽帧任务，帧用完即清
 - `tts/piper/*.onnx` —— piper 音色；`models/embedding/` —— 本地 embedding

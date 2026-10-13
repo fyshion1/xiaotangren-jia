@@ -1,11 +1,14 @@
 """小糖人之家 · 后端入口。"""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import init_db
+from .services import harvest
 from .routers import (
     agents,
     characters,
@@ -21,6 +24,7 @@ from .routers import (
     memory,
     messages,
     model_config,
+    nest,
     profiles,
     voice,
     worldbook,
@@ -39,7 +43,18 @@ settings = get_settings()
 init_db()
 sp.ensure_root()
 
-app = FastAPI(title="小糖人之家 后端", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # 成果巡检（任务①）：后台低频轮询，发现新文件弹待确认卡片。
+    harvest.start()
+    try:
+        yield
+    finally:
+        harvest.stop()
+
+
+app = FastAPI(title="小糖人之家 后端", version="0.1.0", lifespan=lifespan)
 
 if settings.cors_origin_list:
     # 本地留空不启用 CORS（前后端同源）；部署时填前端域名。
@@ -63,6 +78,7 @@ app.include_router(interactive.router, prefix="/api")
 app.include_router(model_config.router, prefix="/api")
 app.include_router(gallery.router, prefix="/api")
 app.include_router(game.router, prefix="/api")
+app.include_router(nest.router, prefix="/api")
 app.include_router(gemini_sync.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
@@ -70,6 +86,8 @@ app.include_router(profiles.router, prefix="/api")
 app.include_router(self_router.router, prefix="/api")
 from .routers import personal_db
 app.include_router(personal_db.router, prefix="/api")
+from .routers import harvest as harvest_router
+app.include_router(harvest_router.router, prefix="/api")
 app.include_router(worldbook.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 

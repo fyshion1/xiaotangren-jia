@@ -99,6 +99,12 @@ CREATE TABLE IF NOT EXISTS game_api_configs (
     base_url TEXT NOT NULL,
     api_key TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
+    -- 视觉路（§9.6）：功能自己的 vision 配置。留空 = 回退到「小窝大脑默认」的 vision。
+    -- needs_vision=0 时前端给一个「屏蔽视觉」开关，不读这一路，也不注入多模态。
+    vision_model TEXT NOT NULL DEFAULT '',
+    vision_base_url TEXT NOT NULL DEFAULT '',
+    vision_api_key TEXT NOT NULL DEFAULT '',
+    needs_vision INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -149,6 +155,8 @@ CREATE TABLE IF NOT EXISTS gallery (
     owner TEXT NOT NULL DEFAULT '',
     orig TEXT NOT NULL DEFAULT '',
     thumb TEXT NOT NULL DEFAULT '',
+    -- §9.4 媒体类型：image（默认，老行）| video（画廊视频，原样存、<video> 直接播）
+    kind TEXT NOT NULL DEFAULT 'image',
     description TEXT NOT NULL DEFAULT '',
     in_memory INTEGER NOT NULL DEFAULT 1,
     memory_id TEXT NOT NULL DEFAULT '',
@@ -157,6 +165,22 @@ CREATE TABLE IF NOT EXISTS gallery (
     private INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS harvest_known (
+    path TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL DEFAULT '',
+    seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS harvest_events (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'achievement',
+    source_path TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    date_done TEXT NOT NULL DEFAULT '',
+    detected_at TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_harvest_events_status ON harvest_events (status);
 """
 
 # gallery 的索引单列出来、由 _migrate 统一建：老库还没有 owner 列时，必须先 ALTER 补列
@@ -194,6 +218,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "private" not in cols:
         # 私密层（§26）：老行全部落成 0（= 公开），升级后画廊显示不变。
         conn.execute("ALTER TABLE gallery ADD COLUMN private INTEGER NOT NULL DEFAULT 0")
+    if "kind" not in cols:
+        # 媒体类型（§9.4 画廊视频）：老行全部落成 image（= 图片），行为不变。
+        conn.execute("ALTER TABLE gallery ADD COLUMN kind TEXT NOT NULL DEFAULT 'image'")
     # 补列之后才建索引（老库的旧唯一索引 idx_gallery_orig 会让「同图进多个归属」失败）
     for sql in _GALLERY_INDEXES:
         conn.execute(sql)
@@ -216,6 +243,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 旧版唯一索引没有游戏范围，会把不同游戏/世界的同文记忆错误视为重复。
     conn.execute("DROP INDEX IF EXISTS idx_memories_dedupe")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_dedupe ON memories (bucket, char_id, fingerprint, game_id, world_id)")
+
+    # 功能 API 配置加视觉路（§9.6）：老库补列并落默认值 —— needs_vision=1（老功能带视觉能力），
+    # 其余留空 = 回退「小窝大脑默认」的 vision 配置，所以升级后行为不变。
+    ap_cols = {r["name"] for r in conn.execute("PRAGMA table_info(game_api_configs)")}
+    for col, ddl in (
+        ("vision_model", "ALTER TABLE game_api_configs ADD COLUMN vision_model TEXT NOT NULL DEFAULT ''"),
+        ("vision_base_url", "ALTER TABLE game_api_configs ADD COLUMN vision_base_url TEXT NOT NULL DEFAULT ''"),
+        ("vision_api_key", "ALTER TABLE game_api_configs ADD COLUMN vision_api_key TEXT NOT NULL DEFAULT ''"),
+        ("needs_vision", "ALTER TABLE game_api_configs ADD COLUMN needs_vision INTEGER NOT NULL DEFAULT 1"),
+    ):
+        if col not in ap_cols:
+            conn.execute(ddl)
 
 
 def _read_tombstones(conn: sqlite3.Connection) -> list[str]:
@@ -514,6 +553,34 @@ def set_settings(kv: dict[str, str]) -> None:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, str(value)),
             )
+
+
+# ---- 小窝大脑默认 API（§9.6 通用外设接入层）----
+#
+# 各功能（游戏 / B站 / QQ…）的模型 API 配置分两层：
+#   1) 全局默认（这里）：功能没单独配时用它，**默认带视觉路**。
+#   2) 每功能独立（game_api_configs 表，见 upsert_game_api_config）：可覆盖任意字段。
+# 与普通聊天配置（前端 localStorage 的 xiaotangren.config）**互不影响**。
+
+BRAIN_DEFAULT_KEY = "nest_brain_default"
+
+
+def get_brain_default() -> dict:
+    """全局默认大脑 API。空 dict = 还没配过。"""
+    raw = get_settings().get(BRAIN_DEFAULT_KEY, "")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def set_brain_default(data: dict) -> dict:
+    merged = {**(get_brain_default()), **(data or {})}
+    set_settings({BRAIN_DEFAULT_KEY: json.dumps(merged, ensure_ascii=False)})
+    return get_brain_default()
 
 
 # ---- 聊天记录（messages，对应《项目要求》§15）----
@@ -876,13 +943,32 @@ def get_game_session(game_id: str, world_id: str) -> dict | None:
         return None
     return {"game_id": row["game_id"], "world_id": row["world_id"], "state": json.loads(row["state"]), "updated_at": row["updated_at"]}
 
-def upsert_game_api_config(game_id: str, name: str, base_url: str, api_key: str, model: str) -> dict:
+def upsert_game_api_config(
+    game_id: str,
+    name: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    vision_model: str = "",
+    vision_base_url: str = "",
+    vision_api_key: str = "",
+    needs_vision: bool = True,
+) -> dict:
     cid = f"gapi-{uuid.uuid4().hex[:12]}"
     with _tx() as conn:
         old = conn.execute("SELECT id FROM game_api_configs WHERE game_id=? AND name=?", (game_id, name)).fetchone()
         if old:
             cid = old["id"]
-        conn.execute("INSERT INTO game_api_configs (id,game_id,name,base_url,api_key,model) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET base_url=excluded.base_url,api_key=excluded.api_key,model=excluded.model,enabled=1,updated_at=datetime('now')", (cid, game_id, name, base_url, api_key or "", model or ""))
+        conn.execute(
+            "INSERT INTO game_api_configs (id,game_id,name,base_url,api_key,model,vision_model,"
+            "vision_base_url,vision_api_key,needs_vision) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET base_url=excluded.base_url,api_key=excluded.api_key,"
+            "model=excluded.model,vision_model=excluded.vision_model,vision_base_url=excluded.vision_base_url,"
+            "vision_api_key=excluded.vision_api_key,needs_vision=excluded.needs_vision,enabled=1,"
+            "updated_at=datetime('now')",
+            (cid, game_id, name, base_url, api_key or "", model or "",
+             vision_model or "", vision_base_url or "", vision_api_key or "", 1 if needs_vision else 0),
+        )
     return get_game_api_config(cid)
 
 def get_game_api_config(config_id: str) -> dict | None:
@@ -894,6 +980,13 @@ def list_game_api_configs(game_id: str) -> list[dict]:
     with _tx() as conn:
         rows = conn.execute("SELECT * FROM game_api_configs WHERE game_id=? AND enabled=1 ORDER BY updated_at DESC", (game_id,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def delete_game_api_config(config_id: str) -> bool:
+    """删掉某功能的独立 API 配置（§9.6：删后回落「小窝大脑默认」）。"""
+    with _tx() as conn:
+        cur = conn.execute("DELETE FROM game_api_configs WHERE id=?", (config_id,))
+        return bool(cur.rowcount)
 
 
 def enqueue_game_command(game_id: str, world_id: str, character_id: str, command: dict) -> dict:
@@ -994,6 +1087,7 @@ def update_agent_message(message_id: str, status: str) -> bool:
 
 
 def _row_to_gallery(row: sqlite3.Row) -> dict:
+    keys = row.keys()
     return {
         "id": row["id"],
         "session_id": row["session_id"],
@@ -1001,6 +1095,8 @@ def _row_to_gallery(row: sqlite3.Row) -> dict:
         "owner": row["owner"],
         "orig": row["orig"],
         "thumb": row["thumb"],
+        # 老库若尚未跑过 _migrate，kind 也可能缺失 —— 兜底成 image。
+        "kind": row["kind"] if "kind" in keys else "image",
         "description": row["description"],
         "in_memory": bool(row["in_memory"]),
         "memory_id": row["memory_id"],
@@ -1019,12 +1115,15 @@ def add_gallery(
     in_memory: bool = True,
     memory_id: str = "",
     private: bool = False,
+    kind: str = "image",
 ) -> dict | None:
-    """收藏一张图。同一归属下同一张原图重复收藏 → 返回 None（幂等）。
+    """收藏一张图 / 一段视频。同一归属下同一张原图重复收藏 → 返回 None（幂等）。
 
     owner：'' = 家共用，<charId> = 该角色专属。同一张图可以分别存进多个归属。
     private（§26）：1 = 收进私密层（界面默认不展示，与记忆无关）。
+    kind（§9.4）：image = 图片（默认） | video = 视频（画廊里用 <video> 播）。
     """
+    kind = "video" if (kind or "").lower() == "video" else "image"
     with _tx() as conn:
         existing = conn.execute(
             "SELECT id FROM gallery WHERE orig = ? AND owner = ?", (orig, owner)
@@ -1033,10 +1132,10 @@ def add_gallery(
             return None
         gid = f"gal-{uuid.uuid4().hex[:12]}"
         conn.execute(
-            "INSERT INTO gallery (id, session_id, message_id, owner, orig, thumb, description, "
-            "in_memory, memory_id, private) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO gallery (id, session_id, message_id, owner, orig, thumb, kind, description, "
+            "in_memory, memory_id, private) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                gid, session_id, message_id, owner, orig, thumb, description,
+                gid, session_id, message_id, owner, orig, thumb, kind, description,
                 int(in_memory), memory_id, int(private),
             ),
         )
@@ -1147,3 +1246,110 @@ def count_gallery(owner: str | None = None, private: bool | None = None) -> int:
     with _tx() as conn:
         row = conn.execute(sql, args).fetchone()
     return int(row[0])
+
+
+# ---- 成果巡检（harvest，任务①）----
+#
+# 后台低频轮询一个「成果」目录，发现新文件就生成一条待确认事件；
+# 用户在前端卡片上打勾收录 / 忽略。这里只管事件与「已知文件」的存取，
+# 真正的扫描与落盘在 services/harvest.py。
+
+
+def list_harvest_known() -> list[dict]:
+    with _tx() as conn:
+        rows = conn.execute("SELECT path, fingerprint FROM harvest_known").fetchall()
+    return [{"path": r["path"], "fingerprint": r["fingerprint"]} for r in rows]
+
+
+def set_harvest_known(path: str, fingerprint: str) -> None:
+    with _tx() as conn:
+        conn.execute(
+            "INSERT INTO harvest_known (path, fingerprint, seen_at) VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(path) DO UPDATE SET fingerprint = excluded.fingerprint, seen_at = excluded.seen_at",
+            (path, fingerprint),
+        )
+
+
+def _row_to_event(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "source_path": row["source_path"],
+        "title": row["title"],
+        "date_done": row["date_done"],
+        "detected_at": row["detected_at"],
+        "status": row["status"],
+        "note": row["note"],
+    }
+
+
+def add_harvest_event(
+    kind: str,
+    source_path: str,
+    title: str,
+    date_done: str,
+    detected_at: str,
+) -> dict | None:
+    """记一条待确认事件；同一来源已有 pending 就跳过（幂等，不重复弹卡）。"""
+    with _tx() as conn:
+        existing = conn.execute(
+            "SELECT id FROM harvest_events WHERE source_path = ? AND status = 'pending'",
+            (source_path,),
+        ).fetchone()
+        if existing:
+            return None
+        eid = f"hv-{uuid.uuid4().hex[:12]}"
+        conn.execute(
+            "INSERT INTO harvest_events (id, kind, source_path, title, date_done, detected_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (eid, kind, source_path, title, date_done, detected_at),
+        )
+    return get_harvest_event(eid)
+
+
+def get_harvest_event(event_id: str) -> dict | None:
+    with _tx() as conn:
+        row = conn.execute("SELECT * FROM harvest_events WHERE id = ?", (event_id,)).fetchone()
+    return _row_to_event(row) if row else None
+
+
+def list_harvest_events(status: str | None = None, limit: int = 200) -> list[dict]:
+    sql = "SELECT * FROM harvest_events"
+    args: list = []
+    if status:
+        sql += " WHERE status = ?"
+        args.append(status)
+    sql += " ORDER BY detected_at DESC, rowid DESC LIMIT ?"
+    args.append(max(1, min(int(limit or 200), 1000)))
+    with _tx() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [_row_to_event(r) for r in rows]
+
+
+def update_harvest_event(
+    event_id: str,
+    status: str | None = None,
+    date_done: str | None = None,
+    title: str | None = None,
+    note: str | None = None,
+) -> bool:
+    sets: list[str] = []
+    args: list = []
+    if status is not None:
+        sets.append("status = ?")
+        args.append(status)
+    if date_done is not None:
+        sets.append("date_done = ?")
+        args.append(date_done)
+    if title is not None:
+        sets.append("title = ?")
+        args.append(title)
+    if note is not None:
+        sets.append("note = ?")
+        args.append(note)
+    if not sets:
+        return False
+    args.append(event_id)
+    with _tx() as conn:
+        cur = conn.execute(f"UPDATE harvest_events SET {', '.join(sets)} WHERE id = ?", args)
+        return bool(cur.rowcount)
