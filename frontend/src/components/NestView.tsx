@@ -8,6 +8,7 @@ import GalleryGrid from './GalleryGrid'
 import WorldbookPanel from './WorldbookPanel'
 import GeminiSyncPanel from './GeminiSyncPanel'
 import NestApiPanel from './NestApiPanel'
+import NestFeedPanel from './NestFeedPanel'
 import { fetchAgentInbox, sendAgentMessage, type AgentMessage } from '../api/agents'
 import { fetchNestFeatures, launchInteractiveHome, type NestFeature } from '../api/client'
 
@@ -122,6 +123,9 @@ export default function NestView() {
 
       {/* 小窝大脑 API：全局默认 + 每功能覆盖 */}
       <NestApiPanel />
+
+      {/* 功能动态流：独立功能推回来的产出（§9.6） */}
+      <NestFeedPanel features={features} />
 
       <div id="gemini-sync-panel"><GeminiSyncPanel /></div>
 

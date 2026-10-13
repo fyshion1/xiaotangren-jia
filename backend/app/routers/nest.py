@@ -177,9 +177,28 @@ class NestChatIn(BaseModel):
     character_ids: list[str] = Field(default_factory=list, max_length=8)
     conversation_id: str = Field(default="", max_length=160)
     messages: list[NestTurn] = Field(min_length=1, max_length=50)
+    # 可选视觉：data URL 列表（data:image/...;base64,xxx），最多 8 张 —— 与视频抽帧同一条 token 安全线。
+    # 有图 → 走上该功能的「视觉路」（vision_* 配置）；该功能 needs_vision=False 时直接拒。
+    # **必须是 data URL**：裸 base64 会被 vsllm 等中转打成 400（见 media.py 的注释）。
+    images: list[str] = Field(default_factory=list, max_length=8)
     state: dict = Field(default_factory=dict)
     stream: bool = False
     max_tokens: int = Field(default=2048, ge=1, le=8192)
+
+
+MAX_INLINE_IMAGE_CHARS = 8 * 1024 * 1024  # 单张 data URL 上限（防手滑塞整段视频）
+
+
+def _vision_content(text: str, images: list[str]) -> list[dict]:
+    """把文本 + data URL 拼成 OpenAI 兼容的多模态 content。"""
+    for url in images:
+        if not url.startswith("data:image/"):
+            raise HTTPException(422, "images 只接受 data:image/... 开头的 data URL")
+        if len(url) > MAX_INLINE_IMAGE_CHARS:
+            raise HTTPException(413, "单张图片过大，请先压缩或只发抽帧")
+    return [{"type": "text", "text": text}] + [
+        {"type": "image_url", "image_url": {"url": url}} for url in images
+    ]
 
 
 @router.post("/chat")
@@ -215,23 +234,37 @@ async def nest_chat(body: NestChatIn):
         character = characters[0]
         system = f"你是{character.get('name', ids[0])}。\n{character.get('about', '')}\n" + rules + "只返回对话文字。"
     # 不调用普通聊天组装器，避免把家庭记忆和私人聊天上下文带入功能会话。
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": json.dumps({
-        "feature_id": body.feature_id, "world_id": body.world_id,
-        "player_id": body.player_id, "state": body.state,
-    }, ensure_ascii=False)}]
-    messages.extend(t.model_dump() for t in body.messages)
+    context = {"feature_id": body.feature_id, "world_id": body.world_id,
+               "player_id": body.player_id, "state": body.state}
     settings = get_settings()
     provider = _effective_config(body.feature_id)
     if not provider.get("base_url"):
         raise HTTPException(409, "请先配置小窝大脑默认 API（或该功能的独立 API）")
     if not provider.get("api_key") or not provider.get("model"):
         raise HTTPException(409, "功能 API 配置缺少密钥或模型")
+    if body.images:
+        # 带图 → 走视觉路。功能被「屏蔽视觉」时不暴露 vision_*，这里就是明确的 409。
+        if not provider.get("needs_vision") or not provider.get("vision_model"):
+            raise HTTPException(409, "该功能已屏蔽视觉（或没配视觉模型），不能带图调用")
+        model = provider["vision_model"]
+        base_url = provider["vision_base_url"] or provider["base_url"]
+        api_key = provider["vision_api_key"] or provider["api_key"]
+    else:
+        model = provider["model"]
+        base_url = provider["base_url"]
+        api_key = provider["api_key"]
+    messages: list[dict] = [{"role": "system", "content": system}]
+    head = json.dumps(context, ensure_ascii=False)
+    if body.images:
+        messages.append({"role": "user", "content": _vision_content(head, body.images)})
+    else:
+        messages.append({"role": "user", "content": head})
+    messages.extend(t.model_dump() for t in body.messages)
 
     async def events():
         try:
             async for event in openai.stream_chat_retry(
-                messages, provider["model"], provider["base_url"],
-                provider["api_key"], max_tokens=body.max_tokens,
+                messages, model, base_url, api_key, max_tokens=body.max_tokens,
                 timeout=max(5, settings.game_chat_timeout),
             ):
                 yield event
@@ -262,11 +295,69 @@ async def nest_chat(body: NestChatIn):
             "finish_reason": "error" if error else reason, "error": error}
 
 
+# ---- 通用「功能动态」流（§9.6）----
+#
+# 独立功能（B站小糖人刷到的东西、QQ 里聊到的…）把**给人看的产出**推进来，前端小窝渲染成卡片。
+# 本项目只当中转站：不解释 payload，也不替功能决定什么值得推。
+
+
+class FeedItemIn(BaseModel):
+    feature_id: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=300)
+    kind: str = Field(default="note", max_length=40)
+    url: str = Field(default="", max_length=1000)
+    summary: str = Field(default="", max_length=4000)
+    cover: str = Field(default="", max_length=1000)
+    payload: dict = Field(default_factory=dict)
+
+
+@router.post("/feed")
+async def push_feed_item(body: FeedItemIn) -> dict:
+    """功能推一条动态。同一功能下 url 相同 → 覆盖更新（同一个视频别重复堆）。"""
+    if not get_feature(body.feature_id):
+        # 未知功能照样收（用户可能接自己写的），但要让调用方知道没登记。
+        return {"item": db.add_feed_item(
+            body.feature_id, body.title, body.kind, body.url, body.summary, body.cover, body.payload,
+        ), "registered": False}
+    return {"item": db.add_feed_item(
+        body.feature_id, body.title, body.kind, body.url, body.summary, body.cover, body.payload,
+    ), "registered": True}
+
+
+@router.get("/feed")
+async def list_feed(
+    feature_id: str | None = Query(None, max_length=80),
+    status: str | None = Query(None, pattern="^(new|seen|saved|dismissed)$"),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict:
+    """小窝动态流。前端按 feature_id 分组渲染成卡片。"""
+    return {"items": db.list_feed_items(feature_id, status, limit), "contract_version": "0.2.0"}
+
+
+class FeedStatusIn(BaseModel):
+    status: Literal["new", "seen", "saved", "dismissed"]
+
+
+@router.put("/feed/{item_id}")
+async def update_feed(item_id: str, body: FeedStatusIn) -> dict:
+    """标记已看 / 收藏 / 不感兴趣（大老大对推荐的反馈，功能可以去读回来当信号）。"""
+    if not db.update_feed_status(item_id, body.status):
+        raise HTTPException(404, "动态不存在")
+    return {"ok": True, "id": item_id, "status": body.status}
+
+
+@router.delete("/feed/{item_id}")
+async def delete_feed(item_id: str) -> dict:
+    if not db.delete_feed_item(item_id):
+        raise HTTPException(404, "动态不存在")
+    return {"ok": True, "id": item_id}
+
+
 @router.get("/capabilities")
 async def capabilities() -> dict:
     return {
         "contract_version": "0.2.0",
-        "implemented": ["features", "api_config_global", "api_config_feature", "chat", "chat_sse"],
+        "implemented": ["features", "api_config_global", "api_config_feature", "chat", "chat_sse", "feed"],
         "namespace": "feature_id（记忆隔离键，落 memories.game_id 列）",
         "config_layers": ["nest_brain_default（全局，带 vision）", "feature_override（每功能可覆盖任意字段）"],
         "vision": {"global_default_has_vision": True, "per_feature_block_toggle": True},

@@ -181,6 +181,21 @@ CREATE TABLE IF NOT EXISTS harvest_events (
     note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_harvest_events_status ON harvest_events (status);
+-- §9.6 通用「功能动态」流：任何独立功能（B站/QQ/游戏…）把小糖人产出的东西推进来，
+-- 前端小窝按 feature_id 渲染成卡片。本项目只当中转站，不解释 payload 的内容。
+CREATE TABLE IF NOT EXISTS feature_feed (
+    id TEXT PRIMARY KEY,
+    feature_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'note',
+    title TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    cover TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'new',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_feature_feed_scope ON feature_feed (feature_id, status, created_at);
 """
 
 # gallery 的索引单列出来、由 _migrate 统一建：老库还没有 owner 列时，必须先 ALTER 补列
@@ -1076,6 +1091,77 @@ def list_agent_messages(agent_id: str, status: str | None, conversation_id: str 
 def update_agent_message(message_id: str, status: str) -> bool:
     with _tx() as conn:
         cur = conn.execute("UPDATE agent_messages SET status=?, handled_at=datetime('now') WHERE id=?", (status, message_id))
+        return bool(cur.rowcount)
+
+
+# ---- 通用「功能动态」流（feature_feed，§9.6）----
+#
+# 任何独立功能（B站小糖人刷到的视频 / QQ 里聊到的东西 / 游戏里的高光…）都可以把成果推进来，
+# 前端小窝按 feature_id 渲染成卡片。本项目**只当中转站** —— payload 不解释、不校验业务含义。
+# 与 agent_messages 的分工：那是 Agent 之间的协议消息，这是**给人看**的产出流。
+
+
+def _row_to_feed(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"], "feature_id": row["feature_id"], "kind": row["kind"],
+        "title": row["title"], "url": row["url"], "summary": row["summary"],
+        "cover": row["cover"], "payload": json.loads(row["payload"]),
+        "status": row["status"], "created_at": row["created_at"],
+    }
+
+
+def add_feed_item(
+    feature_id: str, title: str, kind: str = "note", url: str = "",
+    summary: str = "", cover: str = "", payload: dict | None = None,
+) -> dict:
+    """功能推一条动态。url 相同且在同一个 feature 下 → 覆盖更新（避免重复推同一个视频）。"""
+    fid = f"feed-{uuid.uuid4().hex[:12]}"
+    with _tx() as conn:
+        if url:
+            existing = conn.execute(
+                "SELECT id FROM feature_feed WHERE feature_id=? AND url=? LIMIT 1", (feature_id, url)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE feature_feed SET title=?, kind=?, summary=?, cover=?, payload=? WHERE id=?",
+                    (title, kind or "note", summary, cover, json.dumps(payload or {}, ensure_ascii=False), existing["id"]),
+                )
+                row = conn.execute("SELECT * FROM feature_feed WHERE id=?", (existing["id"],)).fetchone()
+                return _row_to_feed(row)
+        conn.execute(
+            "INSERT INTO feature_feed (id,feature_id,kind,title,url,summary,cover,payload) VALUES (?,?,?,?,?,?,?,?)",
+            (fid, feature_id, kind or "note", title, url, summary, cover, json.dumps(payload or {}, ensure_ascii=False)),
+        )
+    with _tx() as conn:
+        row = conn.execute("SELECT * FROM feature_feed WHERE id=?", (fid,)).fetchone()
+    return _row_to_feed(row)
+
+
+def list_feed_items(feature_id: str | None = None, status: str | None = None, limit: int = 50) -> list[dict]:
+    where: list[str] = []
+    args: list = []
+    if feature_id:
+        where.append("feature_id = ?")
+        args.append(feature_id)
+    if status:
+        where.append("status = ?")
+        args.append(status)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    args.append(max(1, min(limit, 200)))
+    with _tx() as conn:
+        rows = conn.execute(f"SELECT * FROM feature_feed {clause} ORDER BY created_at DESC LIMIT ?", args).fetchall()
+    return [_row_to_feed(r) for r in rows]
+
+
+def update_feed_status(item_id: str, status: str) -> bool:
+    with _tx() as conn:
+        cur = conn.execute("UPDATE feature_feed SET status=? WHERE id=?", (status, item_id))
+        return bool(cur.rowcount)
+
+
+def delete_feed_item(item_id: str) -> bool:
+    with _tx() as conn:
+        cur = conn.execute("DELETE FROM feature_feed WHERE id=?", (item_id,))
         return bool(cur.rowcount)
 
 

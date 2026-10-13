@@ -158,6 +158,42 @@ export async function clearNestFeatureConfig(featureId: string, configId: string
   )
 }
 
+/** 功能动态流（§9.6）：独立功能把小糖人的产出推进来，小窝渲染成卡片。 */
+export type NestFeedItem = {
+  id: string
+  feature_id: string
+  kind: string
+  title: string
+  url: string
+  summary: string
+  cover: string
+  payload: Record<string, unknown>
+  status: 'new' | 'seen' | 'saved' | 'dismissed'
+  created_at: string
+}
+
+export async function fetchNestFeed(params: { featureId?: string; status?: string; limit?: number } = {}): Promise<NestFeedItem[]> {
+  const q = new URLSearchParams()
+  if (params.featureId) q.set('feature_id', params.featureId)
+  if (params.status) q.set('status', params.status)
+  if (params.limit) q.set('limit', String(params.limit))
+  const suffix = q.toString() ? `?${q}` : ''
+  const result = await asJson<{ items: NestFeedItem[] }>(`/api/nest/feed${suffix}`)
+  return result.items || []
+}
+
+export async function setNestFeedStatus(itemId: string, status: NestFeedItem['status']): Promise<void> {
+  await asJson(`/api/nest/feed/${encodeURIComponent(itemId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  })
+}
+
+export async function deleteNestFeedItem(itemId: string): Promise<void> {
+  await asJson(`/api/nest/feed/${encodeURIComponent(itemId)}`, { method: 'DELETE' })
+}
+
 // ---- 个人档案（私人空间 / 用户身份，§22）----
 // 和 characters 是一对镜像，多一个「当前身份」和删除。当前身份存在后端 settings 里，
 // 所以全局一处切换，私聊群聊一起走。
