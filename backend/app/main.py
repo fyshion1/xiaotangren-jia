@@ -26,6 +26,7 @@ from .routers import (
     model_config,
     nest,
     profiles,
+    qq_bridge,
     voice,
     worldbook,
 )
@@ -79,6 +80,7 @@ app.include_router(model_config.router, prefix="/api")
 app.include_router(gallery.router, prefix="/api")
 app.include_router(game.router, prefix="/api")
 app.include_router(nest.router, prefix="/api")
+app.include_router(qq_bridge.router, prefix="/api")
 app.include_router(gemini_sync.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")

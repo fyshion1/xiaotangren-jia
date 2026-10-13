@@ -101,6 +101,8 @@ export type NestRunnerCommand = {
   label: string
   desc: string
   params: string[]
+  /** 常驻循环（跑起来就不返回）：后端立刻回 pid，前端显示「停掉」。 */
+  background?: boolean
 }
 
 export type NestRunner = {
@@ -261,6 +263,26 @@ export async function fetchNestRunLog(featureId: string, lines = 400): Promise<s
 
 export async function stopNestFeature(featureId: string): Promise<{ ok: boolean; stopped: boolean; message?: string }> {
   return asJson(`/api/nest/features/${encodeURIComponent(featureId)}/run`, { method: 'DELETE' })
+}
+
+/** 「主要看什么」：大老大写给功能的方向说明。本体只存原文，怎么用是功能自己的事。 */
+export type NestDirective = {
+  feature_id: string
+  look_for: string
+  avoid: string
+  updated_at: string
+}
+
+export async function fetchNestDirective(featureId: string): Promise<NestDirective> {
+  return asJson<NestDirective>(`/api/nest/features/${encodeURIComponent(featureId)}/directive`)
+}
+
+export async function saveNestDirective(featureId: string, lookFor: string, avoid: string): Promise<NestDirective> {
+  return asJson<NestDirective>(`/api/nest/features/${encodeURIComponent(featureId)}/directive`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ look_for: lookFor, avoid }),
+  })
 }
 
 // ---- 个人档案（私人空间 / 用户身份，§22）----

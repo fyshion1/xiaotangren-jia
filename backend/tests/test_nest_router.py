@@ -49,9 +49,22 @@ class NestRouterTests(unittest.TestCase):
         self.assertEqual(names, ["dry", "run", "watch"])
         characters_cmd = next(c for c in scout["runner"]["commands"] if c["name"] == "run")
         self.assertIn("characters", characters_cmd["params"])
+        # 循环类子命令要标 background，后端才知道「立刻回 pid、别等它跑完」
+        watch = next(c for c in scout["runner"]["commands"] if c["name"] == "watch")
+        self.assertTrue(watch.get("background"))
+        self.assertNotIn("background", characters_cmd)
         # 还没接 runner 的功能不该冒出启动入口
         dst = next(f for f in payload["items"] if f["id"] == "dont_starve_together")
         self.assertIsNone(dst["runner"])
+
+    def test_qq_bridge_is_runnable_and_persistent(self):
+        """QQ 桥接进来了：有启动入口，run 是常驻（自检 / 看演谁 是一次性）。"""
+        payload = self.client.get("/api/nest/features").json()
+        bridge = next(f for f in payload["items"] if f["id"] == "qq_bridge")
+        commands = {c["name"]: c for c in bridge["runner"]["commands"]}
+        self.assertEqual(sorted(commands), ["check", "run", "whoami"])
+        self.assertTrue(commands["run"].get("background"))
+        self.assertFalse(commands["check"].get("background", False))
 
     def test_run_rejects_unknown_command(self):
         """白名单之外子命令一律拒 —— 前端拼不出任意命令。"""
@@ -60,7 +73,7 @@ class NestRouterTests(unittest.TestCase):
         self.assertEqual(r.status_code, 422)
 
     def test_run_404_for_feature_without_runner(self):
-        r = self.client.post("/api/nest/features/qq_bridge/run", json={"command": "run"})
+        r = self.client.post("/api/nest/features/dont_starve_together/run", json={"command": "run"})
         self.assertEqual(r.status_code, 404)
 
     def test_build_command_only_whitelisted_flags(self):

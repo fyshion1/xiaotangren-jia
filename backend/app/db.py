@@ -207,6 +207,14 @@ CREATE TABLE IF NOT EXISTS feature_runs (
     stopped_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_feature_runs_scope ON feature_runs (feature_id, started_at);
+-- §9.6 「主要看什么」：大老大给功能写的**方向说明**（人写的，不是功能数据）。
+-- 本体只负责存 / 取；意思由功能项目自己解释 —— 目前逛 B站 把它作为最高优先级的口味指引。
+CREATE TABLE IF NOT EXISTS feature_directives (
+    feature_id TEXT PRIMARY KEY,
+    look_for TEXT NOT NULL DEFAULT '',
+    avoid TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # gallery 的索引单列出来、由 _migrate 统一建：老库还没有 owner 列时，必须先 ALTER 补列
@@ -1202,6 +1210,33 @@ def delete_feed_item(item_id: str) -> bool:
     with _tx() as conn:
         cur = conn.execute("DELETE FROM feature_feed WHERE id=?", (item_id,))
         return bool(cur.rowcount)
+
+
+# ---- 「主要看什么」：大老大写给功能的方向说明（feature_directives，§9.6）----
+#
+# 功能自己那套口味画像（例如逛 B站 的 data/taste.json）是**从行为长出来的**，
+# 大老大想直接说「我要看什么 / 别给我看什么」时没有地方写 —— 这两句就是那个地方。
+# 本体只存原文，**不解释**；功能拉回去当最高优先级的口味指引。
+
+
+def get_feature_directive(feature_id: str) -> dict:
+    with _tx() as conn:
+        row = conn.execute("SELECT * FROM feature_directives WHERE feature_id=?", (feature_id,)).fetchone()
+    if row is None:
+        return {"feature_id": feature_id, "look_for": "", "avoid": "", "updated_at": ""}
+    return {"feature_id": row["feature_id"], "look_for": row["look_for"],
+            "avoid": row["avoid"], "updated_at": row["updated_at"]}
+
+
+def set_feature_directive(feature_id: str, look_for: str, avoid: str) -> dict:
+    with _tx() as conn:
+        conn.execute(
+            "INSERT INTO feature_directives (feature_id,look_for,avoid,updated_at) VALUES (?,?,?,datetime('now')) "
+            "ON CONFLICT(feature_id) DO UPDATE SET look_for=excluded.look_for, avoid=excluded.avoid, "
+            "updated_at=datetime('now')",
+            (feature_id, look_for, avoid),
+        )
+    return get_feature_directive(feature_id)
 
 
 # ---- 画廊（gallery，对应《项目要求》§9.4）----

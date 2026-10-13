@@ -367,6 +367,30 @@ async def delete_feed(item_id: str) -> dict:
     return {"ok": True, "id": item_id}
 
 
+# ---- 「主要看什么」：大老大写给功能的方向说明（§9.6）----
+#
+# 功能的口味画像（B站那个 data/taste.json）是**从收藏行为长出来的**，慢。
+# 大老大想直接说「我要看什么 / 别给我看什么」时，写在这两格里 —— 前端在功能卡片旁边给入口。
+# 本体**只存原文，不解释**：怎么用是功能自己的事（逛 B站 拿它当最高优先级指引、权重 8.0）。
+
+
+class DirectiveIn(BaseModel):
+    look_for: str = Field(default="", max_length=4000)
+    avoid: str = Field(default="", max_length=4000)
+
+
+@router.get("/features/{feature_id}/directive")
+async def get_directive(feature_id: str) -> dict:
+    """这个功能的方向说明（没写过就返回空串，前端显示成「还没写」）。"""
+    return db.get_feature_directive(feature_id)
+
+
+@router.put("/features/{feature_id}/directive")
+async def put_directive(feature_id: str, body: DirectiveIn) -> dict:
+    """写 / 改方向说明。功能下次跑起来时会拉这份（逛 B站 每轮都读）。"""
+    return db.set_feature_directive(feature_id, body.look_for.strip(), body.avoid.strip())
+
+
 # ---- 启动独立功能项目（本体只开进程，逻辑全在 `features/<folder>/`）----
 #
 # 大老大想在小窝里点一下就把功能跑起来，而不是自己去终端敲命令（终端里中文还会变乱码）。
@@ -419,7 +443,8 @@ def _log_path(feature_id: str) -> Path:
 
 @router.post("/features/{feature_id}/run")
 async def run_feature(feature_id: str, body: RunIn) -> dict:
-    """把独立功能项目跑起来：非流式（run / dry）等它跑完回结果；循环（watch）立刻返回 pid。
+    """把独立功能项目跑起来。**常驻子命令**（注册表里标了 `background`，如「一直逛」「接上 QQ」）
+    立刻返回 pid、日志边跑边刷；其余（试跑 / 自检 / 逛一轮）等它跑完回结果。
 
     重复点不会起一堆进程：同一个功能已经有在跑 → 409，让你先停。
     """
@@ -437,7 +462,7 @@ async def run_feature(feature_id: str, body: RunIn) -> dict:
             env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
         )
     db.record_feature_run(feature_id, spec["name"], proc.pid)
-    if spec["name"] == "watch":
+    if spec.get("background"):
         return {"ok": True, "running": True, "pid": proc.pid, "log": str(log),
                 "message": f"{spec['label']}已启动，日志在下面滚动"}
     try:
@@ -507,9 +532,9 @@ async def stop_feature(feature_id: str) -> dict:
 @router.get("/capabilities")
 async def capabilities() -> dict:
     return {
-        "contract_version": "0.2.1",
+        "contract_version": "0.2.2",
         "implemented": ["features", "api_config_global", "api_config_feature", "chat", "chat_sse",
-                        "feed", "feature_run"],
+                        "feed", "feature_run", "feature_directive"],
         "namespace": "feature_id（记忆隔离键，落 memories.game_id 列）",
         "config_layers": ["nest_brain_default（全局，带 vision）", "feature_override（每功能可覆盖任意字段）"],
         "vision": {"global_default_has_vision": True, "per_feature_block_toggle": True},

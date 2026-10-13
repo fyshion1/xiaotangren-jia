@@ -16,7 +16,43 @@ GET /api/nest/features
 前端小窝按它渲染入口列表 —— 加功能只要在注册表加一条 + 给功能建一个独立仓库 `features/<folder>/`。
 
 条目字段：`id`（功能命名空间，也是记忆隔离键）、`name`、`emoji`、`kind`、`status`、`desc`、
-`needs_vision`（用不用视觉）、`folder`（独立项目目录，空 = 在本体内）。
+`needs_vision`（用不用视觉）、`folder`（独立项目目录，空 = 在本体内）、`runner`（能不能在小窝里启动，见下）。
+
+## 媒体落盘：功能别自己存文件（§9.6.4）
+
+功能从外面（QQ / 别的平台）拿到图 / 表情包 / 视频，**不要自己落盘再自己起静态服务** ——
+前端聊天记录只认本体这一套附件引用（`/api/files/<session>/…` + 缩略图 + 画廊收藏 + 删消息级联）。
+功能自己另存一份，等于把图片管理劈成两半，删消息时文件就漏了。
+
+```
+POST /api/qq-bridge/attachments     # base64 + mime + session_id → 附件管道 → 返回引用 URL
+```
+
+- 收的是 **base64 + 声明 mime**（不是 data URL、不是 multipart）—— 平台侧拿到的就是字节；
+- **按内容签名去重**：群里反复发同一个表情包，只落一次盘、只占一个 URL（返回值带 `deduped`）；
+- 只落盘，**不解析、不转码、不上传任何外部服务**；体积沿用附件管道（图 20MB / 视频 100MB，表情包 5MB 以上降级按普通图）。
+- 视频要用视觉：存完后调 `POST /api/media/video/analyze` 抽帧（本体已有，带 15 秒 / 50MB / 8 帧的安全线），
+  抽到的帧再当 data URL 传给 `/api/nest/chat`。**别在功能里自己调 ffmpeg** —— 两处实现必然不一致。
+
+> 路径名带 `qq-bridge` 是因为它是第一个提出这个需求的（QQ 里表情包 / 语音的量级最大）。
+> 换个平台接入（Telegram / Discord…）同一个需求照用，或者再开一条同构的窄接口。
+
+## QQ 桥（第一个走完这条路的示范）
+
+`features/qq-bridge/` 是「IM 类外设」的完整样板，它示范了几件事该怎么接：
+
+| 要干的事 | 走哪个接口 | 别干什么 |
+|---|---|---|
+| 收图 / 表情 / 视频 | `POST /api/qq-bridge/attachments` | 别自己落盘、别自己起静态服务 |
+| 视频要让小糖人看见 | `POST /api/media/video/analyze` 抽帧 → `/api/nest/chat` 带 `images` | 别在功能里调 ffmpeg |
+| 小糖人说话 | `POST /api/nest/chat`（人格 / 记忆 / 密钥都在本体） | 别复制人设、别存 key |
+| 小糖人出声 | `POST /api/voice/tts`（edge 晓晓 / piper） | 别自己装一套 TTS |
+| 语音转文字 | ⚠ **本体没有 ASR** | 别假装听懂 —— 转不出就记 `[语音]` |
+| 聊过的同步进前端 | `POST /api/messages`（群聊 → `group`，私聊 → `single-<角色id>`） | 别另开一套存储 |
+
+**ASR 是已知空缺**：本体的语音模块只有 TTS（说），没有识别（听）。参考项目靠的是
+QQ 自己的语音转文字（自己发的语音常常拿不到）。谁要接识别，在功能侧接外部 whisper 即可
+（QQ 桥的 `asr.engine=openai` 就是这条路），**不要往本体里塞一个识别引擎** —— 那是功能的需求，不是大脑的。
 
 ## API 配置：两层
 
@@ -111,10 +147,15 @@ DELETE /api/nest/features/{feature_id}/run         # 停掉循环进程
   "commands": [
     {"name": "dry",   "label": "试跑（不花钱）", "desc": "只抓取 + 打分",        "params": ["limit"]},
     {"name": "run",   "label": "逛一轮",        "desc": "挑出来推回小窝",       "params": ["limit", "characters", "memory"]},
-    {"name": "watch", "label": "一直逛（循环）", "desc": "每 N 分钟一轮",       "params": ["interval", "limit", "characters"]}
+    {"name": "watch", "label": "一直逛（循环）", "desc": "每 N 分钟一轮",       "params": ["interval", "limit", "characters"], "background": true}
   ]
 }
 ```
+
+`background: true` = **常驻子命令**（跑起来就不返回的那种，比如「一直逛」「接上 QQ」）：
+后端立刻回 `pid`，前端显示「停掉」、日志边跑边刷。没标的（试跑 / 自检 / 逛一轮）都是跑完才返回。
+**别拿命令名去猜要不要后台跑** —— 由功能自己在注册表里声明（`bilibili_scout` 的 `watch` 和
+`qq_bridge` 的 `run` 是常驻，两者的名字并不一样）。
 
 请求体：`command`（必须是上面列出的名字）、`limit`、`interval`、`character_ids`、`memory`。
 **只传参数，不传命令** —— 真 argv 是后端按 `runner` 拼的：`[python, -m, <module>, <command>, ...白名单参数]`。

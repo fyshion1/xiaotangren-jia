@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class RunnerCommand(TypedDict):
@@ -26,6 +26,9 @@ class RunnerCommand(TypedDict):
     label: str
     desc: str
     params: list[str]  # 支持哪些附加参数：limit / characters / memory
+    # 有 background = 这个子命令是**常驻循环**（跑起来就不返回）：后端立刻回 pid、日志边跑边刷，
+    # 前端显示「停掉」。没有的（如试跑 / 自检）都是跑完就返回，等结果。
+    background: NotRequired[bool]
 
 
 class Runner(TypedDict):
@@ -83,7 +86,7 @@ FEATURES: list[Feature] = [
             "commands": [
                 {"name": "dry", "label": "试跑（不花钱）", "desc": "只抓取 + 打分，不调模型、不推小窝 —— 先看挑得准不准", "params": ["limit"]},
                 {"name": "run", "label": "逛一轮", "desc": "真的逛一轮：挑出值得看的，请小糖人写一句推荐语，推回小窝", "params": ["limit", "characters", "memory"]},
-                {"name": "watch", "label": "一直逛（循环）", "desc": "每 N 分钟一轮，关掉窗口才停；日志在下面滚动", "params": ["interval", "limit", "characters"]},
+                {"name": "watch", "label": "一直逛（循环）", "desc": "每 N 分钟一轮，关掉窗口才停；日志在下面滚动", "params": ["interval", "limit", "characters"], "background": True},
             ],
         },
     },
@@ -92,11 +95,20 @@ FEATURES: list[Feature] = [
         "name": "QQ 桥",
         "emoji": "💬",
         "kind": "im",
-        "status": "planned",
-        "desc": "小糖人无聊时来骚扰你：QQ 消息接入，回复发回 QQ。看图看视频都走大脑的多模态。",
+        "status": "available",
+        "desc": "小糖人住进 QQ：私聊 / 群聊都能聊，图、表情包、视频、语音都收得进也发得出，聊的会同步进小窝。",
         "needs_vision": True,
         "folder": "qq-bridge",
-        "runner": None,
+        # 桥是常驻进程（run 循环），本体只负责按一下启动键。白名单为空时它会明确说「谁都不理」。
+        "runner": {
+            "folder": "qq-bridge",
+            "module": "qqbridge",
+            "commands": [
+                {"name": "check", "label": "自检（不连 QQ）", "desc": "查大脑通不通、白名单空不空、模型配没配 —— 出问题先跑这个", "params": []},
+                {"name": "run", "label": "接上 QQ（常驻）", "desc": "连 OneBot 网关，收消息、回消息、同步进小窝；关掉窗口才停", "params": ["characters"], "background": True},
+                {"name": "whoami", "label": "这个号演谁", "desc": "看看本号对应哪位小糖人 + 家里有哪些人可选", "params": []},
+            ],
+        },
     },
     {
         "id": "interactive_home",
