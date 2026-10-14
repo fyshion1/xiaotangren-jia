@@ -214,7 +214,8 @@ FEATURES: list[Feature] = [
              "options": [{"value": "server", "label": "反向 WS（网关连过来）"},
                          {"value": "client", "label": "正向 WS（我连网关）"}]},
             {"key": "onebot.listen_port", "label": "监听端口", "type": "number", "group": "接入方式",
-             "default": 3001, "desc": "反向 WS 用。在网关里把「反向 WS 地址」配成 ws://127.0.0.1:<这个端口>/onebot/v11/ws",
+             "default": 3001, "desc": "反向 WS 用。在网关里把「反向 WS 地址」配成 ws://127.0.0.1:<这个端口>/onebot/v11/ws。"
+                                      "**NapCat 自带的 WS 服务默认也爱占 3000/3001**，撞了就把这里改成 3002（网关那边跟着改）。",
              "min": 1, "max": 65535},
             {"key": "onebot.listen_path", "label": "监听路径", "type": "text", "group": "接入方式",
              "default": "/onebot/v11/ws", "desc": "一般不用改，和网关里填的保持一致就行。"},
