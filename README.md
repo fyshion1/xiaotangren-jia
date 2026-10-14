@@ -190,6 +190,13 @@ IMAGE_BASE_URL=                       # 生图中转地址（留空 = 用 MODEL_
 
 > GPT-SoVITS 的占位按钮**已按用户要求删掉**（当时只是个"未安装"的死按钮）。引擎表里没有它，请求它返回 400。以后真装了再加回来。
 
+> ⚠ **edge-tts 要 ≥ 7.3。** 7.2.x 会在 WebSocket 握手时被微软挡回来
+> （`403 Invalid response status`，`wss://speech.platform.bing.com/.../edge/v1`），
+> 表现就是 `/api/voice/tts` 一律 **502**、QQ 桥「语音没合成出来，这条改打字」。
+> 2026-10-14 本机从 7.2.8 升到 7.3.1 后恢复正常（同一个 token、没走代理，纯粹是版本）。
+> 升级：`uv pip install --python backend/.venv/Scripts/python.exe -U "edge-tts>=7.2"`，
+> **改完要重启后端**才会生效。
+
 引擎与音色**选择会被记住**（存浏览器），刷新 / 切会话不会弹回默认。
 edge 连点朗读时后端会做 250ms 最小间隔节流 —— edge-tts 每次合成都要新开 WebSocket，前一条没关干净时新的一条会卡几秒。
 

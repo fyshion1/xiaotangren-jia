@@ -15,6 +15,9 @@ dependencies = [
     "pillow>=10.3",
     "python-docx>=1.1",
     "openpyxl>=3.1",
+    # 功能循环进程的「查存活 / 停掉」靠它（Windows 没有 os.kill(pid, 15)，缺了 psutil
+    # 停止功能会直接 WinError 87）。
+    "psutil>=6.0",
 ]
 
 [project.optional-dependencies]
