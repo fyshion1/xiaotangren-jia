@@ -172,14 +172,17 @@ FEATURES: list[Feature] = [
         "settings": [
             # ---- 先定「哪个号演谁」（多账号）----
             {"key": "accounts", "label": "QQ 号 × 小糖人", "type": "accounts", "group": "谁在 QQ 上",
-             "desc": "一个 QQ 号 = 一个小糖人。填几个就跑几个（各连各的网关端口），群聊里谁被 @ 谁开口。"
-                     "留空 = 用下面「这个号」那一组（单账号）。",
+             "desc": "一个 QQ 号 = 一个小糖人。填几个就跑几个，群聊里谁被 @ 谁开口。"
+                     "**正向 WS（连接方式选「我连网关」）时每个号要填自己的「网关地址」** —— "
+                     "SnowLuma 是一个 QQ 号一个 ws 服务端端口，第二个号就不一样了。"
+                     "留空整张表 = 用下面「这个号」那一组（单账号）。",
              "default": [],
              "fields": [
                  {"key": "name", "label": "备注名", "type": "text", "desc": "随便写，方便你自己认"},
                  {"key": "self_id", "label": "QQ 号", "type": "text", "desc": "机器人的 QQ 号"},
                  {"key": "persona", "label": "演谁", "type": "character", "desc": "留空 = 名册第一个人"},
-                 {"key": "listen_port", "label": "网关端口", "type": "number", "desc": "留空 = 3001 起依次排"},
+                 {"key": "ws_url", "label": "网关地址", "type": "text", "desc": "正向 WS 用，如 ws://127.0.0.1:3001/；留空 = 用顶层那个"},
+                 {"key": "listen_port", "label": "监听端口", "type": "number", "desc": "反向 WS 用；留空 = 3010 起依次排"},
                  {"key": "access_token", "label": "access_token", "type": "text", "secret": True},
                  {"key": "groups", "label": "接哪些群", "type": "list", "desc": "群号，逗号分隔；留空 = 这个号的群一律不理"},
                  {"key": "private", "label": "接哪些人私聊", "type": "list", "desc": "QQ 号，逗号分隔；留空 = 私聊一律不理"},
@@ -210,20 +213,24 @@ FEATURES: list[Feature] = [
 
             # ---- 网关接入 ----
             {"key": "onebot.mode", "label": "连接方式", "type": "select", "group": "接入方式",
-             "default": "server", "desc": "反向 WS（推荐）：桥监听端口，网关配地址连过来。正向 WS：桥主动连网关。",
-             "options": [{"value": "server", "label": "反向 WS（网关连过来）"},
-                         {"value": "client", "label": "正向 WS（我连网关）"}]},
+             "default": "client", "desc": "**正向 WS（推荐，正在用的）**：桥主动连网关 —— 网关不用配、不用重启。"
+                                          "反向 WS：桥监听端口，网关配「反向 WS 地址」指过来。",
+             "options": [{"value": "client", "label": "我连网关（正向，推荐）"},
+                         {"value": "server", "label": "网关连我（反向）"}]},
+            {"key": "onebot.ws_url", "label": "网关地址", "type": "text", "group": "接入方式",
+             "default": "ws://127.0.0.1:3001/",
+             "desc": "正向 WS 用。**SnowLuma 默认的 WS 服务端口就是 3001**，所以默认值直接能用。"
+                     "多号时在「谁在 QQ 上」那张表里给每个号填自己的地址。"},
             {"key": "onebot.listen_port", "label": "监听端口", "type": "number", "group": "接入方式",
-             "default": 3001, "desc": "反向 WS 用。在网关里把「反向 WS 地址」配成 ws://127.0.0.1:<这个端口>/onebot/v11/ws。"
-                                      "**NapCat 自带的 WS 服务默认也爱占 3000/3001**，撞了就把这里改成 3002（网关那边跟着改）。",
+             "default": 3010, "desc": "反向 WS 用。在网关里把「反向 WS 地址」配成 ws://127.0.0.1:<这个端口>/onebot/v11/ws。"
+                                      "**故意用 3010**：3000/3001 是 SnowLuma（和 NapCat）默认占的，撞上就连不上。",
              "min": 1, "max": 65535},
             {"key": "onebot.listen_path", "label": "监听路径", "type": "text", "group": "接入方式",
-             "default": "/onebot/v11/ws", "desc": "一般不用改，和网关里填的保持一致就行。"},
-            {"key": "onebot.ws_url", "label": "网关地址", "type": "text", "group": "接入方式",
-             "default": "ws://127.0.0.1:3001", "desc": "「正向 WS」时才用，例如 ws://127.0.0.1:3000。"},
+             "default": "/onebot/v11/ws", "desc": "反回 WS 用，一般不用改，和网关里填的保持一致就行。"},
             {"key": "onebot.access_token", "label": "access_token", "type": "text", "secret": True, "group": "接入方式",
-             "default": "", "desc": "网关设了才填。**留空 = 不校验**：任何能连到本机这个端口的东西都能指挥小糖人发消息。"
-                                     "本机自用一般没事；装了别的软件 / 端口对外开放时强烈建议设一个。"},
+             "default": "", "desc": "网关设了才填，**两边要填一样的**。"
+                                     "SnowLuma 的 token 在 WebUI「配置 → 网络」里能看到（默认会生成一个）。"
+                                     "留空 = 不校验：任何能连到本机这个端口的东西都能指挥小糖人发消息。"},
 
             # ---- 语音 ----
             {"key": "voice.enabled", "label": "会发语音条", "type": "bool", "group": "声音",
