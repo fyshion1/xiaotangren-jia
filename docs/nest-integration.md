@@ -16,7 +16,8 @@ GET /api/nest/features
 前端小窝按它渲染入口列表 —— 加功能只要在注册表加一条 + 给功能建一个独立仓库 `features/<folder>/`。
 
 条目字段：`id`（功能命名空间，也是记忆隔离键）、`name`、`emoji`、`kind`、`status`、`desc`、
-`needs_vision`（用不用视觉）、`folder`（独立项目目录，空 = 在本体内）、`runner`（能不能在小窝里启动，见下）。
+`needs_vision`（用不用视觉）、`folder`（独立项目目录，空 = 在本体内）、`runner`（能不能在小窝里启动，见下）、
+`settings`（能在小窝前端改哪些开关，见 §9.6.5）。
 
 ## 媒体落盘：功能别自己存文件（§9.6.4）
 
@@ -47,12 +48,15 @@ POST /api/qq-bridge/attachments     # base64 + mime + session_id → 附件管�
 | 视频要让小糖人看见 | `POST /api/media/video/analyze` 抽帧 → `/api/nest/chat` 带 `images` | 别在功能里调 ffmpeg |
 | 小糖人说话 | `POST /api/nest/chat`（人格 / 记忆 / 密钥都在本体） | 别复制人设、别存 key |
 | 小糖人出声 | `POST /api/voice/tts`（edge 晓晓 / piper） | 别自己装一套 TTS |
-| 语音转文字 | ⚠ **本体没有 ASR** | 别假装听懂 —— 转不出就记 `[语音]` |
+| 语音转文字 | 用**平台自己的转写**（QQ 网关一般挂在 `record.text` 里） | 别假装听懂 —— 转不出就记 `[语音]` |
 | 聊过的同步进前端 | `POST /api/messages`（群聊 → `group`，私聊 → `single-<角色id>`） | 别另开一套存储 |
+| 让模型调本地工具 | `POST /api/nest/tool-turn`（只回决定，本体不执行） | 别无中生有一个「功能自己的模型客户端」 |
 
-**ASR 是已知空缺**：本体的语音模块只有 TTS（说），没有识别（听）。参考项目靠的是
-QQ 自己的语音转文字（自己发的语音常常拿不到）。谁要接识别，在功能侧接外部 whisper 即可
-（QQ 桥的 `asr.engine=openai` 就是这条路），**不要往本体里塞一个识别引擎** —— 那是功能的需求，不是大脑的。
+**ASR 是已知空缺**：本体的语音模块只有 TTS（说），没有识别（听）。大老大拍板：
+**用 QQ 自己的转写**（手机上那个「转文字」，网关一般会挂在 `record` 段里）。
+QQ 桥的 `asr.engine` 默认就是 `qq`；拿不到转写时可以选 `openai` 在功能侧接外部 whisper
+（**音频会过上游、要花钱**），或者干脆记 `[语音]`。**不要往本体里塞一个识别引擎** ——
+那是功能的需求，不是大脑的。
 
 ## API 配置：两层
 
@@ -123,8 +127,85 @@ POST /api/nest/chat
 | 「一起看」（同步看视频） | `scout/runner.py::watch_together_stub` | **只抛 `NotImplementedError`** —— 路是通的（同 `chat` 的 `images`），实时逐帧 token 太贵，按 §9.6.3 不做 |
 | 去**别人的视频下**发评论并 @ 主人 | `scout/runner.py::post_comment` | **默认关**（`POST_COMMENT_ENABLED = False`）；默认只生成「评论草稿」推回小窝，**有话在小窝前端说**，别去污染别人的评论区 |
 
-要真开评论，得自己补：B站登录 Cookie（`SESSDATA`，**绝不进仓库**）、频控（每天几条）、前端二次确认。
-**这些不该由大脑代劳**，是功能项目自己的责任。
+这两个现在在小窝前端「⚙ 功能开关 → 留口子的功能」里有开关（`watch.enabled` / `comment.enabled`
+/ `comment.at_owner` / `comment.max_per_day`），**但开关只是记下「大老大想要」，不会让它们真的开始工作**：
+
+- 「一起看」：打开也是抛（路标摆着，代码没写）。
+- 发评论：`comment_enabled()` 要求**前端开关 + 代码常量 `POST_COMMENT_ENABLED` 都为真**。
+  常量现在写死 `False`，所以前端打开也发不出去 —— 免得一个开关给了「已经能发了」的错觉。
+
+要真开评论，得自己补：B站登录 Cookie（`SESSDATA`，**绝不进仓库**）、频控（每天几条，前端 `comment.max_per_day`）、
+前端二次确认。**这些不该由大脑代劳**，是功能项目自己的责任。
+
+## 功能配置项：开关搬进前端（§9.6.5）
+
+独立功能以前要改白名单 / 演谁 / 音色，只能去开终端编辑 `features/<folder>/config.json`
+（终端里中文还乱码）。大老大原话：「这块希望在前端可以自己配置，现在说比较复杂」。所以：
+
+```
+GET /api/nest/features/{feature_id}/settings    # 能配什么（schema）+ 现在是什么（values）
+PUT /api/nest/features/{feature_id}/settings    # 整份提交，只认声明过的 key
+```
+
+**声明归功能，值归本体**：
+
+- 「有哪些项、什么类型、默认值」由功能在 `backend/app/features_registry.py` 里**声明** —— 跟着功能代码走，
+  前端**不写死任何字段**，加一条声明就自动长出一个开关（后端改注册表，前端不用动）。
+- 「值是多少」存本体（`feature_settings` 表，一个功能一行 JSON），因为值要在前端改。
+- 功能侧 `GET` 这一条拉回去**覆盖自己的 config.json**，改完立刻生效、不用重启
+  （QQ 桥每 30 秒 pull 一次，逛 B站 每轮 pull 一次）。
+- 合并顺序（功能侧自己实现）：`代码默认` → `config.json` → `前端设置`。**前端最高**。
+- 拉不到不算错：大脑没起时功能照常用本地 `config.json` 跑 —— 单向依赖，不反向拖累。
+
+字段声明的形状（`SettingField`）：
+
+| 键 | 说明 |
+| --- | --- |
+| `key` / `label` / `desc` | 前端显示的标题和人话说明 |
+| `type` | `text` / `textarea` / `number` / `bool` / `list` / `select` / `accounts` / `character` / `media_list` |
+| `default` | 没配过时前端显示、后端补上的值 |
+| `group` | 前端按这个分组（同一组放一起） |
+| `secret` | 前端用密码框（**只是不明文晃眼，不加密、也不回显遮蔽**） |
+| `options` / `min` / `max` | `select` 的候选项 / `number` 的取值范围（越界 422） |
+| `fields` | `type=accounts` 时每一行里的格子（见下） |
+
+两个特殊类型：
+
+- **`character`** —— 下拉选一位小糖人，候选项由前端现拉 `/api/characters`。
+- **`accounts`** —— 「多个账号各演一个人」的重复行编辑器，`fields` 声明每行有哪些格子
+  （QQ 桥用它做「一个 QQ 号 = 一个小糖人」，最多 20 行）。
+
+后端只做四件事，**不解释字段的业务含义**：① 把声明和值拼成一份给前端；② 丢了没声明过的 key
+（返回 `ignored`）；③ 按 `type` 粗校验（收不拢就 422，宁可拒绝不静默改）；④ 按声明补默认值。
+**字段的含义、怎么用、什么时候生效，全是功能自己的事。**
+
+## 工具调用：模型做决定，功能去执行（§9.6.6）
+
+大老大批注：「不碰本地工具的话，我倒是希望他能碰一下，只要别搞坏东西」。做法是**给能力 + 画硬边界**：
+
+```
+POST /api/nest/tool-turn    # 带 tools 声明问一次模型，返回它的决定
+```
+
+请求：`feature_id`、`character_id`、`messages`、`tools`（OpenAI function calling 格式）、`images`、`state`。
+返回：`{conversation_id, content, tool_calls: [{id, name, arguments}], finish_reason}`。
+
+**本体一个动作都不执行** —— 它只是「会说工具话的模型客户端」。循环由功能自己转：
+
+```
+功能 ─ tools 声明 ─▶ 本体 ─▶ 模型
+                          ◀── tool_calls（模型想调什么）
+功能在本进程里执行（白名单 + 沙箱）─▶ role="tool" 的结果 ─▶ 再问一次
+```
+
+为什么执行权必须留在功能那侧：**只有功能进程知道沙箱在哪**。QQ 桥的 `qqbridge/tools.py` 是示范：
+
+1. **谁能触发**（`tools.require_owner`，默认只有大老大的消息）—— 群里别人说「删个文件」是提示注入，不是授权；
+2. **白名单动作**（登记表是代码常量，配置只能从里面**挑**名字，加不进新动作）；
+3. **沙箱路径**（`resolve()` 之后的真实路径必须仍在根里，`..` / 符号链接 / 绝对路径一律拒绝）；
+4. 兜底：删除 / 关机 / 格式化 / 改注册表这类**写死在代码里永远拒绝**，配置改不动。
+
+被拒也要**如实告诉模型**（返回 `(False, 原因)`，不抛异常）—— 否则它会以为「沉默 = 成功了」。
 
 ## 在本体里把功能跑起来（前端「🚀 让功能跑起来」）
 

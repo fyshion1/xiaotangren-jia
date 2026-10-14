@@ -141,12 +141,36 @@ async def complete_chat(
 
     复用同一套 OpenAI 兼容口子；出错抛 RuntimeError（透出上游真实错误体）。
     """
+    full = await complete_chat_full(messages, model, base_url, api_key,
+                                    max_tokens=max_tokens, temperature=temperature)
+    return full["content"]
+
+
+async def complete_chat_full(
+    messages: list[dict],
+    model: str,
+    base_url: str,
+    api_key: str = "",
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    tools: list[dict] | None = None,
+) -> dict:
+    """非流式补全，返回 `{content, tool_calls, finish_reason}`（工具调用的原始形态）。
+
+    **工具只是「转发 + 原样带回」，这一层不执行任何动作**：功能项目声明它有哪些工具
+    （OpenAI function calling 的 schema），模型决定调哪个，功能自己判断能不能执行。
+    大脑在这里只当一个「会说工具话」的模型客户端 —— 动作白名单永远是功能的责任
+    （见 docs/nest-integration.md「功能自己提供动作白名单与执行」）。
+    """
     base = base_url.rstrip("/")
     payload: dict = {"model": model, "messages": messages, "stream": False}
     if max_tokens:
         payload["max_tokens"] = max_tokens
     if temperature is not None:
         payload["temperature"] = temperature
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=30.0)) as client:
         resp = await client.post(
             f"{base}/chat/completions", headers=_headers(api_key), json=payload
@@ -158,8 +182,13 @@ async def complete_chat(
         raise RuntimeError(f"上游: {_extract_error(obj['error'])}")
     choices = obj.get("choices") or []
     if not choices:
-        return ""
-    return (choices[0].get("message") or {}).get("content") or ""
+        return {"content": "", "tool_calls": [], "finish_reason": ""}
+    message = choices[0].get("message") or {}
+    return {
+        "content": message.get("content") or "",
+        "tool_calls": message.get("tool_calls") or [],
+        "finish_reason": choices[0].get("finish_reason") or "",
+    }
 
 
 async def stream_chat_retry(

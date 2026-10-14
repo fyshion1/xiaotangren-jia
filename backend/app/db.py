@@ -215,6 +215,14 @@ CREATE TABLE IF NOT EXISTS feature_directives (
     avoid TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- §9.6.5 功能设置：功能项目自己声明的**可配置项**（白名单 / 语音 / 表情包 / 小工具…），
+-- 值由大老大在**前端**改，存在本体这一行里（一功能一行 JSON）。
+-- 声明在注册表（代码级资产），值在这里（用户数据）—— 功能拉回去覆盖自己的 config.json。
+CREATE TABLE IF NOT EXISTS feature_settings (
+    feature_id TEXT PRIMARY KEY,
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # gallery 的索引单列出来、由 _migrate 统一建：老库还没有 owner 列时，必须先 ALTER 补列
@@ -1237,6 +1245,39 @@ def set_feature_directive(feature_id: str, look_for: str, avoid: str) -> dict:
             (feature_id, look_for, avoid),
         )
     return get_feature_directive(feature_id)
+
+
+# ---- 功能设置：大老大在前端改的那些开关（feature_settings，§9.6.5）----
+#
+# **为什么值不放在功能的 config.json 里**：功能是独立项目，大老大要改白名单 / 音色 /
+# 表情包开关，不该被逼去开终端编辑那个文件（中文还会乱码）。所以：
+#   - **声明**（有哪些项、什么类型、默认值）写在 features_registry.py —— 跟着功能代码走；
+#   - **值**存在这里，一功能一行 JSON，前端改完立刻生效（功能每轮读一次）。
+# 本体**不解释**这些字段的业务含义，只保证「读出来是什么样、写回去还是什么样」。
+
+
+def get_feature_settings(feature_id: str) -> dict:
+    with _tx() as conn:
+        row = conn.execute("SELECT * FROM feature_settings WHERE feature_id=?", (feature_id,)).fetchone()
+    if row is None:
+        return {"feature_id": feature_id, "data": {}, "updated_at": ""}
+    try:
+        data = json.loads(row["data"])
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+    return {"feature_id": feature_id, "data": data if isinstance(data, dict) else {},
+            "updated_at": row["updated_at"]}
+
+
+def set_feature_settings(feature_id: str, data: dict) -> dict:
+    """整份覆盖写（前端每次提交的都是它编辑完的完整表单）。"""
+    with _tx() as conn:
+        conn.execute(
+            "INSERT INTO feature_settings (feature_id,data,updated_at) VALUES (?,?,datetime('now')) "
+            "ON CONFLICT(feature_id) DO UPDATE SET data=excluded.data, updated_at=datetime('now')",
+            (feature_id, json.dumps(data or {}, ensure_ascii=False)),
+        )
+    return get_feature_settings(feature_id)
 
 
 # ---- 画廊（gallery，对应《项目要求》§9.4）----

@@ -111,9 +111,10 @@ export default function NestRunnerPanel({
   const params = new Set(spec?.params || [])
   // 即时通讯类（QQ 桥）：一个账号只能演一个人，也没有「主要看什么」这个口味概念。
   const solo = feature?.kind === 'im'
-  const lookLabel = solo ? '这个号演谁' : '选谁去看'
+  const lookLabel = solo ? '这次启动先演谁' : '选谁去看'
   const lookHint = solo
-    ? '一个 QQ 号 = 一个小糖人；想几个小糖人都在 QQ 上，就把这个功能跑几份、各配各的 config.json'
+    ? '一个 QQ 号 = 一个小糖人。平时在下面「⚙ 功能开关 → 谁在 QQ 上」里配「哪个号演谁」；' +
+      '这里只临时覆盖第一个号（改完重启桥才换人）。当前：'
     : '人选来自角色介绍里的人；人设本身在大脑里，这里只决定谁出门。当前：'
 
   const run = useCallback(async () => {
@@ -329,8 +330,9 @@ export default function NestRunnerPanel({
               )}
               {solo && (
                 <p className="text-[11px] text-[var(--text-3)]">
-                  先跑一次「自检」：它会告诉你白名单空不空、大脑通不通、这个号演谁 —— 出问题一眼能看出来。
-                  桥的配置在 <code>features/qq-bridge/config.json</code>（模板：跑一次「自检」时会提示怎么建）。
+                  先跑一次「自检」：它会告诉你白名单空不空、大脑通不通、要连几个号、每个号演谁 ——
+                  出问题一眼能看出来。白名单 / 演谁 / 音色 / 表情包都在上面「⚙ 功能开关」里改
+                  （不用去编辑 <code>features/qq-bridge/config.json</code>），改完不用重启。
                 </p>
               )}
             </div>

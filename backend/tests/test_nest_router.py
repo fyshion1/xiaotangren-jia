@@ -260,5 +260,164 @@ class NestRouterTests(unittest.TestCase):
         self.assertEqual(captured["model"], "chat-model")
 
 
+class FeatureSettingsTests(unittest.TestCase):
+    """功能设置（§9.6.5）：声明归功能、值归本体，前端照着 schema 渲染。
+
+    这里守的是「别让前端顺手改点别的」这条边界 —— 只认注册表声明过的 key。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
+        self.path.start()
+        self.addCleanup(self.path.stop)
+        db.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with db._tx() as conn:
+            conn.executescript(db._SCHEMA)
+            db._migrate(conn)
+        app = FastAPI()
+        app.include_router(nest.router, prefix="/api")
+        self.client = TestClient(app)
+        self.addCleanup(self.client.close)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_schema_comes_from_registry_with_defaults(self):
+        r = self.client.get("/api/nest/features/qq_bridge/settings")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        keys = {f["key"] for f in body["schema"]}
+        self.assertIn("allow.groups", keys)
+        self.assertIn("tools.allow", keys)
+        # 没存过 → 值就是声明里的默认值。
+        self.assertFalse(body["configured"])
+        self.assertEqual(body["values"]["allow.groups"], [])
+
+    def test_put_then_get_round_trip(self):
+        r = self.client.put("/api/nest/features/qq_bridge/settings", json={
+            "values": {"allow.groups": "123456, 789", "voice.auto": "always",
+                       "tools.enabled": False, "sticker.reply_chance": 0.2}})
+        self.assertEqual(r.status_code, 200)
+        values = r.json()["values"]
+        self.assertEqual(values["allow.groups"], ["123456", "789"])   # 逗号串 → 列表
+        self.assertEqual(values["voice.auto"], "always")
+        self.assertEqual(values["sticker.reply_chance"], 0.2)
+        again = self.client.get("/api/nest/features/qq_bridge/settings").json()
+        self.assertTrue(again["configured"])
+        self.assertEqual(again["values"]["allow.groups"], ["123456", "789"])
+
+    def test_unknown_key_is_dropped_and_reported(self):
+        r = self.client.put("/api/nest/features/qq_bridge/settings", json={
+            "values": {"不是声明过的": 1, "allow.groups": ["1"]}})
+        body = r.json()
+        self.assertIn("不是声明过的", body["ignored"])
+        self.assertNotIn("不是声明过的", body["values"])
+        self.assertEqual(body["values"]["allow.groups"], ["1"])
+
+    def test_select_only_accepts_declared_options(self):
+        r = self.client.put("/api/nest/features/qq_bridge/settings",
+                            json={"values": {"voice.auto": "乱填的"}})
+        self.assertEqual(r.json()["values"]["voice.auto"], "mirror")   # 回落到声明里的默认
+
+    def test_number_out_of_range_is_422(self):
+        r = self.client.put("/api/nest/features/qq_bridge/settings",
+                            json={"values": {"sticker.reply_chance": 5}})
+        self.assertEqual(r.status_code, 422)
+
+    def test_accounts_rows_are_validated(self):
+        r = self.client.put("/api/nest/features/qq_bridge/settings", json={"values": {"accounts": [
+            {"name": "大号", "self_id": "553350415", "persona": "dalaoda", "groups": "123,456",
+             "enabled": True, "塞进来的别的字段": "丢掉"},
+            {"name": "", "self_id": "", "persona": ""},     # 全空行不留
+        ]}})
+        rows = r.json()["values"]["accounts"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["groups"], ["123", "456"])
+        self.assertNotIn("塞进来的别的字段", rows[0])
+
+    def test_unknown_feature_is_404(self):
+        self.assertEqual(self.client.get("/api/nest/features/不存在/settings").status_code, 404)
+
+
+class ToolTurnTests(unittest.TestCase):
+    """工具轮（§9.6.6）：本体**只回模型的决定，一个动作都不执行**。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
+        self.path.start()
+        self.addCleanup(self.path.stop)
+        db.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with db._tx() as conn:
+            conn.executescript(db._SCHEMA)
+            db._migrate(conn)
+        app = FastAPI()
+        app.include_router(nest.router, prefix="/api")
+        self.client = TestClient(app)
+        self.addCleanup(self.client.close)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _body(self, **over):
+        body = {"feature_id": "qq_bridge", "character_id": "dalaoda",
+                "messages": [{"role": "user", "content": "看看沙箱里有什么"}],
+                "tools": [{"type": "function", "function": {
+                    "name": "local_dir", "description": "看目录",
+                    "parameters": {"type": "object", "properties": {}}}}]}
+        body.update(over)
+        return body
+
+    def test_unconfigured_upstream_is_409(self):
+        # 没配 API 时，本体必须先说「你还没配」——这条比「角色不存在」更接近大老大的处境，
+        # 所以注册一个角色再断言。
+        with patch.object(nest.db, "get_character", return_value={"name": "t", "about": "x"}):
+            self.assertEqual(self.client.post("/api/nest/tool-turn", json=self._body()).status_code, 409)
+
+    def test_tool_calls_are_forwarded_not_executed(self):
+        self.client.put("/api/nest/api-config", json={
+            "base_url": "https://brain/v1", "api_key": "k", "model": "chat-model"})
+        captured: dict = {}
+
+        async def fake_full(messages, model, base_url, api_key="", **kw):
+            captured.update(model=model, tools=kw.get("tools"), messages=messages)
+            # 上游（OpenAI 兼容）的 tool_calls 是嵌套形状，本体只做扁平化透传。
+            return {"content": "", "finish_reason": "tool_calls",
+                    "tool_calls": [{"id": "c1", "function": {"name": "local_dir", "arguments": "{}"}}]}
+
+        with patch.object(nest.db, "get_character", return_value={"name": "t", "about": "x"}), \
+             patch.object(nest.openai, "complete_chat_full", side_effect=fake_full):
+            r = self.client.post("/api/nest/tool-turn", json=self._body())
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["tool_calls"][0]["name"], "local_dir")
+        self.assertEqual(body["finish_reason"], "tool_calls")
+        # 工具声明原样转给了上游；本体自己没执行任何东西（没有文件系统调用，只有模型调用）。
+        self.assertEqual(captured["tools"][0]["function"]["name"], "local_dir")
+
+    def test_role_tool_result_is_accepted(self):
+        self.client.put("/api/nest/api-config", json={
+            "base_url": "https://brain/v1", "api_key": "k", "model": "chat-model"})
+        seen: dict = {}
+
+        async def fake_full(messages, model, base_url, api_key="", **kw):
+            seen["messages"] = messages
+            return {"content": "里面有一个文件", "tool_calls": [], "finish_reason": "stop"}
+
+        with patch.object(nest.db, "get_character", return_value={"name": "t", "about": "x"}), \
+             patch.object(nest.openai, "complete_chat_full", side_effect=fake_full):
+            r = self.client.post("/api/nest/tool-turn", json=self._body(messages=[
+                {"role": "user", "content": "看看沙箱"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "name": "local_dir", "arguments": "{}"}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "笔记.txt"},
+            ]))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["content"], "里面有一个文件")
+        roles = [m["role"] for m in seen["messages"]]
+        self.assertIn("tool", roles)
+
+
 if __name__ == "__main__":
     unittest.main()

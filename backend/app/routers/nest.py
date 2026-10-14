@@ -119,8 +119,8 @@ def _effective_config(feature_id: str) -> dict:
 
 @router.get("/features")
 async def list_features() -> dict:
-    """功能的唯一清单（来自代码注册表）。前端小窝按它渲染入口列表。"""
-    return {"items": all_features(), "contract_version": "0.2.0"}
+    """功能的唯一清单（来自代码注册表）。前端小窝按它渲染入口列表 + 设置表单。"""
+    return {"items": all_features(), "contract_version": "0.2.2"}
 
 
 @router.get("/api-config")
@@ -309,6 +309,112 @@ async def nest_chat(body: NestChatIn):
             "finish_reason": "error" if error else reason, "error": error}
 
 
+# ---- 带工具调用的一轮对话（§9.6.6）----
+#
+# 有的功能想让自己那位小糖人「动手做点事」（QQ 桥的本地小工具：列目录、读文件…）。
+# 大脑在这里**只负责问模型**：功能把工具声明（OpenAI function calling 的 schema）传进来，
+# 模型决定调哪个、参数是什么，**大脑一行都不执行**，把决定原样还给功能。
+#
+# 为什么这么分：动作的**白名单、沙箱、权限**都在功能侧（它才知道自己在地球上能碰什么）。
+# 大脑若替它执行，就等于一个远程执行接口 —— 那是 §0 第一原则最忌讳的东西。
+#
+# 循环由功能自己转：调一次 →（拿到 tool_calls）执行 → 把结果作为 role="tool" 追进 messages
+# → 再调一次。大脑不保存状态、也不记得上一轮调过什么。
+
+
+class ToolMsg(BaseModel):
+    """带工具的一轮里的一条消息。
+
+    比 `NestTurn` 宽：要能带 `role="tool"`（工具结果回填）和 `tool_calls`（模型要调工具），
+    否则功能侧转不动那个循环。**大脑仍然只是把这些原样递给上游**。
+    """
+    role: Literal["user", "assistant", "tool", "system"]
+    content: str = Field(default="", max_length=16000)
+    tool_call_id: str = Field(default="", max_length=120)
+    tool_calls: list[dict] = Field(default_factory=list, max_length=20)
+
+
+class ToolTurnIn(BaseModel):
+    feature_id: str = Field(min_length=1, max_length=80)
+    character_id: str = Field(min_length=1, max_length=120)
+    conversation_id: str = Field(default="", max_length=160)
+    messages: list[ToolMsg] = Field(min_length=1, max_length=60)
+    images: list[str] = Field(default_factory=list, max_length=8)
+    tools: list[dict] = Field(default_factory=list, max_length=20)
+    state: dict = Field(default_factory=dict)
+    max_tokens: int = Field(default=1024, ge=1, le=8192)
+
+
+def _tool_messages(items: list[ToolMsg]) -> list[dict]:
+    """ToolMsg → OpenAI 消息。空字段不带出去（上游对多余字段很挑）。"""
+    out: list[dict] = []
+    for item in items:
+        msg: dict = {"role": item.role, "content": item.content}
+        if item.role == "tool" and item.tool_call_id:
+            msg["tool_call_id"] = item.tool_call_id
+        if item.tool_calls:
+            msg["tool_calls"] = list(item.tool_calls)
+            msg.setdefault("content", "")
+        out.append(msg)
+    return out
+
+
+def _tool_system(character: dict, tools: list[dict], tool_note: str = "") -> str:
+    """带工具时的人格提示：同一个角色介绍，多一段「什么时候该动手」。"""
+    names = [str((t.get("function") or {}).get("name") or "") for t in tools]
+    names = [n for n in names if n]
+    rules = (
+        "你通过外部功能适配器陪着用户。你可以调用工具去做事，**不要声称做过没做的事**。\n"
+        f"可用的工具：{'、'.join(names) or '（无）'}。\n"
+        "能用工具就用工具拿真实结果，别猜文件里有什么；拿到结果后用一两句话直接回应用户，"
+        "不要念工具返回的原文，也不要展示思考过程。\n"
+        "工具被拒绝（越界 / 不在白名单）时如实说做不到，不要换个说法硬编。\n"
+    )
+    if tool_note:
+        rules += tool_note.strip() + "\n"
+    return f"你是{character.get('name', '')}。\n{character.get('about', '')}\n" + rules
+
+
+@router.post("/tool-turn")
+async def nest_tool_turn(body: ToolTurnIn) -> dict:
+    """问一次模型（带工具声明），把它的决定原样还回去。**不执行任何工具**。"""
+    character = db.get_character(body.character_id)
+    if not character:
+        raise HTTPException(404, "角色不存在")
+    provider = _effective_config(body.feature_id)
+    if not provider.get("base_url") or not provider.get("api_key") or not provider.get("model"):
+        raise HTTPException(409, "请先配置小窝大脑默认 API（或该功能的独立 API）")
+    form = resolve_form(character)
+    messages: list[dict] = [{"role": "system", "content": _tool_system(form, body.tools)}]
+    context = {"feature_id": body.feature_id, "state": body.state}
+    head = json.dumps(context, ensure_ascii=False)
+    if body.images:
+        if not provider.get("needs_vision") or not provider.get("vision_model"):
+            raise HTTPException(409, "该功能已屏蔽视觉（或没配视觉模型），不能带图调用")
+        model = provider["vision_model"]
+        base_url = provider["vision_base_url"] or provider["base_url"]
+        api_key = provider["vision_api_key"] or provider["api_key"]
+        messages.append({"role": "user", "content": _vision_content(head, body.images)})
+    else:
+        model, base_url, api_key = provider["model"], provider["base_url"], provider["api_key"]
+        messages.append({"role": "user", "content": head})
+    messages.extend(_tool_messages(body.messages))
+    try:
+        result = await openai.complete_chat_full(
+            messages, model, base_url, api_key, max_tokens=body.max_tokens, tools=body.tools or None,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    # tool_calls 原样透出（含 arguments 的原始 JSON 字符串）—— 解析是功能的事。
+    calls = []
+    for call in result.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        calls.append({"id": str(call.get("id") or ""), "name": str(fn.get("name") or ""),
+                      "arguments": fn.get("arguments") or "{}"})
+    return {"conversation_id": body.conversation_id, "content": result.get("content") or "",
+            "tool_calls": calls, "finish_reason": result.get("finish_reason") or ""}
+
+
 # ---- 通用「功能动态」流（§9.6）----
 #
 # 独立功能（B站小糖人刷到的东西、QQ 里聊到的…）把**给人看的产出**推进来，前端小窝渲染成卡片。
@@ -389,6 +495,126 @@ async def get_directive(feature_id: str) -> dict:
 async def put_directive(feature_id: str, body: DirectiveIn) -> dict:
     """写 / 改方向说明。功能下次跑起来时会拉这份（逛 B站 每轮都读）。"""
     return db.set_feature_directive(feature_id, body.look_for.strip(), body.avoid.strip())
+
+
+# ---- 功能设置：大老大在前端改的那些开关（§9.6.5）----
+#
+# 「有哪些项、什么类型、默认值」由功能在注册表里**声明**（跟着功能代码走）；
+# 「值是多少」存在本体（`feature_settings` 表），因为大老大不该为了改个白名单去开终端
+# 编辑 `features/<folder>/config.json`（原话：这块希望在前端可以自己配置）。
+#
+# 边界：本体**不解释**这些字段的业务含义，只做四件事 ——
+#   ① 把声明和当前值拼成一份给前端；② 白名单校验 key 必须在声明里；③ 按 type 粗校验；
+#   ④ 按声明补默认值（前端只提交改动的项也不会丢别的）。
+# 功能侧自己 `GET /api/nest/features/{id}/settings` 拉回去覆盖 config.json，改完立刻生效。
+
+
+def _settings_spec(feature_id: str) -> list[dict]:
+    feature = get_feature(feature_id)
+    if not feature:
+        raise HTTPException(404, "不认识这个功能")
+    return list(feature.get("settings") or [])
+
+
+def _coerce(field: dict, value):
+    """按声明把前端传来的值收敛成正确类型。收不拢就抛 422（宁可拒绝，不静默改）。"""
+    kind = field.get("type")
+    key = field.get("key")
+    if kind == "bool":
+        return bool(value)
+    if kind == "number":
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            raise HTTPException(422, f"{field.get('label') or key} 要填数字") from None
+        if field.get("min") is not None and num < field["min"]:
+            raise HTTPException(422, f"{field.get('label') or key} 不能小于 {field['min']}")
+        if field.get("max") is not None and num > field["max"]:
+            raise HTTPException(422, f"{field.get('label') or key} 不能大于 {field['max']}")
+        return int(num) if num.is_integer() else num
+    if kind == "list":
+        if isinstance(value, str):
+            return [v.strip() for v in value.replace("，", ",").split(",") if v.strip()]
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        return []
+    if kind == "accounts":
+        if not isinstance(value, list):
+            return []
+        rows: list[dict] = []
+        for row in value[:20]:                       # 最多 20 个号，防手滑
+            if not isinstance(row, dict):
+                continue
+            # 逐格按 fields 声明收敛；只留声明里有的 key（前端塞别的进来一律丢弃）。
+            cleaned: dict = {}
+            for sub in field.get("fields") or []:
+                sub_key = sub.get("key")
+                if sub_key not in row:
+                    continue
+                sub_field = {**sub, "key": sub_key}
+                cleaned[sub_key] = _coerce(sub_field, row[sub_key])
+            if any(str(v or "").strip() for v in cleaned.values() if not isinstance(v, (bool, list))):
+                rows.append(cleaned)
+        return rows
+    if kind in ("select",):
+        options = {str(o.get("value")) for o in (field.get("options") or [])}
+        text = str(value if value is not None else "")
+        return text if text in options else field.get("default")
+    # text / textarea / character / media_list
+    if kind == "media_list":
+        if not isinstance(value, list):
+            return []
+        return [str(v)[:1000] for v in value[:200] if str(v).strip()]
+    return str(value if value is not None else "")[:4000]
+
+
+def _settings_payload(feature_id: str) -> dict:
+    """声明 + 当前值（缺的用声明里的 default 补上），前端照着渲染就行。"""
+    spec = _settings_spec(feature_id)
+    saved = db.get_feature_settings(feature_id)
+    data = dict(saved.get("data") or {})
+    out: dict = {}
+    for field in spec:
+        key = field["key"]
+        if key in data:
+            out[key] = data[key]
+        else:
+            out[key] = field.get("default")
+    return {"feature_id": feature_id, "schema": spec, "values": out,
+            "configured": bool(saved.get("updated_at")), "updated_at": saved.get("updated_at", "")}
+
+
+@router.get("/features/{feature_id}/settings")
+async def get_feature_settings(feature_id: str) -> dict:
+    """这个功能**能配什么**（schema，来自注册表）+ **现在是什么**（values）。
+
+    功能侧也读这一条：`values` 直接覆盖自己的 config.json，改完立刻生效，不用重启。
+    """
+    return _settings_payload(feature_id)
+
+
+class SettingsIn(BaseModel):
+    """前端提交的整份表单。只认注册表里声明过的 key（其余一律丢弃）。"""
+    values: dict = Field(default_factory=dict)
+
+
+@router.put("/features/{feature_id}/settings")
+async def put_feature_settings(feature_id: str, body: SettingsIn) -> dict:
+    """写这个功能的设置。**只接受注册表声明过的 key**，按 type 收敛后整份覆盖。"""
+    spec = _settings_spec(feature_id)
+    by_key = {f["key"]: f for f in spec}
+    if len(body.values) > 200:
+        raise HTTPException(413, "字段太多了")
+    clean: dict = {}
+    unknown: list[str] = []
+    for key, value in (body.values or {}).items():
+        field = by_key.get(str(key))
+        if field is None:
+            unknown.append(str(key))          # 没声明过的一律不要（防塞垃圾进库）
+            continue
+        clean[str(key)] = _coerce(field, value)
+    db.set_feature_settings(feature_id, clean)
+    return {**_settings_payload(feature_id), "ignored": unknown}
 
 
 # ---- 启动独立功能项目（本体只开进程，逻辑全在 `features/<folder>/`）----
@@ -532,11 +758,13 @@ async def stop_feature(feature_id: str) -> dict:
 @router.get("/capabilities")
 async def capabilities() -> dict:
     return {
-        "contract_version": "0.2.2",
+        "contract_version": "0.2.3",
         "implemented": ["features", "api_config_global", "api_config_feature", "chat", "chat_sse",
-                        "feed", "feature_run", "feature_directive"],
+                        "feed", "feature_run", "feature_directive", "feature_settings"],
         "namespace": "feature_id（记忆隔离键，落 memories.game_id 列）",
         "config_layers": ["nest_brain_default（全局，带 vision）", "feature_override（每功能可覆盖任意字段）"],
+        "feature_settings": "功能在注册表声明可配置项，值存本体（feature_settings 表），"
+                            "功能侧 GET /api/nest/features/{id}/settings 拉回去覆盖 config.json",
         "vision": {"global_default_has_vision": True, "per_feature_block_toggle": True},
         "auth": {"implemented": False, "deployment": "trusted local access only"},
         "legacy": "游戏专用的 /api/game/* 仍保留，等价于 feature_id=<game_id> 的旧协议。",

@@ -122,6 +122,56 @@ export type NestFeature = {
   folder: string
   /** 有 runner = 能在小窝里直接启动（本体只开进程，逻辑在独立项目里）。 */
   runner: NestRunner | null
+  /** 有 settings = 这个功能的开关能在小窝前端改（§9.6.5，不用去编辑 config.json）。 */
+  settings?: NestSettingField[] | null
+}
+
+// ---- 功能自己的配置项（§9.6.5）----
+// 「有哪些项、什么类型、默认值」由功能在注册表里声明（跟着功能代码走）；
+// 「值是多少」存本体。功能侧每轮拉一次 → 改完立刻生效，不用重启。
+
+export type NestSettingField = {
+  key: string
+  label: string
+  type: 'text' | 'textarea' | 'number' | 'bool' | 'list' | 'select'
+      | 'accounts' | 'character' | 'media_list'
+  desc: string
+  default: unknown
+  /** 前端按这个分组显示（同一组的字段放一起，组名 = 小标题）。 */
+  group: string
+  /** 密码框显示（**只是不明文晃眼，不是加密**）。 */
+  secret?: boolean
+  options?: { value: string; label: string }[]
+  min?: number
+  max?: number
+  /** type=accounts 时每一行里的格子。 */
+  fields?: NestSettingField[]
+}
+
+export type NestSettings = {
+  feature_id: string
+  /** 能配什么（声明）+ 现在是什么（值），值里缺的已按默认补上。 */
+  schema: NestSettingField[]
+  values: Record<string, unknown>
+  configured: boolean
+  updated_at: string
+  ignored?: string[]
+}
+
+export async function fetchNestFeatureSettings(featureId: string): Promise<NestSettings> {
+  return asJson<NestSettings>(`/api/nest/features/${encodeURIComponent(featureId)}/settings`)
+}
+
+/** 整份提交（后端会丢掉注册表没声明过的 key，并按类型收敛）。 */
+export async function saveNestFeatureSettings(
+  featureId: string,
+  values: Record<string, unknown>,
+): Promise<NestSettings> {
+  return asJson<NestSettings>(`/api/nest/features/${encodeURIComponent(featureId)}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values }),
+  })
 }
 
 export type NestBrainConfig = {

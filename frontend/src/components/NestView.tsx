@@ -10,6 +10,7 @@ import GeminiSyncPanel from './GeminiSyncPanel'
 import NestApiPanel from './NestApiPanel'
 import NestFeedPanel from './NestFeedPanel'
 import NestRunnerPanel from './NestRunnerPanel'
+import NestSettingsPanel from './NestSettingsPanel'
 import { fetchAgentInbox, sendAgentMessage, type AgentMessage } from '../api/agents'
 import { fetchNestFeatures, launchInteractiveHome, type NestFeature } from '../api/client'
 
@@ -134,6 +135,9 @@ export default function NestView() {
 
       {/* 小窝大脑 API：全局默认 + 每功能覆盖 */}
       <NestApiPanel />
+
+      {/* 功能的开关搬进前端（§9.6.5）：白名单 / 演谁 / 音色 / 表情包…改完立刻生效 */}
+      <NestSettingsPanel features={features} />
 
       {/* 让独立功能跑起来：选谁去看 + 启动 + 看日志（不用去终端敲命令） */}
       <NestRunnerPanel features={features} activeId={runnerId} onActiveChange={setRunnerId} />
