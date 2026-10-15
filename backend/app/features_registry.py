@@ -299,6 +299,9 @@ FEATURES: list[Feature] = [
              "default": "", "desc": "留空 = 大老大的身份。填了就写进那位小糖人的私聊会话。"},
             {"key": "memory.isolate", "label": "QQ 的事单独记", "type": "bool", "group": "同步",
              "default": False, "desc": "关着 = QQ 里聊的也进日常记忆（小糖人平时就记得）；打开 = 只在 QQ 场景里记得。"},
+            {"key": "memory.idle_seconds", "label": "不说话了就记下来（秒）", "type": "int", "group": "同步",
+             "default": 300,
+             "desc": "多久没人说话就把这段提炼成记忆，不用等攒够。默认 300 秒。别指望点「停止」时才记 —— 那条路在 Windows 上根本不生效。"},
 
             # ---- 高级：事件与媒体 ----
             {"key": "events.poke", "label": "被戳一戳有反应", "type": "bool", "group": "高级",
