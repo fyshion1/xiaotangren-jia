@@ -156,11 +156,16 @@ async def delete_word(word_id: str) -> dict:
 async def get_queue(
     limit: int = Query(30, ge=1, le=200),
     tag: str | None = Query(None, max_length=80),
+    skip: int = Query(0, ge=0, le=5000),
 ) -> dict:
-    """今天该复习的一队（到期的排前面，不够再补新词）。例句一起带上，前端一屏渲染完。"""
+    """今天该复习的一队（到期的排前面，不够再补新词）。例句一起带上，前端一屏渲染完。
+
+    `skip` 给「换一轮」用：从排好的队里跳过前 N 个，看下一批。
+    """
     _require_feature()
-    items = vocab_svc.queue(limit=limit, tag=tag)
-    return {"items": items, "count": len(items), "stats": db.vocab_stats()}
+    items = vocab_svc.queue(limit=limit, tag=tag, skip=skip)
+    return {"items": items, "count": len(items), "skip": skip,
+            "next_skip": skip + len(items), "stats": db.vocab_stats()}
 
 
 class ReviewIn(BaseModel):

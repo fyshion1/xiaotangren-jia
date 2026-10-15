@@ -221,8 +221,12 @@ export async function deleteVocabWord(id: string): Promise<void> {
 
 // ---- 复习队列 ----
 
-export async function fetchVocabQueue(limit = 30, tag?: string): Promise<{ items: VocabWord[]; count: number; stats: VocabStats }> {
-  const q = new URLSearchParams({ limit: String(limit) })
+export async function fetchVocabQueue(
+  limit = 50,
+  tag?: string,
+  skip = 0,
+): Promise<{ items: VocabWord[]; count: number; skip: number; next_skip: number; stats: VocabStats }> {
+  const q = new URLSearchParams({ limit: String(limit), skip: String(Math.max(0, skip)) })
   if (tag) q.set('tag', tag)
   return asJson(`/api/english/queue?${q}`)
 }

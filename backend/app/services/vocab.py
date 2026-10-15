@@ -121,28 +121,38 @@ def review_word(word_id: str, result: str, mode: str = "recognize", elapsed_ms: 
 
 # ---- 复习队列 ----
 
-def queue(limit: int = 30, tag: str | None = None, include_new: bool = True) -> list[dict]:
+def queue(limit: int = 30, tag: str | None = None, include_new: bool = True,
+          skip: int = 0) -> list[dict]:
     """今天该复习的一队：**到期的排前面**，不够再补新词（新词优先补）。
 
     「到期」= `due_at <= now`。新词（stage=0、reps=0）的 due_at 就是建词时间，
     所以本来就在到期集合里 —— 这里显式排后面，是为了让「复习」永远先于「学新词」。
+
+    `skip` = 从排好的队里**跳过前 N 个**，给前端「换一轮」用。
+    **为什么是「往后翻」而不是「随机抽」**：随机抽会让同一批词组每点一次都变、
+    用户刚扫过的词重复出现；往后翻是「再看下一批」，一路点下去能保证都得过一遍，
+    翻到头了前端把轮次归零转回队首。
     """
-    due = db.list_vocab_words(limit=limit, tag=tag, due_only=True, order="due")
+    total = max(1, min(int(limit or 30), 200))
+    offset = max(0, int(skip or 0))
+    # 池子要比这一屏大 —— 多取 offset 那部分，切掉之后正好剩一屏。
+    pool = min(1000, total + offset)
+    due = db.list_vocab_words(limit=pool, tag=tag, due_only=True, order="due")
     picks = [w for w in due if int(w.get("reps") or 0) > 0]
     fresh = [w for w in due if int(w.get("reps") or 0) == 0]
     out = picks + fresh
-    if include_new and len(out) < limit:
+    if include_new and len(out) < pool:
         # 到期的拿不满，再补一批没到期的（按词频/加入顺序倒序，最新的先上手）。
         have = {w["id"] for w in out}
-        extra = db.list_vocab_words(limit=limit * 2, tag=tag, order="new")
+        extra = db.list_vocab_words(limit=pool * 2, tag=tag, order="new")
         for w in extra:
-            if len(out) >= limit:
+            if len(out) >= pool:
                 break
             if w["id"] not in have:
                 out.append(w)
                 have.add(w["id"])
-    out = out[: max(1, min(int(limit or 30), 200))]
-    # 一次把例句全带上（前端一屏 30 个词，别一个个请求）。
+    out = out[offset: offset + total]
+    # 一次把例句全带上（前端一屏几十个词，别一个个请求）。
     examples = db.list_examples_for_words([w["id"] for w in out])
     for w in out:
         w["examples"] = examples.get(w["id"], [])

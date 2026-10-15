@@ -38,6 +38,9 @@ const TABS: { id: Tab; label: string }[] = [
 const STAGE_LABEL = ['新词', '认识', '模糊', '熟练']
 const STAGE_CLASS = ['', 'text-[var(--sky)]', 'text-[var(--pink-deep)]', 'text-[var(--mint)]']
 
+/** 一屏放多少个。复习和词表都是这个数 —— 50 个够背一轮，页面也不至于太长。 */
+const QUEUE_SIZE = 50
+
 /** 到期日 → 「今天 / 明天 / 3 天后 / 9月1日」这种人话。 */
 function dueText(due: string): string {
   if (!due) return ''
@@ -564,6 +567,10 @@ export default function EnglishStudyPanel() {
   const [showImport, setShowImport] = useState(false)
   const [newWord, setNewWord] = useState({ word: '', meaning: '', tag: '' })
   const [exam, setExam] = useState({ kind: 'cet4', title: '', score: '', max_score: '710' })
+  // 「换一轮」翻到第几屏。0 = 队首。翻到头就把轮次归零转回队首 —— 一屏 50 个够背了。
+  const [queueRound, setQueueRound] = useState(0)
+  // 队列到底有多长（后端按 skip 取回来的 next_skip 推）。翻到这儿就该回头了。
+  const [queueMore, setQueueMore] = useState(true)
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 4000) }
 
@@ -571,11 +578,20 @@ export default function EnglishStudyPanel() {
     try { setOverview(await fetchVocabOverview()) } catch { setOverview(null) }
   }, [])
 
-  const loadQueue = useCallback(async () => {
+  const loadQueue = useCallback(async (round = 0) => {
     setBusy(true)
     try {
-      const r = await fetchVocabQueue(20, filterTag || undefined)
+      const r = await fetchVocabQueue(QUEUE_SIZE, filterTag || undefined, round * QUEUE_SIZE)
       setQueue(r.items)
+      setQueueRound(round)
+      // 这屏取满了 → 后面多半还有；取不满 → 到头了。
+      setQueueMore(r.items.length >= QUEUE_SIZE)
+      if (r.items.length === 0 && round > 0) {
+        // 翻过界（比如中途删了词）→ 悄悄转回队首，别让人对着空屏。
+        const back = await fetchVocabQueue(QUEUE_SIZE, filterTag || undefined, 0)
+        setQueue(back.items); setQueueRound(0); setQueueMore(back.items.length >= QUEUE_SIZE)
+        flash('已经到最后一批了，转回队首')
+      }
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(false) }
   }, [filterTag])
@@ -583,7 +599,7 @@ export default function EnglishStudyPanel() {
   const loadWords = useCallback(async () => {
     setBusy(true)
     try {
-      const r = await fetchVocabWords({ tag: filterTag || undefined, keyword, order, limit: 200 })
+      const r = await fetchVocabWords({ tag: filterTag || undefined, keyword, order, limit: 50 })
       setWords(r.items); setWordsTotal(r.total)
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(false) }
@@ -598,9 +614,17 @@ export default function EnglishStudyPanel() {
 
   useEffect(() => { void fetchCharacters().then(setCharacters).catch(() => setCharacters([])) }, [])
   useEffect(() => { void loadOverview() }, [loadOverview])
-  useEffect(() => { if (tab === 'review') void loadQueue() }, [tab, loadQueue])
+  // 换分类就回队首 —— 别的分类的轮次在这儿没意义。
+  useEffect(() => { if (tab === 'review') void loadQueue(0) }, [tab, loadQueue])
   useEffect(() => { if (tab === 'words') void loadWords() }, [tab, loadWords])
   useEffect(() => { if (tab === 'analysis') void loadAnalysis() }, [tab, loadAnalysis])
+
+  /** 「换一轮」：翻下一屏；翻到头就转回队首。 */
+  const nextRound = () => {
+    if (busy) return
+    void loadQueue(queueMore ? queueRound + 1 : 0)
+    if (!queueMore) flash('已经到最后一批了，转回队首')
+  }
 
   const reviewed = async (word: VocabWord, r: 'known' | 'fuzzy' | 'forgot', elapsedMs = 0) => {
     try {
@@ -737,11 +761,14 @@ export default function EnglishStudyPanel() {
               expanded={expanded === w.id}
               onToggleDetail={() => setExpanded(expanded === w.id ? '' : w.id)}
               onReviewed={(r, ms) => void reviewed(w, r, ms)}
-              onChanged={() => { void loadQueue(); void loadOverview() }} />
+              onChanged={() => { void loadOverview() }} />
           ))}
           {queue.length > 0 && (
-            <div className="flex justify-end">
-              <button className="btn ghost sm" disabled={busy} onClick={() => void loadQueue()}>换一轮</button>
+            <div className="flex items-center justify-end gap-2">
+              <span className="text-[11px] text-[var(--text-3)]">第 {queueRound + 1} 批 · 这屏 {queue.length} 个</span>
+              <button className="btn ghost sm" disabled={busy} onClick={nextRound}>
+                {busy ? '换着呢…' : queueMore ? '换一轮' : '换一轮（回队首）'}
+              </button>
             </div>
           )}
         </div>
