@@ -314,6 +314,53 @@ FEATURES: list[Feature] = [
         ],
     },
     {
+        "id": "japanese_lab",
+        "name": "小糖人日语实验室",
+        "emoji": "🌸",
+        "kind": "other",
+        "status": "available",
+        "desc": "用自己攒的例句和插图学日语：旧单词表导进来抽卡背，不懂的语法当场问小糖人，日语成绩记下来让她写分析。",
+        "needs_vision": False,  # 讲词 / 答疑 / 写分析都是文字路；插图只落本地，不外发
+        "folder": "japanese-lab",
+        "runner": {
+            "folder": "japanese-lab",
+            "module": "jplab",
+            "commands": [
+                {"name": "check", "label": "自检", "desc": "查学习库、大脑通不通、模型配没配 —— 出问题先跑这个", "params": []},
+                {"name": "scan", "label": "找找有什么能导", "desc": "扫「个人数据库」里的日语资料，只列出来不读内容", "params": []},
+                {"name": "serve", "label": "打开实验室（常驻）", "desc": "起本地的学习服务 —— 小窝里的面板和独立网页都连它；关掉窗口才停",
+                 "params": [], "background": True},
+            ],
+        },
+        # 能在前端改的开关（§9.6.5）：改完立刻生效，不用去编辑功能里的 config.json。
+        "settings": [
+            {"key": "study.levels", "label": "现在学哪几级", "type": "list", "group": "学什么",
+             "default": ["N5"], "desc": "逗号分隔，例如 N5,N4。抽卡只从这几级里出 —— 别一上来就全开。"},
+            {"key": "study.daily_new", "label": "每天背几个新词", "type": "number", "group": "学什么",
+             "default": 10, "desc": "一天认识多少个新词（复习不算在内）。", "min": 1, "max": 200},
+            {"key": "study.character", "label": "谁来陪你学", "type": "character", "group": "谁陪你",
+             "default": "", "desc": "讲词 / 答疑 / 记例句用这位的口吻。留空 = 名册第一个人。"},
+            {"key": "coach.enabled", "label": "让她讲词和答疑", "type": "bool", "group": "谁陪你",
+             "default": True, "desc": "关掉 = 卡片上不出「问她」按钮，纯自己背（也省 token）。"},
+            {"key": "coach.style", "label": "要她用什么调子", "type": "textarea", "group": "谁陪你",
+             "default": "", "desc": "留空 = 用她本来的性格。想让她更严厉 / 更啰嗦就写一句，会加进讲词和答疑里。"},
+            {"key": "score.analyze", "label": "成绩分析怎么写", "type": "select", "group": "成绩",
+             "default": "llm",
+             "options": [{"value": "llm", "label": "让小糖人写（有人设味，花 token）"},
+                         {"value": "rule", "label": "只用规则算（不花钱）"}],
+             "desc": "规则版只讲数据里明摆着的事，不做解读。"},
+            {"key": "score.character", "label": "谁来看你的成绩", "type": "character", "group": "成绩",
+             "default": "", "desc": "留空 = 跟着上面「谁来陪你学」那位。"},
+            {"key": "media.auto_generate", "label": "自动给例句配图", "type": "bool", "group": "例句插图",
+             "default": False, "desc": "**还没接**：以后接本体的生图引擎，给例句自动生成插图。"
+                                      "现在打开只是记下意愿 —— 自己拍的、网上找的图照样能配。"},
+            {"key": "import.source_dir", "label": "还去哪个目录找单词表", "type": "text", "group": "导入",
+             "default": "", "desc": "留空 = 只看「个人数据库」里的日语资料。填绝对路径的话会加进去一起扫。"},
+            {"key": "memory.enabled", "label": "把学日语的事记成记忆", "type": "bool", "group": "导入",
+             "default": False, "desc": "隔离在 japanese_lab 里，不会漏进日常闲聊。也按轮花钱，默认关。"},
+        ],
+    },
+    {
         "id": "interactive_home",
         "name": "互动小家",
         "emoji": "🏡",
@@ -332,6 +379,21 @@ FEATURES: list[Feature] = [
         "status": "available",
         "desc": "采集本机浏览器已打开的 Gemini 会话文字，推进 test 群聊。浏览器扩展在 extensions/ 里。",
         "needs_vision": False,
+        "folder": "",
+        "runner": None,
+    },
+    {
+        "id": "english_study",
+        "name": "英语学习",
+        "emoji": "📖",
+        "kind": "other",
+        "status": "available",
+        "desc": "用你自己的单词表背四六级：导入旧词表、让小糖人给每个词写有她味道的例句和插图、"
+                "按到期日安排复习、做完记成绩并按分类找出薄弱点。不懂的语法直接在这儿问她。",
+        # 插图靠「让小糖人画一张」——前端调 /api/images/generate，那条路跟视觉路无关；
+        # 这个功能自己不读图（不需要 vision 模型）。
+        "needs_vision": False,
+        # 在本体内：它是交互界面 + 你自己的学习数据，不是在外面跑循环的采集端。
         "folder": "",
         "runner": None,
     },

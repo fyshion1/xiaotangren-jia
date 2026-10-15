@@ -6,7 +6,9 @@
 import { useEffect, useState } from 'react'
 import GalleryGrid from './GalleryGrid'
 import WorldbookPanel from './WorldbookPanel'
+import EnglishStudyPanel from './EnglishStudyPanel'
 import GeminiSyncPanel from './GeminiSyncPanel'
+import JapaneseLabPanel from './JapaneseLabPanel'
 import NestApiPanel from './NestApiPanel'
 import NestFeedPanel from './NestFeedPanel'
 import NestRunnerPanel from './NestRunnerPanel'
@@ -19,6 +21,25 @@ import { fetchNestFeatures, launchInteractiveHome, type NestFeature } from '../a
 const AVAILABLE_ACTION: Record<string, 'unity' | 'panel' | 'runner'> = {
   interactive_home: 'unity',
   gemini_sync: 'panel',
+  english_study: 'panel',
+  japanese_lab: 'panel',
+}
+
+// 点「可用」的功能卡片时，滚到它在小窝里的哪一块 + 说一句它是干嘛的。
+const PANEL_TARGET: Record<string, { id: string; hint: string }> = {
+  gemini_sync: {
+    id: 'gemini-sync-panel',
+    hint: 'Gemini 网页同步面板在下面「🔗 Gemini 网页同步」——先装浏览器扩展再回来配对。',
+  },
+  english_study: {
+    id: 'english-study-panel',
+    hint: '英语学习面板在下面「📖 英语学习」——先导入旧词表，然后就能复习、写例句、看薄弱点了。',
+  },
+  japanese_lab: {
+    id: 'japanese-lab-panel',
+    hint: '日语实验室在下面「🌸 小糖人日语实验室」——它是独立项目，先看那块面板顶上的提示：' +
+      '连接不上就去「🚀 让功能跑起来」把「打开实验室（常驻）」点起来。',
+  },
 }
 
 export default function NestView() {
@@ -55,9 +76,10 @@ export default function NestView() {
       return
     }
     if (action === 'panel') {
-      // Gemini 同步的采集端是浏览器扩展，这里只把面板位置点出来。
-      flash('Gemini 网页同步面板在下面「🔗 Gemini 网页同步」——先装浏览器扩展再回来配对。')
-      document.getElementById('gemini-sync-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      // 采集端 / 本体内面板：这里只把位置点出来（Gemini 的采集端是浏览器扩展，英语学习就是这块面板本身）。
+      const t = PANEL_TARGET[f.id]
+      flash(t?.hint ?? `「${f.name}」的面板在下面。`)
+      if (t) document.getElementById(t.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
     // 注册表里声明了 runner 的功能（如逛 B站）→ 在小窝里配置 + 启动，不用去终端敲命令。
@@ -146,6 +168,17 @@ export default function NestView() {
       <NestFeedPanel features={features} />
 
       <div id="gemini-sync-panel"><GeminiSyncPanel /></div>
+
+      {/* 英语学习（feature `english_study`）：在本体内，所以直接渲染，不走独立项目那一层 */}
+      <div id="english-study-panel" className="scroll-mt-4">
+        <EnglishStudyPanel />
+      </div>
+
+      {/* 日语实验室（feature `japanese_lab`）：**独立项目**，面板只连它自己的服务（/jplab 那条代理）。
+          服务没起时这块会显示「去下面把它打开」，不会白屏 —— 它和英语那个是两码事。 */}
+      <div id="japanese-lab-panel" className="scroll-mt-4">
+        <JapaneseLabPanel />
+      </div>
 
       {/* 共同回忆 · 画廊：只看 owner='' 的那些（全家共用） */}
       <GalleryGrid owner="" variant="home" />
