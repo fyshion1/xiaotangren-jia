@@ -70,7 +70,8 @@ function FeedCard({ item, onChanged }: { item: NestFeedItem; onChanged: () => vo
   )
 }
 
-export default function NestFeedPanel({ features }: { features: NestFeature[] }) {
+// bare：由外面的抽屉提供卡片和标题（§9.6 布局改造），这里只出内容。
+export default function NestFeedPanel({ features, bare = false }: { features: NestFeature[]; bare?: boolean }) {
   const [items, setItems] = useState<NestFeedItem[]>([])
   const [filter, setFilter] = useState('')  // '' = 全部
   const [busy, setBusy] = useState(false)
@@ -88,11 +89,13 @@ export default function NestFeedPanel({ features }: { features: NestFeature[] })
   const chips = features.filter((f) => activeIds.includes(f.id) || f.id === filter)
 
   return (
-    <section className="mb-8">
-      <div className="mb-3 flex flex-wrap items-baseline gap-3">
-        <h2 className="text-[20px] font-extrabold tracking-wide">📬 小糖人找到了什么</h2>
-        <span className="text-[13px] text-[var(--text-3)]">功能推回来的东西都在这 · 收藏/不感兴趣会写回给功能</span>
-      </div>
+    <section className={bare ? '' : 'mb-8'}>
+      {!bare && (
+        <div className="mb-3 flex flex-wrap items-baseline gap-3">
+          <h2 className="text-[20px] font-extrabold tracking-wide">📬 小糖人找到了什么</h2>
+          <span className="text-[13px] text-[var(--text-3)]">功能推回来的东西都在这 · 收藏/不感兴趣会写回给功能</span>
+        </div>
+      )}
 
       <div className="mb-3 flex flex-wrap gap-2">
         <button className={`form-chip ${filter === '' ? 'on' : ''}`} onClick={() => setFilter('')}>全部</button>

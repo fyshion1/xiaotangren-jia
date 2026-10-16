@@ -1,37 +1,47 @@
 // 糖人小窝 · 英语学习面板（feature `english_study`）。
 //
-// 为什么这个功能在本体里、又为什么在小窝里渲染：它是**交互界面 + 你自己的学习数据**，
-// 不是在外面跑循环的采集端（§9.6 里 folder="" 的那种）。所以没有 start/stop 按钮，
-// 就是一块面板。
+// ⚠ 这个功能是**独立项目**（注册表里 folder='english-study'，2026-10-16 从本体内搬出来的），
+// 和隔壁日语实验室是姐妹项目：各一套词库、各一个端口（英语 8766）。面板的请求全打到
+// `/english/api/…`，由 Vite 代理转发过去 —— 见 `vite.config.ts` 里那条 `/english` 规则。
 //
-// 四件事，对应当初提的四条：
+// **点卡片就直接开**：服务没起时面板自己按注册表把它拉起来（见下面的 autoStart），
+// 不用先跑去「🚀 让功能跑起来」点一下 —— 那是大老大明确说过不该他干的活。
+//
+// 五件事，对应当初提的几条：
 //   ① 导入旧单词表   → 「词表」页右上「导入旧词表」：先试读（看它把哪列认成了什么），认对了再导
 //   ② 例句 + 插图    → 每个词的详情卡里：让小糖人写例句 / 自己写 / 上传插图 / 生成插图；
 //                      不懂的语法就在下面那个问句框里问她（带上下文，她会讲给你听）
 //   ③ 成绩与薄弱点   → 「分析」页：易忘词 / 拖后腿的分类 / 慢反应 + 逐日曲线 + 成绩记录
-//   ④ 复习           → 首页队列，三档作答（认识/模糊/忘了）直接改复习间隔
+//   ④ 复习           → 首页队列，**伪随机顺序**，三档作答（认识/模糊/忘了）直接改复习间隔
+//   ⑤ 语法           → 「语法」页：英语兔讲解的目录树（勾进度）+ 中译英/填空/改写/造句，
+//                      **出题和批改都交给 AI**，不懂的点直接问她
 //
-// 发音走已有的 /api/voice/tts（edge 晓晓），插图走已有的 /api/images/generate，
+// 仍然复用**本体**的已有能力（都在 8000 那个服务上，不是这个功能的）：
+// 发音走 /api/voice/tts（edge 晓晓），插图走 /api/images/generate，
 // 例句的附件也落在附件库（`english-vocab` 目录）—— 都不另起一套（§9.6.4）。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addVocabExample, addVocabExam, askVocabQuestion, createVocabWord, deleteVocabExample,
-  deleteVocabWord, deleteVocabExam, fetchVocabAnalysis, fetchVocabOverview, fetchVocabQueue,
-  fetchVocabWords, generateVocabExamples, importVocabFile, patchVocabWord, reviewVocabWord,
+  deleteVocabWord, deleteVocabExam, explainGrammarNode, fetchGrammarTree, fetchVocabAnalysis,
+  fetchVocabHealth, fetchVocabOverview, fetchVocabQueue, fetchVocabWords, generateVocabExamples,
+  gradeGrammarAnswer, importVocabFile, makeGrammarExercise, patchGrammarNode, patchVocabWord,
+  reviewVocabWord,
+  type GrammarExercise, type GrammarGrade, type GrammarKind, type GrammarNode, type GrammarTree,
   type ImportResult, type VocabAnalysis, type VocabExam, type VocabOverview, type VocabWord,
 } from '../api/english'
-import { fetchCharacters } from '../api/client'
+import { fetchCharacters, fetchNestRunStatus, runNestFeature } from '../api/client'
 import { generateImages } from '../api/imagegen'
 import { buildAppearancePrompt } from '../lib/comfyPrompt'
 import { uploadAttachmentsBatch } from '../api/storage'
 import type { CharacterProfile } from '../data/characters'
 
-type Tab = 'review' | 'words' | 'analysis'
+type Tab = 'review' | 'words' | 'grammar' | 'analysis'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'review', label: '🔁 复习' },
   { id: 'words', label: '📚 词表' },
+  { id: 'grammar', label: '📐 语法' },
   { id: 'analysis', label: '📊 分析' },
 ]
 
@@ -547,6 +557,265 @@ function ImportPanel({ onDone }: { onDone: () => void }) {
   )
 }
 
+// ── 语法：目录树 + 练习（第二期）──
+//
+// 大老大的原话：「给骨架，因为肉全是照片形式，这是英语兔的语法讲解，我跟着来就行，
+// 有什么不懂我问功能里的小糖人」。所以这里**不存讲解**，只做三件事：
+//   · 把大纲渲染成能勾进度的目录（学会了 / 在学 / 没开始 + 自己写备注当照片索引）
+//   · 挑一个点，AI 现出一道题 → 你写 → AI 批改（对 / 半对 / 错 + 错在哪 + 更好的说法）
+//   · 不懂的点直接问她（走人格那条路，和词卡的「答疑」同一个做法）
+
+const NODE_STATUS: { id: GrammarNode['status']; label: string }[] = [
+  { id: 'todo', label: '没开始' },
+  { id: 'doing', label: '在学' },
+  { id: 'done', label: '学会了' },
+]
+
+const KINDS: { id: GrammarKind; label: string; hint: string }[] = [
+  { id: 'translate', label: '中译英', hint: '给你一句中文，你写英文' },
+  { id: 'blank', label: '填空', hint: '挖掉关键成分，你填' },
+  { id: 'rewrite', label: '改写', hint: '按这个语法点改写一句话' },
+  { id: 'make', label: '造句', hint: '给你几个词，自己造一句' },
+]
+
+const VERDICT_STYLE: Record<string, { label: string; cls: string }> = {
+  right: { label: '✓ 全对', cls: 'text-[var(--mint)]' },
+  half: { label: '～ 基本对', cls: 'text-[var(--pink-deep)]' },
+  wrong: { label: '✗ 语法点用错了', cls: 'text-[var(--pink-deep)]' },
+}
+
+/** 一个没在我们的设置里登记的 status（理论上不会）就当成「没开始」。 */
+function cleanStatus(value: string): GrammarNode['status'] {
+  return value === 'doing' || value === 'done' ? value : 'todo'
+}
+
+function GrammarPanel({ tree, onRefresh }: { tree: GrammarTree | null; onRefresh: () => void }) {
+  const nodes = tree?.nodes ?? []
+  const stats = tree?.stats
+  const [openNode, setOpenNode] = useState('')
+  const [status, setStatus] = useState<GrammarNode['status']>('todo')
+  const [note, setNote] = useState('')
+  const [kind, setKind] = useState<GrammarKind>('translate')
+  const [ex, setEx] = useState<GrammarExercise | null>(null)
+  const [answer, setAnswer] = useState('')
+  const [grade, setGrade] = useState<GrammarGrade | null>(null)
+  const [asked, setAsked] = useState<{ q: string; a: string }[]>([])
+  const [question, setQuestion] = useState('')
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+
+  const open = (node: GrammarNode) => {
+    if (node.is_chapter) return
+    if (openNode === node.id) { setOpenNode(''); return }
+    setOpenNode(node.id); setStatus(cleanStatus(node.status)); setNote(node.my_note)
+    setEx(null); setGrade(null); setAnswer(''); setQuestion(''); setAsked([]); setErr('')
+  }
+
+  const run = async (tag: string, fn: () => Promise<void>) => {
+    setBusy(tag); setErr('')
+    try { await fn() }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy('') }
+  }
+
+  const saveMark = () => run('mark', async () => {
+    await patchGrammarNode(openNode, { status, note })
+    onRefresh()
+  })
+
+  const makeOne = () => run('make', async () => {
+    setGrade(null); setAnswer('')
+    setEx(await makeGrammarExercise({ node_id: openNode, kind }))
+  })
+
+  const sendAnswer = () => run('grade', async () => {
+    if (!answer.trim()) throw new Error('先写点什么再交 —— 写错也算数')
+    if (!ex) throw new Error('先出一道题')
+    const got = await gradeGrammarAnswer({
+      node_id: openNode, kind: ex.kind, prompt: ex.prompt, answer, node_title: ex.node_title,
+    })
+    setGrade(got)
+    onRefresh()
+  })
+
+  const ask = () => run('ask', async () => {
+    const q = question.trim()
+    const saved = await explainGrammarNode({ node_id: openNode, question: q })
+    setAsked((list) => [{ q: q || `讲讲「${saved.node_title}」`, a: saved.answer }, ...list])
+    setQuestion('')
+  })
+
+  // 大纲按章分组 —— 161 个节点平铺会淹掉人。
+  const chapters = useMemo(() => {
+    const out: { title: string; items: GrammarNode[] }[] = []
+    for (const n of nodes) {
+      if (n.is_chapter) { out.push({ title: n.title, items: [] }); continue }
+      if (out.length) out[out.length - 1].items.push(n)
+    }
+    return out
+  }, [nodes])
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] text-[var(--text-3)]">
+        这是英语兔讲解的<b>骨架</b>（讲解正文是照片，自己跟着看）—— 这儿管三件事：记你学到哪、
+        挑个点出题练、不懂的当场问她。练过的题都交给 AI 批改，错在哪会说出来。
+      </p>
+
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+        {[
+          { k: '大纲知识点', v: stats?.total_nodes ?? 0, hint: '个' },
+          { k: '学会了', v: stats?.done_of ?? 0, hint: `在学 ${stats?.doing_nodes ?? 0}` },
+          { k: '练过', v: stats?.practiced ?? 0, hint: '次' },
+          { k: '全对率', v: stats?.practiced ? `${Math.round((stats.accuracy ?? 0) * 100)}%` : '—', hint: '批改结果' },
+        ].map((c) => (
+          <div key={c.k} className="rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
+            <div className="text-[11px] text-[var(--text-3)]">{c.k}</div>
+            <div className="text-[22px] font-extrabold leading-tight text-[var(--text)]">{c.v}</div>
+            <div className="text-[11px] text-[var(--text-3)]">{c.hint}</div>
+          </div>
+        ))}
+      </div>
+
+      {err && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--pink-deep)]">
+          {err}<button className="ml-2 underline" onClick={() => setErr('')}>知道了</button>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {chapters.map((ch) => (
+          <details key={ch.title} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3">
+            <summary className="cursor-pointer text-[14px] font-bold text-[var(--text)]">
+              {ch.title}
+              <span className="ml-2 text-[11px] font-normal text-[var(--text-3)]">
+                {ch.items.filter((n) => n.status === 'done').length} / {ch.items.length} 学会了
+              </span>
+            </summary>
+            <div className="mt-2 space-y-1.5">
+              {ch.items.map((n) => (
+                <div key={n.id} className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-2.5">
+                  <button className="flex w-full items-baseline gap-2 text-left" onClick={() => open(n)}>
+                    <span className={`text-[13px] ${n.status === 'done' ? 'text-[var(--mint)]'
+                      : n.status === 'doing' ? 'text-[var(--pink-deep)]' : 'text-[var(--text-2)]'}`}>
+                      {n.status === 'done' ? '✓' : n.status === 'doing' ? '◐' : '○'}
+                    </span>
+                    <span className="min-w-0 flex-1 text-[13.5px] text-[var(--text)]">{n.title}</span>
+                    {n.parent && <span className="shrink-0 text-[11px] text-[var(--text-3)]">{n.parent}</span>}
+                  </button>
+                  {n.note && <p className="mt-1 pl-5 text-[11.5px] text-[var(--text-3)]">{n.note}</p>}
+
+                  {openNode === n.id && (
+                    <div className="mt-2.5 border-t border-[var(--border)] pt-2.5">
+                      {/* 进度 + 自己的备注（照片索引 / 视频号都写这儿） */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {NODE_STATUS.map((s) => (
+                          <button key={s.id} className={`form-chip ${status === s.id ? 'on' : ''}`}
+                            onClick={() => setStatus(s.id)}>{s.label}</button>
+                        ))}
+                        <input className="input ml-auto max-w-[240px]" placeholder="备注：照片在哪 / 看到第几集…"
+                          value={note} onChange={(e) => setNote(e.target.value)} />
+                        <button className="btn sm" disabled={busy === 'mark'} onClick={() => void saveMark()}>
+                          {busy === 'mark' ? '记着…' : '记下'}
+                        </button>
+                      </div>
+
+                      {/* 练一练 */}
+                      <div className="mt-3">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[12px] text-[var(--text-3)]">练一句：</span>
+                          {KINDS.map((k) => (
+                            <button key={k.id} title={k.hint}
+                              className={`form-chip ${kind === k.id ? 'on' : ''}`}
+                              onClick={() => setKind(k.id)}>{k.label}</button>
+                          ))}
+                          <button className="btn sm ml-auto" disabled={busy === 'make'}
+                            onClick={() => void makeOne()}>
+                            {busy === 'make' ? '出题中…' : ex ? '换一题' : '出题'}
+                          </button>
+                        </div>
+
+                        {ex && (
+                          <div className="mt-2 rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] p-3">
+                            <p className="text-[13.5px] text-[var(--text)]">{ex.prompt}</p>
+                            {ex.hint && <p className="mt-1 text-[11.5px] text-[var(--text-3)]">提示：{ex.hint}</p>}
+                            <textarea className="input mt-2 h-[70px] w-full" placeholder="在这儿写你的答案…"
+                              value={answer} onChange={(e) => setAnswer(e.target.value)} />
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <button className="btn sm" disabled={busy === 'grade'} onClick={() => void sendAnswer()}>
+                                {busy === 'grade' ? '批改中…' : '交给小糖人批改'}
+                              </button>
+                              {!grade && ex.reference && (
+                                <details className="text-[11.5px] text-[var(--text-3)]">
+                                  <summary className="cursor-pointer">先看看参考答案</summary>
+                                  <span className="text-[var(--text-2)]">{ex.reference}</span>
+                                </details>
+                              )}
+                            </div>
+
+                            {grade && (
+                              <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3">
+                                <div className={`text-[13px] font-bold ${VERDICT_STYLE[grade.verdict]?.cls ?? ''}`}>
+                                  {VERDICT_STYLE[grade.verdict]?.label ?? grade.verdict}
+                                </div>
+                                {grade.comment && (
+                                  <p className="mt-1 whitespace-pre-wrap text-[13px] text-[var(--text-2)]">{grade.comment}</p>
+                                )}
+                                {grade.errors.length > 0 && (
+                                  <ul className="mt-2 space-y-1">
+                                    {grade.errors.map((e, i) => (
+                                      <li key={i} className="text-[12.5px] text-[var(--text-2)]">
+                                        <s className="text-[var(--pink-deep)]">{e.wrong}</s>
+                                        {' → '}<b className="text-[var(--mint)]">{e.right}</b>
+                                        {e.why && <span className="ml-1 text-[11.5px] text-[var(--text-3)]">（{e.why}）</span>}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                                {grade.better && (
+                                  <p className="mt-2 text-[12.5px] text-[var(--text-2)]">
+                                    更好的说法：<span className="text-[var(--text)]">{grade.better}</span>
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 不懂就问她 */}
+                      <div className="mt-3">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <input className="input min-w-0 flex-1" placeholder={`就「${n.title}」问她 —— 为什么 / 和另一个的区别…`}
+                            value={question} onChange={(e) => setQuestion(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') void ask() }} />
+                          <button className="btn ghost sm" disabled={busy === 'ask'} onClick={() => void ask()}>
+                            {busy === 'ask' ? '她想着…' : '问她'}
+                          </button>
+                        </div>
+                        {asked.length > 0 && (
+                          <ul className="mt-2 space-y-2">
+                            {asked.map((it, i) => (
+                              <li key={i} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2.5">
+                                <p className="text-[12px] text-[var(--text-3)]">你问：{it.q}</p>
+                                <p className="mt-1 whitespace-pre-wrap text-[13px] text-[var(--text-2)]">{it.a}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </details>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── 主面板 ──
 
 export default function EnglishStudyPanel() {
@@ -567,31 +836,107 @@ export default function EnglishStudyPanel() {
   const [showImport, setShowImport] = useState(false)
   const [newWord, setNewWord] = useState({ word: '', meaning: '', tag: '' })
   const [exam, setExam] = useState({ kind: 'cet4', title: '', score: '', max_score: '710' })
-  // 「换一轮」翻到第几屏。0 = 队首。翻到头就把轮次归零转回队首 —— 一屏 50 个够背了。
-  const [queueRound, setQueueRound] = useState(0)
-  // 队列到底有多长（后端按 skip 取回来的 next_skip 推）。翻到这儿就该回头了。
-  const [queueMore, setQueueMore] = useState(true)
+  // 这一轮还剩多少（后端算好给的）。0 = 这一副牌翻完了，该重洗了。
+  const [queueRemaining, setQueueRemaining] = useState(0)
+  // 翻到第几屏（纯显示用）。
+  const [queueScreen, setQueueScreen] = useState(1)
+
+  // 这一轮的「牌面」和记号（全在浏览器这侧，后端不知道谁点过什么）──
+  // seed 决定伪随机顺序：同一轮里翻页都用它，顺序固定、不重样；重洗时才换新的。
+  const seedRef = useRef('')
+  const seenRef = useRef<Set<string>>(new Set())     // 这个会话出过的（不管答没答）
+  const knownRef = useRef<Set<string>>(new Set())    // 点了「认识」的 → 不再出
+  const redrillRef = useRef<Set<string>>(new Set())  // 点了「模糊/忘了」的 → 插回队首再看
+  const newSeed = () => `r${Math.random().toString(36).slice(2, 10)}`
+
+  /** 服务没起时，正在按注册表把它拉起来（界面上显示「正在拉起来…」而不是「没连上」）。 */
+  const [booting, setBooting] = useState(false)
+  /** 服务确实连不上时的原话（自动拉起也没成功才留着）—— 空 = 正常。 */
+  const [down, setDown] = useState('')
+  // 语法页：目录树 + 自己的进度（勾了哪些学会了）+ 正在出的那道题。
+  const [grammar, setGrammar] = useState<GrammarTree | null>(null)
+  const [grammarErr, setGrammarErr] = useState('')
+  const [grammarBusy, setGrammarBusy] = useState(false)
+  /** 换一个值就重新拉一次目录树（勾进度 / 批改完都要刷新）。 */
+  const [grammarTick, setGrammarTick] = useState(0)
+  /** 「自动拉起服务」这件事最多做一次（见 autoStart）；手动刷新会把闸放开重来。 */
+  const autoStarted = useRef(false)
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 4000) }
+
+  // ── 服务没起？面板自己按注册表把它拉起来 ────────────────────────────────
+  // 以前要自己跑去「🚀 让功能跑起来」点一下 —— 大老大说这不该是他干的活（日语那边同一套做法）。
+  // 前端能做的只有两件**白名单内**的事：查运行状态、按注册表声明的子命令名启动。
+  // 命令串（python -m english serve --port 8766 …）完全由后端注册表拼，前端碰不到（§9.6 安全边界）。
+  const autoStart = useCallback(async () => {
+    // 立刻切到「正在拉起来…」—— 别先闪一帧「没连上」再变，看着像出错。
+    setBooting(true)
+    // 先问小窝后端：它在跑吗？问不到（后端自己没起）就别白等 —— 前端什么也拉不起来。
+    const status = await fetchNestRunStatus('english_study').catch(() => null)
+    if (!status) { setBooting(false); return }
+    try {
+      // 已经在跑就别再起一个（后端对重复启动会 409）；端口可能还在起来，等一下也还是要的。
+      if (!status.running) {
+        // 注册表里 serve 是 background: True —— 后端立刻回 pid，不阻塞。
+        await runNestFeature('english_study', { command: 'serve' }).catch(() => {})
+      }
+      // 端口起来还要一两秒：等一会儿再重试健康检查，别立刻又报「没连上」。
+      await new Promise((r) => setTimeout(r, 1800))
+    } finally {
+      setBooting(false)
+    }
+  }, [])
 
   const loadOverview = useCallback(async () => {
     try { setOverview(await fetchVocabOverview()) } catch { setOverview(null) }
   }, [])
 
-  const loadQueue = useCallback(async (round = 0) => {
+  /** 服务到底活着没 —— 活着就顺手把概览也拉了。返回 false 表示真连不上。 */
+  const probe = useCallback(async (): Promise<boolean> => {
+    try {
+      await fetchVocabHealth()
+      setDown('')
+      await loadOverview()
+      return true
+    } catch (e) {
+      setDown(e instanceof Error ? e.message : String(e))
+      return false
+    }
+  }, [loadOverview])
+
+  // 开面板：先探一次；探不到就**自己拉一次**，拉起来再探；还不行才把提示留着。
+  useEffect(() => {
+    void (async () => {
+      if (await probe()) return
+      if (autoStarted.current) return
+      autoStarted.current = true
+      await autoStart()
+      await probe()
+    })()
+  }, [probe, autoStart])
+
+  /** 手动「再试一次」：把自动拉起那个闸放开，重走一遍（上次没起来，这次该真的再拉一次）。 */
+  const retry = useCallback(() => {
+    autoStarted.current = false
+    void (async () => {
+      if (await probe()) return
+      autoStarted.current = true
+      await autoStart()
+      await probe()
+    })()
+  }, [probe, autoStart])
+
+  const loadQueue = useCallback(async () => {
     setBusy(true)
     try {
-      const r = await fetchVocabQueue(QUEUE_SIZE, filterTag || undefined, round * QUEUE_SIZE)
+      const r = await fetchVocabQueue({
+        limit: QUEUE_SIZE, tag: filterTag || undefined, seed: seedRef.current,
+        seen: [...seenRef.current], known: [...knownRef.current], redrill: [...redrillRef.current],
+      })
+      // 取回来就算「出过」了 —— 就算他一个没答，换一轮也不该再看到这一屏。
+      for (const w of r.items) seenRef.current.add(w.id)
       setQueue(r.items)
-      setQueueRound(round)
-      // 这屏取满了 → 后面多半还有；取不满 → 到头了。
-      setQueueMore(r.items.length >= QUEUE_SIZE)
-      if (r.items.length === 0 && round > 0) {
-        // 翻过界（比如中途删了词）→ 悄悄转回队首，别让人对着空屏。
-        const back = await fetchVocabQueue(QUEUE_SIZE, filterTag || undefined, 0)
-        setQueue(back.items); setQueueRound(0); setQueueMore(back.items.length >= QUEUE_SIZE)
-        flash('已经到最后一批了，转回队首')
-      }
+      setQueueRemaining(r.remaining)
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(false) }
   }, [filterTag])
@@ -613,21 +958,41 @@ export default function EnglishStudyPanel() {
   }, [])
 
   useEffect(() => { void fetchCharacters().then(setCharacters).catch(() => setCharacters([])) }, [])
-  useEffect(() => { void loadOverview() }, [loadOverview])
-  // 换分类就回队首 —— 别的分类的轮次在这儿没意义。
-  useEffect(() => { if (tab === 'review') void loadQueue(0) }, [tab, loadQueue])
+  useEffect(() => {
+    // 进复习页（含换分类）→ 换一副新牌重开一轮，把上一轮的记号也清掉。
+    if (tab !== 'review') return
+    seedRef.current = newSeed()
+    seenRef.current = new Set(); knownRef.current = new Set(); redrillRef.current = new Set()
+    setQueueScreen(1)
+    void loadQueue()
+  }, [tab, loadQueue])
   useEffect(() => { if (tab === 'words') void loadWords() }, [tab, loadWords])
   useEffect(() => { if (tab === 'analysis') void loadAnalysis() }, [tab, loadAnalysis])
+  // 语法：进页面就拉目录树（进度跟着一起回来），顺带拉一下练过的流水。
+  useEffect(() => {
+    if (tab !== 'grammar') return
+    setGrammarBusy(true)
+    void fetchGrammarTree()
+      .then(setGrammar)
+      .catch((e) => setGrammarErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setGrammarBusy(false))
+  }, [tab, grammarTick])
 
-  /** 「换一轮」：翻下一屏；翻到头就转回队首。 */
-  const nextRound = () => {
+  /** 「再洗一轮」：换一副新牌，从头再来。**已经点过「认识」的仍然不会再出现**（那是学习进度，不是轮次）。 */
+  const reshuffle = () => {
     if (busy) return
-    void loadQueue(queueMore ? queueRound + 1 : 0)
-    if (!queueMore) flash('已经到最后一批了，转回队首')
+    seedRef.current = newSeed()
+    seenRef.current = new Set(); redrillRef.current = new Set()
+    setQueueScreen(1)
+    void loadQueue()
+    flash('重新洗过一轮了 —— 点过「认识」的不会再出现')
   }
 
   const reviewed = async (word: VocabWord, r: 'known' | 'fuzzy' | 'forgot', elapsedMs = 0) => {
     try {
+      // 先记记号再看结果：认识 → 拉黑不再出；模糊/忘了 → 下一次插回队首。
+      if (r === 'known') { knownRef.current.add(word.id); redrillRef.current.delete(word.id) }
+      else { redrillRef.current.add(word.id) }
       const saved = await reviewVocabWord(word.id, r, { mode: 'recognize', elapsedMs })
       flash(r === 'known' ? '记住了 —— 下次推远一点' : r === 'fuzzy' ? '模糊：间隔缩一半，过两天再来' : '没关系，明天再见它一次')
       setQueue((list) => list.filter((w) => w.id !== word.id))
@@ -721,6 +1086,19 @@ export default function EnglishStudyPanel() {
         </span>
       </div>
 
+      {/* 点开卡片就直接能用：起不来才让大老大看见 —— 正在拉的时候说的是「等我一下」，不是「坏了」。 */}
+      {booting && (
+        <div className="mb-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--text-3)]">
+          正在把英语学习的服务拉起来…（第一次要一两秒）
+        </div>
+      )}
+      {down && !booting && (
+        <div className="mb-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--pink-deep)]">
+          {down}
+          <button className="ml-2 underline" onClick={retry}>再试一次</button>
+        </div>
+      )}
+
       {showImport && (
         <div className="mb-4">
           <ImportPanel onDone={() => { void loadOverview(); void loadWords() }} />
@@ -745,15 +1123,32 @@ export default function EnglishStudyPanel() {
       {tab === 'review' && (
         <div className="space-y-2.5">
           <p className="text-[12px] text-[var(--text-3)]">
-            先复习到期的，够了再补新词。答「认识」间隔往后推，答「模糊」缩一半，答「忘了」明天重来 ——
-            三档就行，不用纠结打几分。
+            一屏 50 个，顺序是洗过的（不是按字母顺下去）。答「认识」间隔往后推、这轮不再出现；
+            答「模糊 / 忘了」的会插回队首再看一眼。三档就行，不用纠结打几分。
           </p>
-          {busy && queue.length === 0 && <p className="text-[13px] text-[var(--text-3)]">读取中…</p>}
+          {busy && queue.length === 0 && <p className="text-[13px] text-[var(--text-3)]">洗牌中…</p>}
           {!busy && queue.length === 0 && (
             <div className="rounded-2xl border border-dashed border-[var(--border-strong)] p-5 text-[13px] text-[var(--text-3)]">
-              {(stats?.total ?? 0) === 0
-                ? '还没有词 — 先导入或手加几个。'
-                : '这一轮都过完了，歇会儿。明天再来它会把该复习的排好队。'}
+              {(stats?.total ?? 0) === 0 ? (
+                '还没有词 — 先导入或手加几个。'
+              ) : (
+                <>
+                  <p>
+                    {queueRemaining > 0
+                      ? '这屏答完了。下一屏还有词 —— 接着看，或者重洗一副牌换个顺序。'
+                      : '这一轮都过完了 —— 剩下的不是点了「认识」就是还没到期。想再练一遍就「再洗一轮」。'}
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {queueRemaining > 0 && (
+                      <button className="btn sm"
+                        onClick={() => { setQueueScreen((n) => n + 1); void loadQueue() }}>
+                        再看下一屏 →
+                      </button>
+                    )}
+                    <button className="btn ghost sm" onClick={reshuffle}>🔀 再洗一轮</button>
+                  </div>
+                </>
+              )}
             </div>
           )}
           {queue.map((w) => (
@@ -764,10 +1159,16 @@ export default function EnglishStudyPanel() {
               onChanged={() => { void loadOverview() }} />
           ))}
           {queue.length > 0 && (
-            <div className="flex items-center justify-end gap-2">
-              <span className="text-[11px] text-[var(--text-3)]">第 {queueRound + 1} 批 · 这屏 {queue.length} 个</span>
-              <button className="btn ghost sm" disabled={busy} onClick={nextRound}>
-                {busy ? '换着呢…' : queueMore ? '换一轮' : '换一轮（回队首）'}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="text-[11px] text-[var(--text-3)]">
+                第 {queueScreen} 屏 · 这屏还剩 {queue.length} 个 · 后面还有 {queueRemaining} 个
+              </span>
+              <button className="btn ghost sm" disabled={busy}
+                onClick={() => { if (busy) return; setQueueScreen((n) => n + 1); void loadQueue() }}>
+                再看下一屏 →
+              </button>
+              <button className="btn ghost sm" disabled={busy} onClick={reshuffle}>
+                {busy ? '洗着呢…' : '🔀 再洗一轮'}
               </button>
             </div>
           )}
@@ -818,6 +1219,24 @@ export default function EnglishStudyPanel() {
           </div>
           {words.length === 0 && !busy && (
             <p className="text-[13px] text-[var(--text-3)]">没有匹配的词。</p>
+          )}
+        </div>
+      )}
+
+      {/* 语法 */}
+      {tab === 'grammar' && (
+        <div>
+          {grammarBusy && !grammar && <p className="text-[13px] text-[var(--text-3)]">正在读大纲…</p>}
+          {grammarErr && (
+            <div className="mb-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--pink-deep)]">
+              {grammarErr}
+              <button className="ml-2 underline" onClick={() => { setGrammarErr(''); setGrammarTick((n) => n + 1) }}>
+                再试一次
+              </button>
+            </div>
+          )}
+          {!grammarErr && grammar && (
+            <GrammarPanel tree={grammar} onRefresh={() => setGrammarTick((n) => n + 1)} />
           )}
         </div>
       )}

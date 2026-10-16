@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -673,33 +674,61 @@ async def run_feature(feature_id: str, body: RunIn) -> dict:
     立刻返回 pid、日志边跑边刷；其余（试跑 / 自检 / 逛一轮）等它跑完回结果。
 
     重复点不会起一堆进程：同一个功能已经有在跑 → 409，让你先停。
+
+    ⚠ 「等它跑完」**必须丢到线程里等**：这是 async 处理器，直接 `proc.wait()` 会把整个事件循环
+    焊死几百秒 —— 表现就是「点了自检整个小窝都卡死了」，连别的请求（日志、状态轮询）都进不来。
+    同一功能的按钮也串行化（一把锁）：连点两下不会起两个进程。
     """
     info = _runner(feature_id)
     argv, spec = _build_command(info["runner"], {"name": body.command}, body)
-    if db.latest_feature_run(feature_id) and _running_pid(feature_id):
-        raise HTTPException(409, "这个功能已经在跑了，先停掉再来")
-    log = _log_path(feature_id)
-    with log.open("ab") as fp:
-        fp.write(f"\n===== {datetime.now().isoformat(timespec='seconds')}  "
-                 f"{feature_id} / {body.command} =====\n".encode())
-        fp.flush()
-        proc = subprocess.Popen(  # noqa: S603 - argv 全部由注册表白名单拼出
-            argv, cwd=str(info["cwd"]), stdout=fp, stderr=subprocess.STDOUT,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
-        )
-    db.record_feature_run(feature_id, spec["name"], proc.pid)
-    if spec.get("background"):
-        return {"ok": True, "running": True, "pid": proc.pid, "log": str(log),
-                "message": f"{spec['label']}已启动，日志在下面滚动"}
-    try:
-        code = proc.wait(timeout=600)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    async with _run_lock(feature_id):
+        if db.latest_feature_run(feature_id) and _running_pid(feature_id):
+            raise HTTPException(409, "这个功能已经在跑了，先停掉再来")
+        log = _log_path(feature_id)
+        with log.open("ab") as fp:
+            fp.write(f"\n===== {datetime.now().isoformat(timespec='seconds')}  "
+                     f"{feature_id} / {body.command} =====\n".encode())
+            fp.flush()
+            proc = subprocess.Popen(  # noqa: S603 - argv 全部由注册表白名单拼出
+                argv, cwd=str(info["cwd"]), stdout=fp, stderr=subprocess.STDOUT,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
+            )
+        db.record_feature_run(feature_id, spec["name"], proc.pid)
+        if spec.get("background"):
+            return {"ok": True, "running": True, "pid": proc.pid, "log": str(log),
+                    "message": f"{spec['label']}已启动，日志在下面滚动"}
+        # 等它跑完这件事**丢给线程**（上面 docstring 说过为什么）—— 最多等 10 分钟。
+        code = await asyncio.to_thread(_wait_capped, proc, 600)
+        if code is None:
+            proc.kill()
+            db.stop_feature_runs(feature_id)
+            raise HTTPException(504, "跑太久了（超过 10 分钟），已停掉 —— 看看日志")
         db.stop_feature_runs(feature_id)
-        raise HTTPException(504, "跑太久了（超过 10 分钟），已停掉 —— 看看日志") from None
-    db.stop_feature_runs(feature_id)
-    return {"ok": code == 0, "running": False, "exit_code": code, "log": str(log),
-            "output": _tail(log)}
+        return {"ok": code == 0, "running": False, "exit_code": code, "log": str(log),
+                "output": _tail(log)}
+
+
+# 每个功能一把锁（同一功能串行）—— 连点「自检」不会起两个进程，也不会两个请求抢同一份日志。
+_run_locks: dict[str, asyncio.Lock] = {}
+
+
+def _run_lock(feature_id: str) -> asyncio.Lock:
+    lock = _run_locks.get(feature_id)
+    if lock is None:
+        lock = _run_locks[feature_id] = asyncio.Lock()
+    return lock
+
+
+def _wait_capped(proc: subprocess.Popen, timeout: float) -> int | None:
+    """在线程里等子进程退出；超时返回 None（调用方负责 kill）。
+
+    不直接 `proc.wait(timeout)` 是因为那会抛 TimeoutExpired 穿过 to_thread，
+    在调用处还要多包一层 try —— 一个哨兵值更直白。
+    """
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
 
 
 def _running_pid(feature_id: str) -> int:

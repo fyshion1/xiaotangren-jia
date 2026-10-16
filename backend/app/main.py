@@ -13,7 +13,6 @@ from .routers import (
     agents,
     characters,
     chat,
-    english,
     gallery,
     game,
     gemini_sync,
@@ -81,8 +80,6 @@ app.include_router(model_config.router, prefix="/api")
 app.include_router(gallery.router, prefix="/api")
 app.include_router(game.router, prefix="/api")
 app.include_router(nest.router, prefix="/api")
-# 英语学习（§feature，本体内功能）：词库 / 复习 / 例句插图 / 成绩分析，走小窝大脑与附件库。
-app.include_router(english.router, prefix="/api")
 app.include_router(qq_bridge.router, prefix="/api")
 app.include_router(gemini_sync.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")

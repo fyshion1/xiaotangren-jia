@@ -51,9 +51,11 @@ type Props = {
   owner?: string
   /** 小窝的文案调子（家共用画廊）与角色介绍页不同。 */
   variant?: 'character' | 'home'
+  /** 由外面的抽屉提供标题（§9.6 布局改造）—— 画廊本身照旧，只是不再自带标题行。 */
+  bare?: boolean
 }
 
-export default function GalleryGrid({ owner, variant = 'character' }: Props) {
+export default function GalleryGrid({ owner, variant = 'character', bare = false }: Props) {
   // 自动描述要用的 vision 上游：从本地模型配置里解析，规则与聊天页一致（§7）。
   const route = visionRoute()
   const uncensored = isUncensoredChannel()
@@ -176,12 +178,16 @@ export default function GalleryGrid({ owner, variant = 'character' }: Props) {
   }
 
   return (
-    <section className="mt-10">
+    <section className={bare ? '' : 'mt-10'}>
       <div className="mb-4 flex flex-wrap items-baseline gap-3">
-        <h2 className="text-[20px] font-extrabold tracking-wide">{isHome ? '共同回忆 · 画廊' : '画廊'}</h2>
-        <span className="text-[13px] text-[var(--text-3)]">
-          {isHome ? 'Home Gallery' : 'Gallery'} · {hasReal ? `已收藏 ${items.length} 项` : isHome ? '全家的合照都放这儿' : 'CG / 立绘 · 在个人介绍下方'}
-        </span>
+        {!bare && (
+          <>
+            <h2 className="text-[20px] font-extrabold tracking-wide">{isHome ? '共同回忆 · 画廊' : '画廊'}</h2>
+            <span className="text-[13px] text-[var(--text-3)]">
+              {isHome ? 'Home Gallery' : 'Gallery'} · {hasReal ? `已收藏 ${items.length} 项` : isHome ? '全家的合照都放这儿' : 'CG / 立绘 · 在个人介绍下方'}
+            </span>
+          </>
+        )}
         <button
           type="button"
           className="btn ml-auto text-[13px]"

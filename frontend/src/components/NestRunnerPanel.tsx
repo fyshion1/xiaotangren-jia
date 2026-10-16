@@ -43,10 +43,13 @@ export default function NestRunnerPanel({
   features,
   activeId,
   onActiveChange,
+  bare = false,
 }: {
   features: NestFeature[]
   activeId: string
   onActiveChange: (id: string) => void
+  /** 由外面的抽屉提供卡片和标题（§9.6 布局改造）—— 内容照旧，只是不再自带外壳。 */
+  bare?: boolean
 }) {
   const runnable = features.filter((f) => f.runner && f.runner.commands.length > 0)
   const feature = runnable.find((f) => f.id === activeId) || runnable[0] || null
@@ -169,13 +172,16 @@ export default function NestRunnerPanel({
   if (!feature || !spec) return null
 
   return (
-    <section id="nest-runner-panel" className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
-      <div className="mb-3 flex flex-wrap items-baseline gap-3">
-        <h2 className="text-[20px] font-extrabold tracking-wide">🚀 让功能跑起来</h2>
-        <span className="text-[13px] text-[var(--text-3)]">
-          本体只按一下启动键，逻辑都在 features/ 里那个独立项目
-        </span>
-      </div>
+    <section id={bare ? undefined : 'nest-runner-panel'}
+      className={bare ? '' : 'mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4'}>
+      {!bare && (
+        <div className="mb-3 flex flex-wrap items-baseline gap-3">
+          <h2 className="text-[20px] font-extrabold tracking-wide">🚀 让功能跑起来</h2>
+          <span className="text-[13px] text-[var(--text-3)]">
+            本体只按一下启动键，逻辑都在 features/ 里那个独立项目
+          </span>
+        </div>
+      )}
 
       {runnable.length === 0 ? (
         <p className="text-[13px] text-[var(--text-3)]">

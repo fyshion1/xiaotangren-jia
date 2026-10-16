@@ -30,7 +30,7 @@ const KIND_LABEL: Record<string, string> = {
   game: '游戏', media: '媒体', im: '聊天软件', home: '小窝', other: '其他',
 }
 
-export default function NestApiPanel() {
+export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) {
   const [features, setFeatures] = useState<NestFeature[]>([])
   const [brain, setBrain] = useState<Record<string, string>>({})
   const [brainConfigured, setBrainConfigured] = useState(false)
@@ -127,17 +127,22 @@ export default function NestApiPanel() {
     finally { setBusy(false) }
   }
 
-  return (
-    <section className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <h2 className="font-bold">🧠 小窝大脑 API</h2>
-        <span className={`text-[11px] ${brainConfigured ? 'text-[var(--text-3)]' : 'text-[var(--pink-deep)]'}`}>
-          {brainConfigured ? '已配置' : '还没配，功能默认没得上游'}
-        </span>
-      </div>
-      <p className="mb-3 text-[12px] text-[var(--text-2)]">
-        小窝里所有功能共用这一份「大脑」配置，<b>与聊天页的模型设置分开</b>，不互相影响。默认带视觉路（看图 / 看视频抽帧）。
-      </p>
+  // bare：由外面的抽屉提供卡片和标题（§9.6 布局改造），这里只出内容。
+  const body = (
+    <>
+      {!bare && (
+        <>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <h2 className="font-bold">🧠 小窝大脑 API</h2>
+            <span className={`text-[11px] ${brainConfigured ? 'text-[var(--text-3)]' : 'text-[var(--pink-deep)]'}`}>
+              {brainConfigured ? '已配置' : '还没配，功能默认没得上游'}
+            </span>
+          </div>
+          <p className="mb-3 text-[12px] text-[var(--text-2)]">
+            小窝里所有功能共用这一份「大脑」配置，<b>与聊天页的模型设置分开</b>，不互相影响。默认带视觉路（看图 / 看视频抽帧）。
+          </p>
+        </>
+      )}
 
       {/* —— 全局默认 —— */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
@@ -226,6 +231,13 @@ export default function NestApiPanel() {
         密钥只存本机后端（`settings.nest_brain_default` / `game_api_configs` 表），仅本机桥接端可读，不会写日志、不会外发。
         功能清单来自后端 `features_registry.py`；每个功能的实现是独立项目，放在 `features/&lt;folder&gt;/`。
       </p>
+    </>
+  )
+
+  if (bare) return body
+  return (
+    <section className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
+      {body}
     </section>
   )
 }

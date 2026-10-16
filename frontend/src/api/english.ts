@@ -1,27 +1,50 @@
-// 英语学习（feature `english_study`）：词库 / 复习队列 / 例句插图 / 成绩分析。
+// 英语学习（feature `english_study`）：词库 / 伪随机复习队列 / 例句插图 / 成绩分析 / 语法练习。
 //
-// 这个功能在本体内（注册表里 folder=""），所以直接调 /api/english/*，不走功能适配器那一层。
-// 三件事复用了已有能力，不另起炉灶：
-//   · 例句让小糖人写、语法问她 → 后端转发小窝大脑（/api/nest/chat 那份配置）
-//   · 插图 → 走已有的 /api/images/generate，结果直接落附件库
-//   · 发音 → 走已有的 /api/voice/tts（edge 晓晓）
+// ⚠ 这个功能**不在本体内**（注册表里 folder='english-study'），它的数据和逻辑在一个独立项目里
+// （`features/english-study/`），自己起一个只绑回环的小服务（默认 8766）。所以这里的请求全部打到
+// `/english/api/…`，由 Vite 的代理转发过去 —— 见 `vite.config.ts` 里那条 `/english` 规则。
 //
-// 插图的附件目录固定成 `english-vocab`（后端 `ATTACHMENT_SESSION` 给的就是这个名字），
-// 别让生图落到聊天会话的目录里去 —— 删聊天记录会连插图一起带走。
+// 服务没起时这些请求会 502/连接失败：面板自己会按注册表把 serve 拉起来（见 EnglishStudyPanel 的
+// 自动启动）—— 拉不起来才落到「服务没连上」那块提示。
+//
+// 三件事仍然复用**本体**的已有能力（这些是同一台机器上的另一个端口，不是这个功能的）：
+//   · 例句插图 → /api/images/generate（结果落附件库，目录固定成 `english-vocab`）
+//   · 发音     → /api/voice/tts（edge 晓晓）
+//   · 传图     → /api/storage/attachments（附件管道）
+// 人格 / 模型 / 密钥全在大脑那边 —— 这个功能只传 character_id（§9.6）。
 
-async function asJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(url, init)
+const BASE = '/english'
+
+async function asJson<T>(path: string, init?: RequestInit): Promise<T> {
+  let resp: Response
+  try {
+    resp = await fetch(BASE + path, init)
+  } catch {
+    // fetch 直接抛 = 连不上（服务没起，或代理那头 502）。
+    throw new Error('连不上英语学习的服务（127.0.0.1:8766）。')
+  }
   if (!resp.ok) {
     let detail = ''
     try {
-      detail = (await resp.json())?.detail ?? ''
+      const got = await resp.json()
+      detail = got?.error ?? got?.detail ?? ''
     } catch {
-      /* ignore */
+      /* 不是 JSON（比如代理的 502 页面） */
+    }
+    if (!detail && resp.status >= 500) {
+      // Vite 代理连不上 8766 时回的是 500（不是 502），所以整个 5xx 都算「服务没在跑」。
+      throw new Error('英语学习的服务没在跑（代理连不上 127.0.0.1:8766）。')
     }
     throw new Error(detail || `HTTP ${resp.status}`)
   }
   return resp.json() as Promise<T>
 }
+
+const json = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
 
 export type VocabExample = {
   id: string
@@ -69,6 +92,8 @@ export type VocabQuestion = {
   question: string
   answer: string
   character_id: string
+  /** 谁答的（服务端补的，省得前端再查一次名册）。 */
+  character_name?: string
   created_at: string
 }
 
@@ -112,6 +137,7 @@ export type VocabExam = {
 export type VocabOverview = {
   stats: VocabStats
   quiz: QuizSummary
+  grammar: GrammarStats
   tags: VocabTag[]
   /** 插图 / 生图落到哪个附件目录（前端调生图时要用）。 */
   attachment_session: string
@@ -143,6 +169,7 @@ export type VocabAnalysis = {
   slow_words: WeakWord[]
   daily: { date: string; answered: number; known: number; forgot: number; accuracy: number }[]
   exams: VocabExam[]
+  grammar: GrammarStats
 }
 
 export type ImportResult = {
@@ -166,10 +193,90 @@ export type ImportResult = {
   total_now?: number
 }
 
+// ── 语法（第二期）──
+
+export type GrammarStatus = 'todo' | 'doing' | 'done'
+
+export type GrammarNode = {
+  id: string
+  title: string
+  /** 所属章节（「二、时态」这种）。 */
+  chapter: string
+  /** 上一层节点的标题（章下第一层为空）。 */
+  parent: string
+  /** true = 是章标题，不能出题。 */
+  is_chapter: boolean
+  /** 大纲自带的一句说明（多数没有）。 */
+  note: string
+  status: GrammarStatus
+  /** 自己写的备注（照片索引 / 视频号都行）。 */
+  my_note: string
+}
+
+export type GrammarStats = {
+  practiced: number
+  right: number
+  half: number
+  wrong: number
+  done_nodes: number
+  doing_nodes: number
+  accuracy: number
+}
+
+export type GrammarTree = {
+  nodes: GrammarNode[]
+  stats: GrammarStats & { total_nodes: number; done_of: number }
+}
+
+/** 练习形式：中译英 / 填空 / 改写 / 造句。 */
+export type GrammarKind = 'translate' | 'blank' | 'rewrite' | 'make'
+
+export type GrammarExercise = {
+  node_id: string
+  node_title: string
+  chapter: string
+  kind: GrammarKind
+  kind_label: string
+  prompt: string
+  hint: string
+  reference: string
+}
+
+export type GrammarVerdict = 'right' | 'half' | 'wrong'
+
+export type GrammarGrade = {
+  id: string
+  node_id: string
+  node_title: string
+  kind: GrammarKind
+  prompt: string
+  answer: string
+  verdict: GrammarVerdict
+  /** 两三句点评（判不出来时这里放模型的原文）。 */
+  comment: string
+  errors: { wrong: string; right: string; why: string }[]
+  better: string
+  created_at: string
+}
+
+/** 服务状态：计数 + 大脑通不通 + 小窝设置里那几项（§9.6.5）。 */
+export const fetchVocabHealth = () => asJson<{
+  ok: boolean
+  db: string
+  counts: VocabStats
+  brain: boolean
+  characters: { id: string; name: string; emoji?: string }[]
+  batch: number
+  coach_enabled: boolean
+  filter_tag: string
+  grammar: GrammarStats
+  settings: string
+}>('/api/health')
+
 // ---- 总览 / 词表 ----
 
 export async function fetchVocabOverview(): Promise<VocabOverview> {
-  return asJson<VocabOverview>('/api/english/overview')
+  return asJson<VocabOverview>('/api/overview')
 }
 
 export async function fetchVocabWords(opts: {
@@ -189,7 +296,7 @@ export async function fetchVocabWords(opts: {
   q.set('order', opts.order ?? 'due')
   q.set('limit', String(opts.limit ?? 100))
   q.set('offset', String(opts.offset ?? 0))
-  return asJson(`/api/english/words?${q}`)
+  return asJson(`/api/words?${q}`)
 }
 
 export async function createVocabWord(body: {
@@ -200,35 +307,45 @@ export async function createVocabWord(body: {
   tag?: string
   note?: string
 }): Promise<VocabWord> {
-  return asJson<VocabWord>('/api/english/words', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  return asJson<VocabWord>('/api/words', json(body))
 }
 
 export async function patchVocabWord(id: string, patch: Partial<VocabWord>): Promise<VocabWord> {
-  return asJson<VocabWord>(`/api/english/words/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  })
+  return asJson<VocabWord>(`/api/words/${encodeURIComponent(id)}`, { ...json(patch), method: 'PATCH' })
 }
 
 export async function deleteVocabWord(id: string): Promise<void> {
-  await asJson(`/api/english/words/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  await asJson(`/api/words/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 // ---- 复习队列 ----
 
-export async function fetchVocabQueue(
-  limit = 50,
-  tag?: string,
-  skip = 0,
-): Promise<{ items: VocabWord[]; count: number; skip: number; next_skip: number; stats: VocabStats }> {
-  const q = new URLSearchParams({ limit: String(limit), skip: String(Math.max(0, skip)) })
-  if (tag) q.set('tag', tag)
-  return asJson(`/api/english/queue?${q}`)
+/**
+ * 取一屏复习队列。**伪随机顺序**（`seed` 决定这一轮的牌面），不是按字母顺下去。
+ *
+ * 排除项在这一侧记着（只有浏览器知道这个会话里发生过什么）：
+ * · `seen` / `known` —— 出过的、点了「认识」的，下次不要再出现；
+ * · `redrill` —— 答过「模糊 / 忘了」的要能回来，后端会插到队首。
+ *
+ * 用 POST 是因为那几串 id 背到后面会上千个，query string 塞不下。
+ */
+export async function fetchVocabQueue(opts: {
+  limit?: number
+  tag?: string
+  /** 这一轮的牌面：同一个 seed 翻来覆去都是同一个顺序。换新的一轮就换一个。 */
+  seed?: string
+  seen?: string[]
+  known?: string[]
+  redrill?: string[]
+} = {}): Promise<{ items: VocabWord[]; remaining: number; pool_size: number; stats: VocabStats }> {
+  return asJson('/api/queue', json({
+    limit: opts.limit ?? 50,
+    tag: opts.tag ?? '',
+    seed: opts.seed ?? '',
+    seen: opts.seen ?? [],
+    known: opts.known ?? [],
+    redrill: opts.redrill ?? [],
+  }))
 }
 
 /** 一次作答复盘。result 三档 = 认识 / 模糊 / 忘了，后端据此重排复习间隔。 */
@@ -237,16 +354,12 @@ export async function reviewVocabWord(
   result: 'known' | 'fuzzy' | 'forgot',
   opts: { mode?: string; elapsedMs?: number } = {},
 ): Promise<{ word: VocabWord; due_at: string }> {
-  return asJson('/api/english/review', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      word_id: wordId,
-      result,
-      mode: opts.mode ?? 'recognize',
-      elapsed_ms: Math.max(0, Math.round(opts.elapsedMs ?? 0)),
-    }),
-  })
+  return asJson('/api/review', json({
+    word_id: wordId,
+    result,
+    mode: opts.mode ?? 'recognize',
+    elapsed_ms: Math.max(0, Math.round(opts.elapsedMs ?? 0)),
+  }))
 }
 
 // ---- 例句与插图 ----
@@ -262,15 +375,11 @@ export async function addVocabExample(
     source?: 'manual' | 'ai'
   },
 ): Promise<VocabExample> {
-  return asJson<VocabExample>(`/api/english/words/${encodeURIComponent(wordId)}/examples`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  return asJson<VocabExample>(`/api/words/${encodeURIComponent(wordId)}/examples`, json(body))
 }
 
 export async function deleteVocabExample(id: string): Promise<void> {
-  await asJson(`/api/english/examples/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  await asJson(`/api/examples/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 /** 请一位小糖人给这个词写几句有她味道的例句（写好直接落库）。 */
@@ -279,11 +388,8 @@ export async function generateVocabExamples(
   characterId: string,
   count = 3,
 ): Promise<{ items: { en: string; zh: string }[]; saved: VocabExample[]; character_id: string }> {
-  return asJson(`/api/english/words/${encodeURIComponent(wordId)}/examples/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ character_id: characterId, count, save: true }),
-  })
+  return asJson(`/api/words/${encodeURIComponent(wordId)}/examples/generate`,
+    json({ character_id: characterId, count, save: true }))
 }
 
 /** 就这个词问小糖人（语法 / 用法 / 辨析）。答完留档。 */
@@ -292,11 +398,8 @@ export async function askVocabQuestion(
   question: string,
   characterId: string,
 ): Promise<VocabQuestion & { character_name: string }> {
-  return asJson(`/api/english/words/${encodeURIComponent(wordId)}/ask`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, character_id: characterId }),
-  })
+  return asJson(`/api/words/${encodeURIComponent(wordId)}/ask`,
+    json({ question, character_id: characterId }))
 }
 
 // ---- 成绩与分析 ----
@@ -312,19 +415,15 @@ export async function addVocabExam(body: {
   taken_at?: string
   note?: string
 }): Promise<VocabExam> {
-  return asJson<VocabExam>('/api/english/exams', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  return asJson<VocabExam>('/api/exams', json(body))
 }
 
 export async function deleteVocabExam(id: string): Promise<void> {
-  await asJson(`/api/english/exams/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  await asJson(`/api/exams/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export async function fetchVocabAnalysis(days = 30, limit = 10): Promise<VocabAnalysis> {
-  return asJson<VocabAnalysis>(`/api/english/analysis?days=${days}&limit=${limit}`)
+  return asJson<VocabAnalysis>(`/api/analysis?days=${days}&limit=${limit}`)
 }
 
 // ---- 导入旧词表 ----
@@ -332,6 +431,9 @@ export async function fetchVocabAnalysis(days = 30, limit = 10): Promise<VocabAn
 /**
  * 传一张词表。**先 dryRun 看一眼猜得对不对**（`columns` 是「哪列认成了什么」），
  * 认错了把列号传回来重导。
+ *
+ * 为什么要 base64：这个功能的服务是标准库 `http.server`，不想为 multipart 引依赖 ——
+ * 前端把文件读成 base64 放进 JSON 里传过去就行。
  */
 export async function importVocabFile(
   file: File,
@@ -343,15 +445,63 @@ export async function importVocabFile(
     columns?: Partial<Record<'word' | 'meaning' | 'pos' | 'phonetic' | 'tag', number>>
   } = {},
 ): Promise<ImportResult> {
-  const fd = new FormData()
-  fd.append('file', file, file.name)
-  fd.append('tag', opts.tag ?? '')
-  fd.append('source', opts.source ?? '')
-  fd.append('dry_run', opts.dryRun ? 'true' : 'false')
-  if (opts.hasHeader !== undefined) fd.append('has_header', opts.hasHeader ? 'true' : 'false')
-  for (const key of ['word', 'meaning', 'pos', 'phonetic', 'tag'] as const) {
-    const idx = opts.columns?.[key]
-    if (idx !== undefined && idx >= 0) fd.append(`${key}_col`, String(idx))
-  }
-  return asJson<ImportResult>('/api/english/import', { method: 'POST', body: fd })
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('读这个文件失败'))
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '')
+      resolve(dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl)
+    }
+    reader.readAsDataURL(file)
+  })
+  return asJson<ImportResult>('/api/import', json({
+    file_b64: base64,
+    filename: file.name,
+    tag: opts.tag ?? '',
+    source: opts.source ?? '',
+    dry_run: !!opts.dryRun,
+    has_header: opts.hasHeader,
+    columns: opts.columns,
+  }))
 }
+
+// ---- 语法：目录树 / 进度 ----
+
+export const fetchGrammarTree = () => asJson<GrammarTree>('/api/grammar/tree')
+
+/** 标记一个语法点：学会了 / 在学 / 没开始，以及自己写备注。 */
+export const patchGrammarNode = (nodeId: string, patch: { status?: GrammarStatus; note?: string }) =>
+  asJson<GrammarNode>(`/api/grammar/nodes/${encodeURIComponent(nodeId)}`,
+    { ...json(patch), method: 'PATCH' })
+
+// ---- 语法：出题 / 批改 / 问 ----
+
+/** 出一道题（题干 + 参考答案由 AI 现写，每次不一样）。 */
+export const makeGrammarExercise = (body: {
+  node_id: string
+  kind: GrammarKind
+  character_id?: string
+}) => asJson<GrammarExercise>('/api/grammar/exercise', json(body))
+
+/** 批改一份作答。四种练习共用这一条 —— 差别只在题干，判据一样。 */
+export const gradeGrammarAnswer = (body: {
+  node_id: string
+  kind: GrammarKind
+  prompt: string
+  answer: string
+  node_title?: string
+}) => asJson<GrammarGrade>('/api/grammar/grade', json(body))
+
+/** 就一个语法点问小糖人（讲解 / 辨析 / 「为什么」都行）。答完留档。 */
+export const explainGrammarNode = (body: {
+  node_id: string
+  question?: string
+  character_id?: string
+}) => asJson<VocabQuestion & { node_id: string; node_title: string }>(
+  '/api/grammar/explain', json(body))
+
+export const fetchGrammarPractice = (nodeId?: string, limit = 50) =>
+  asJson<{ items: GrammarGrade[]; stats: GrammarStats }>(
+    `/api/grammar/practice?${new URLSearchParams({
+      ...(nodeId ? { node_id: nodeId } : {}), limit: String(limit),
+    })}`)

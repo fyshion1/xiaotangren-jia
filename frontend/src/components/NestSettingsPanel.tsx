@@ -32,7 +32,7 @@ function hint(text: string): string {
   return text.replace(/\*\*/g, '')
 }
 
-export default function NestSettingsPanel({ features }: { features: NestFeature[] }) {
+export default function NestSettingsPanel({ features, bare = false }: { features: NestFeature[]; bare?: boolean }) {
   const configurable = useMemo(() => features.filter(CONFIGURABLE), [features])
   const [activeId, setActiveId] = useState('')
   const feature = configurable.find((f) => f.id === activeId) || configurable[0] || null
@@ -172,18 +172,23 @@ export default function NestSettingsPanel({ features }: { features: NestFeature[
     )
   }
 
-  return (
-    <section className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
-      <div className="mb-1 flex flex-wrap items-baseline gap-2">
-        <h2 className="font-bold">⚙ 功能开关</h2>
-        <span className="text-[11px] text-[var(--text-3)]">
-          在这里改，不用去编辑功能的 config.json
-        </span>
-      </div>
-      <p className="mb-3 text-[12px] text-[var(--text-2)]">
-        能配什么由功能自己在注册表里声明 —— 加一条声明，这里就自动长出一个开关。
-        存的是「值」，功能下一轮自己来读（QQ 桥每 30 秒一次），改完立刻生效、不用重启。
-      </p>
+  // bare：由外面的抽屉提供卡片和标题（§9.6 布局改造），这里只出内容。
+  const body = (
+    <>
+      {!bare && (
+        <>
+          <div className="mb-1 flex flex-wrap items-baseline gap-2">
+            <h2 className="font-bold">⚙ 功能开关</h2>
+            <span className="text-[11px] text-[var(--text-3)]">
+              在这里改，不用去编辑功能的 config.json
+            </span>
+          </div>
+          <p className="mb-3 text-[12px] text-[var(--text-2)]">
+            能配什么由功能自己在注册表里声明 —— 加一条声明，这里就自动长出一个开关。
+            存的是「值」，功能下一轮自己来读（QQ 桥每 30 秒一次），改完立刻生效、不用重启。
+          </p>
+        </>
+      )}
 
       <div className="mb-3 flex flex-wrap gap-2">
         {configurable.map((f) => (
@@ -214,6 +219,13 @@ export default function NestSettingsPanel({ features }: { features: NestFeature[
         {note && <span className="text-[11px] text-[var(--pink-deep)]">{note}</span>}
       </div>
       {err && <p role="alert" className="mt-2 text-[12px] text-[var(--pink-deep)]">⚠ {err}</p>}
+    </>
+  )
+
+  if (bare) return body
+  return (
+    <section className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
+      {body}
     </section>
   )
 }

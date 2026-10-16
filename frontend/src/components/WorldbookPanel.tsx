@@ -38,9 +38,11 @@ type Props = {
   owner: string
   /** 归属名字，只用于文案（如「大诗音的世界书」/「家 · 共用世界书」）。 */
   ownerLabel: string
+  /** 由外面的抽屉提供标题（§9.6 布局改造）—— 内容照旧，只是不再自带标题行。 */
+  bare?: boolean
 }
 
-export default function WorldbookPanel({ owner, ownerLabel }: Props) {
+export default function WorldbookPanel({ owner, ownerLabel, bare = false }: Props) {
   const [entries, setEntries] = useState<WorldbookEntry[]>([])
   const [shared, setShared] = useState<WorldbookEntry[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -126,11 +128,13 @@ export default function WorldbookPanel({ owner, ownerLabel }: Props) {
   )
 
   return (
-    <section className="mt-10">
-      <div className="mb-4 flex items-baseline gap-3">
-        <h2 className="text-[20px] font-extrabold tracking-wide">世界书 · {ownerLabel}</h2>
-        <span className="text-[13px] text-[var(--text-3)]">World Info · 关键词触发的设定集</span>
-      </div>
+    <section className={bare ? '' : 'mt-10'}>
+      {!bare && (
+        <div className="mb-4 flex items-baseline gap-3">
+          <h2 className="text-[20px] font-extrabold tracking-wide">世界书 · {ownerLabel}</h2>
+          <span className="text-[13px] text-[var(--text-3)]">World Info · 关键词触发的设定集</span>
+        </div>
+      )}
 
       <p className="mb-4 rounded-[14px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)] px-4 py-2.5 text-[13px] text-[var(--text-2)]">
         世界书 = 你预先写好的静态设定。聊天最近几轮里出现「关键词」里任意一个词，就会把这条设定临时注入

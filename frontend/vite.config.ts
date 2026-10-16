@@ -18,6 +18,20 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
+      // 小窝里的「日语实验室」面板（feature `japanese_lab`）：它自己的服务绑在 8765，
+      // 走这个前缀直连，**别挂到 /api 下面** —— /api 是本体(8000)的地盘。
+      // 没起那个功能时这里会 502 —— 面板自己会按注册表把 serve 拉起来（不用手动去点）。
+      '/jplab': {
+        target: 'http://127.0.0.1:8765',
+        changeOrigin: true,
+      },
+      // 小窝里的「英语学习」面板（feature `english_study`）：它自己的服务绑在 8766，
+      // 同样的道理 —— 走自己的前缀，别挂到 /api 下面。和日语是姐妹项目，各自的库、各自的端口，
+      // 只共用本体的「小窝大脑」那一套。/english/api/* 全由那个功能自己处理。
+      '/english': {
+        target: 'http://127.0.0.1:8766',
+        changeOrigin: true,
+      },
     },
   },
 })

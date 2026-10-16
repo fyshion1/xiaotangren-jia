@@ -391,14 +391,48 @@ FEATURES: list[Feature] = [
         "emoji": "📖",
         "kind": "other",
         "status": "available",
-        "desc": "用你自己的单词表背四六级：导入旧词表、让小糖人给每个词写有她味道的例句和插图、"
-                "按到期日安排复习、做完记成绩并按分类找出薄弱点。不懂的语法直接在这儿问她。",
+        "desc": "用你自己的单词表背四六级：导入旧词表、伪随机抽卡复习、让小糖人给每个词写有她味道的"
+                "例句和插图、做完记成绩并按分类找出薄弱点。语法那边给英语兔讲解的目录树，"
+                "中译英 / 填空 / 改写 / 造句都由 AI 批改；不懂的直接问她。",
         # 插图靠「让小糖人画一张」——前端调 /api/images/generate，那条路跟视觉路无关；
         # 这个功能自己不读图（不需要 vision 模型）。
         "needs_vision": False,
-        # 在本体内：它是交互界面 + 你自己的学习数据，不是在外面跑循环的采集端。
-        "folder": "",
-        "runner": None,
+        # **独立项目**（2026-10-16 从本体内搬出来的）：自己的 git 仓库、自己的库、自己的端口。
+        # 和隔壁 japanese-lab 是姐妹项目，只是各认各的词表。
+        "folder": "english-study",
+        "runner": {
+            "folder": "english-study",
+            "module": "english",
+            "commands": [
+                {"name": "check", "label": "自检", "desc": "查学习库、大脑通不通、模型配没配 —— 出问题先跑这个", "params": []},
+                {"name": "scan", "label": "找找有什么能导", "desc": "扫「个人数据库」里的英语资料，只列出来不读内容", "params": []},
+                {"name": "stats", "label": "看一眼进度", "desc": "多少词、今天该背几个、连刷几天", "params": []},
+                {"name": "serve", "label": "打开学习服务（常驻）", "desc": "起本地的学习服务 —— 小窝里的面板和独立网页都连它；关掉窗口才停",
+                 "params": [], "background": True},
+            ],
+        },
+        # 能在前端改的开关（§9.6.5）：改完立刻生效，不用去编辑功能里的 config.json。
+        # key 必须和 `english/settings.py` 的 REMOTE_KEYS 一一对上。
+        "settings": [
+            {"key": "study.tag", "label": "只看哪个分类", "type": "text", "group": "学什么",
+             "default": "", "desc": "留空 = 全部一起背（推荐）。填「四级」这种就只从这一分类抽卡。"},
+            {"key": "study.daily_new", "label": "每天背几个新词", "type": "number", "group": "学什么",
+             "default": 50, "desc": "一天认识多少个新词（复习不算在内）。", "min": 1, "max": 500},
+            {"key": "quiz.batch", "label": "一屏背几个", "type": "number", "group": "学什么",
+             "default": 50, "desc": "复习时一屏显示几张卡，背完一屏点「再看下一屏」。", "min": 10, "max": 200},
+            {"key": "study.character", "label": "谁来陪你学", "type": "character", "group": "谁陪你",
+             "default": "", "desc": "写例句 / 答疑用这位的口吻。留空 = 名册第一个人。"},
+            {"key": "grammar.character", "label": "谁陪你练语法", "type": "character", "group": "谁陪你",
+             "default": "", "desc": "讲语法 / 出题批改用她的口吻。留空 = 跟着上面「谁来陪你学」那位。"},
+            {"key": "coach.enabled", "label": "让她讲词和答疑", "type": "bool", "group": "谁陪你",
+             "default": True, "desc": "关掉 = 卡片上不出「问她」按钮，纯自己背（也省 token）。"},
+            {"key": "coach.style", "label": "要她用什么调子", "type": "textarea", "group": "谁陪你",
+             "default": "", "desc": "留空 = 用她本来的性格。想让她更严厉 / 更啰嗦就写一句，会加进讲词、答疑和批改里。"},
+            {"key": "import.source_dir", "label": "还去哪个目录找单词表", "type": "text", "group": "导入",
+             "default": "", "desc": "留空 = 只看「个人数据库」里的英语资料。填绝对路径的话会加进去一起扫。"},
+            {"key": "memory.enabled", "label": "把学英语的事记成记忆", "type": "bool", "group": "导入",
+             "default": False, "desc": "隔离在 english_study 里，不会漏进日常闲聊。也按轮花钱，默认关。"},
+        ],
     },
 ]
 
