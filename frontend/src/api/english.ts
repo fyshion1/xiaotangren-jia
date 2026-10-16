@@ -94,7 +94,26 @@ export type VocabQuestion = {
   character_id: string
   /** 谁答的（服务端补的，省得前端再查一次名册）。 */
   character_name?: string
+  /** 追问串的 id —— 同一串问答共用一个，空 = 单发的老问题。 */
+  conversation_id?: string
+  /** 这是这一串里的第几轮（从 0 数）。 */
+  turn_index?: number
   created_at: string
+}
+
+/** 从追问里总结出来的一条笔记（存下来以后好翻）。 */
+export type VocabNote = {
+  id: string
+  word_id: string
+  word: string
+  title: string
+  body: string
+  /** 这条笔记是从哪几轮问答总结出来的。 */
+  source_ids: string[]
+  character_id: string
+  created_at: string
+  /** 总结时用了几轮问答（服务端算的）。 */
+  turns?: number
 }
 
 export type VocabStats = {
@@ -299,6 +318,14 @@ export async function fetchVocabWords(opts: {
   return asJson(`/api/words?${q}`)
 }
 
+/** 单个词 —— **只有这一条路带例句和问答**（列表接口为了轻不带，见 english/api.py::h_get_word）。
+ *
+ * 展开某张词卡要看的例句 / 问答都从这儿拿：卡片上那份是列表接口给的快照，
+ * 写完例句它不会变 —— 这就是老版本「点了写例句没反应」的根。
+ */
+export const fetchVocabWord = (id: string) =>
+  asJson<VocabWord>(`/api/words/${encodeURIComponent(id)}`)
+
 export async function createVocabWord(body: {
   word: string
   meaning?: string
@@ -392,15 +419,44 @@ export async function generateVocabExamples(
     json({ character_id: characterId, count, save: true }))
 }
 
-/** 就这个词问小糖人（语法 / 用法 / 辨析）。答完留档。 */
+/** 就这个词问小糖人（语法 / 用法 / 辨析）。答完留档。
+ *
+ * 传了 `conversationId` 就是**接着这一串往下问**：服务端会把前面几轮拼进上下文，
+ * 她就不会重复讲过的。不传 = 单发一个新问题。
+ */
 export async function askVocabQuestion(
   wordId: string,
   question: string,
   characterId: string,
-): Promise<VocabQuestion & { character_name: string }> {
+  conversationId = '',
+): Promise<VocabQuestion & { character_name: string; turns?: number }> {
   return asJson(`/api/words/${encodeURIComponent(wordId)}/ask`,
-    json({ question, character_id: characterId }))
+    json({ question, character_id: characterId, conversation_id: conversationId }))
 }
+
+/** 把一串追问总结成一条笔记存下来（走严格 JSON，不套人格）。
+ *
+ * `questionIds` 只传这一串里的那几条；不传 = 这个词的所有问答。
+ */
+export async function summarizeAsk(
+  wordId: string,
+  opts: { questionIds?: string[]; characterId?: string } = {},
+): Promise<VocabNote> {
+  return asJson(`/api/words/${encodeURIComponent(wordId)}/ask/summarize`,
+    json({ question_ids: opts.questionIds, character_id: opts.characterId }))
+}
+
+/** 存下来的笔记（可只取某个词的）。 */
+export const fetchVocabNotes = (wordId?: string, limit = 100) =>
+  asJson<{ items: VocabNote[] }>(
+    `/api/notes?${new URLSearchParams({
+      ...(wordId ? { word_id: wordId } : {}), limit: String(limit),
+    })}`)
+
+export const deleteVocabNote = (noteId: string) =>
+  asJson<{ ok: boolean; id: string }>(`/api/notes/${encodeURIComponent(noteId)}`, {
+    method: 'DELETE',
+  })
 
 // ---- 成绩与分析 ----
 

@@ -23,12 +23,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addVocabExample, addVocabExam, askVocabQuestion, createVocabWord, deleteVocabExample,
-  deleteVocabWord, deleteVocabExam, explainGrammarNode, fetchGrammarTree, fetchVocabAnalysis,
-  fetchVocabHealth, fetchVocabOverview, fetchVocabQueue, fetchVocabWords, generateVocabExamples,
+  deleteVocabNote, deleteVocabWord, deleteVocabExam, explainGrammarNode, fetchGrammarTree,
+  fetchVocabAnalysis, fetchVocabHealth, fetchVocabNotes, fetchVocabOverview, fetchVocabQueue,
+  fetchVocabWord, fetchVocabWords, generateVocabExamples,
   gradeGrammarAnswer, importVocabFile, makeGrammarExercise, patchGrammarNode, patchVocabWord,
-  reviewVocabWord,
+  reviewVocabWord, summarizeAsk,
   type GrammarExercise, type GrammarGrade, type GrammarKind, type GrammarNode, type GrammarTree,
-  type ImportResult, type VocabAnalysis, type VocabExam, type VocabOverview, type VocabWord,
+  type ImportResult, type VocabAnalysis, type VocabExam, type VocabExample, type VocabNote,
+  type VocabOverview, type VocabQuestion, type VocabWord,
 } from '../api/english'
 import { fetchCharacters, fetchNestRunStatus, runNestFeature } from '../api/client'
 import { generateImages } from '../api/imagegen'
@@ -119,11 +121,18 @@ function useSpeak() {
 
 // ── 单词详情（例句 / 插图 / 问她）──
 
+/** 这个面板里要用到的例句和问答。列表接口不带这两样（几十张卡全带上太重），
+ *  是展开某张卡时单独拉的 —— 所以「写完例句看不见」这种毛病要么出在这里没拉到，
+ *  要么出在拉完没往详情里灌。 */
+type WordDetailData = { examples: VocabExample[]; questions: VocabQuestion[] }
+
 function WordDetail({
-  word, characters, onChanged, onClose,
+  word, characters, refreshKey, onChanged, onClose,
 }: {
   word: VocabWord
   characters: CharacterProfile[]
+  /** 外面数据变一次就加一 —— 详情里跟着重拉。 */
+  refreshKey: number
   onChanged: () => void
   onClose: () => void
 }) {
@@ -136,19 +145,63 @@ function WordDetail({
   const [err, setErr] = useState('')
   const [answers, setAnswers] = useState<{ q: string; a: string; who: string }[]>([])
   const [note, setNote] = useState(word.note)
+  // 这张卡自己的例句 / 问答 / 笔记。**不信外面传来的 `word`** —— 那是个快照，
+  // 写完例句它不会变（老版本的「点了没反应」就是这么来的）。改了就在这儿重拉。
+  const [data, setData] = useState<WordDetailData>({ examples: [], questions: [] })
+  // 追问串：第一问开一串，后面几问共用这个 id，服务端才会把前几轮拼进上下文。
+  const [convId, setConvId] = useState('')
+  const [notes, setNotes] = useState<VocabNote[]>([])
+  const [showNotes, setShowNotes] = useState(false)
   const speak = useSpeak()
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { setNote(word.note) }, [word.id, word.note])
 
+  // 打开 / 换词 / 外面说「数据变了」时，重拉这一份。
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const full = await fetchVocabWord(word.id)
+        if (!alive) return
+        const qs = full.questions ?? []
+        setData({ examples: full.examples ?? [], questions: qs })
+        // 老问答没有 conversation_id（单发时代的）；再接就是新的一串。
+        const head = qs.find((q) => q.conversation_id)
+        setConvId(head?.conversation_id ?? '')
+      } catch { /* 拉不到就空着，写例句照样能用 */ }
+    })()
+    return () => { alive = false }
+  }, [word.id, refreshKey])
+
+  // 这个词存过的笔记。
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const got = await fetchVocabNotes(word.id)
+        if (alive) setNotes(got.items)
+      } catch { /* 笔记拉不到不影响别的 */ }
+    })()
+    return () => { alive = false }
+  }, [word.id, refreshKey])
+
   // 派生出来的当前角色：用户没点过就用名册第一位。不 setState，免得渲染里改状态。
   const activeChar = charId || characters[0]?.id || ''
   const activeName = characters.find((c) => c.id === activeChar)?.name ?? '小糖人'
+  // 这一串追问的轮次（老的单发问答不算进来，免得总结时把陈年旧账一起炒了）。
+  const convAsks = data.questions.filter((q) => q.conversation_id && q.conversation_id === convId)
+
+  const reload = async () => {
+    const full = await fetchVocabWord(word.id)
+    const qs = full.questions ?? []
+    setData({ examples: full.examples ?? [], questions: qs })
+  }
 
   const run = async (tag: string, fn: () => Promise<void>) => {
     setBusy(tag)
     setErr('')
-    try { await fn(); onChanged() }
+    try { await fn(); await reload(); onChanged() }
     catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
     finally { setBusy('') }
   }
@@ -174,9 +227,9 @@ function WordDetail({
   // 插图挂到「最后一条例句」上；一条例句都没有就先建一条空例句来挂图。
   // 上传和生成共用这段 —— 免得两条路径挂图的行为不一样。
   const attachImage = (orig: string, thumb: string) => {
-    const target = word.examples?.[word.examples.length - 1]
-    return addVocabExample(word.id, target
-      ? { text: target.text, translation: target.translation, image: orig, image_thumb: thumb }
+    const last = data.examples[data.examples.length - 1]
+    return addVocabExample(word.id, last
+      ? { text: last.text, translation: last.translation, image: orig, image_thumb: thumb }
       : { text: '', image: orig, image_thumb: thumb })
   }
 
@@ -185,7 +238,7 @@ function WordDetail({
   const genImage = () => run('genimg', async () => {
     const profile = characters.find((c) => c.id === activeChar)
     if (!profile) throw new Error('还没有小糖人 —— 先去介绍页建一位，再让她画插图')
-    const scene = word.examples?.[word.examples.length - 1]?.text?.trim()
+    const scene = data.examples[data.examples.length - 1]?.text?.trim()
     const prompt = [
       buildAppearancePrompt(profile),
       scene ? `场景：${scene}` : `围绕「${word.word}」的一个日常场景`,
@@ -197,12 +250,27 @@ function WordDetail({
     await attachImage(first.orig, first.thumb)
   })
 
+  // 问她 / 追问：同一串共用 `convId`，服务端会把前几轮带上，她就不会车轱辘话。
+  // **第一问的串号在前端生成** —— 服务端只认「你给的这一串」，它自己不会新造一个，
+  // 所以等它回一个串号是等不到的（老写法就是空着回来，追问也就接不上了）。
   const ask = () => run('ask', async () => {
     const q = question.trim()
     if (!q) throw new Error('先写要问什么')
-    const saved = await askVocabQuestion(word.id, q, activeChar)
+    const thread = convId || `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    const saved = await askVocabQuestion(word.id, q, activeChar, thread)
+    if (!convId) setConvId(thread)
     setAnswers((list) => [{ q, a: saved.answer, who: saved.character_name }, ...list])
     setQuestion('')
+  })
+
+  // 把这串追问总结成一条能复习的笔记存下来。
+  const summarize = () => run('sum', async () => {
+    if (!convAsks.length && !data.questions.length) throw new Error('还没有问过她，没东西可总结')
+    const ids = convAsks.length
+      ? convAsks.map((q) => q.id)
+      : data.questions.map((q) => q.id)
+    const saved = await summarizeAsk(word.id, { questionIds: ids, characterId: activeChar })
+    setNotes((list) => [saved, ...list])
   })
 
   return (
@@ -248,13 +316,13 @@ function WordDetail({
             onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void uploadImage(f) }} />
         </div>
 
-        {(word.examples ?? []).length === 0 ? (
+        {data.examples.length === 0 ? (
           <p className="text-[12px] text-[var(--text-3)]">
             还没有例句。让她写几句 —— 她会用自己的日常造句，比课本例句好记。
           </p>
         ) : (
           <ul className="space-y-2">
-            {(word.examples ?? []).map((ex) => (
+            {data.examples.map((ex) => (
               <li key={ex.id} className="flex gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
                 {ex.image_thumb || ex.image ? (
                   <img src={ex.image_thumb || ex.image} alt="" loading="lazy"
@@ -318,13 +386,13 @@ function WordDetail({
             </p>
           </div>
         ))}
-        {(word.questions ?? []).length > 0 && answers.length === 0 && (
+        {data.questions.length > 0 && answers.length === 0 && (
           <details className="mt-2">
             <summary className="cursor-pointer text-[12px] text-[var(--text-3)]">
-              以前问过 {word.questions!.length} 次
+              以前问过 {data.questions.length} 次
             </summary>
             <div className="mt-1.5 space-y-2">
-              {word.questions!.map((q) => (
+              {data.questions.map((q) => (
                 <div key={q.id} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
                   <p className="text-[12px] text-[var(--text-3)]">你问：{q.question}</p>
                   <p className="mt-1 text-[13px] leading-relaxed whitespace-pre-wrap text-[var(--text)]">{q.answer}</p>
@@ -333,7 +401,52 @@ function WordDetail({
             </div>
           </details>
         )}
+
+        {/* 追问 + 总结存档 */}
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-2">
+          {convAsks.length > 0 && (
+            <span className="text-[11px] text-[var(--text-3)]">这一串已经聊了 {convAsks.length} 轮</span>
+          )}
+          <button className="btn ghost sm" disabled={!!busy || !data.questions.length}
+            onClick={() => void summarize()}>
+            {busy === 'sum' ? '整理着呢…' : '📝 总结这串问答存成笔记'}
+          </button>
+          {convId && (
+            <button className="text-[11px] text-[var(--text-3)] underline" disabled={!!busy}
+              onClick={() => setConvId('')}>开新的一串</button>
+          )}
+        </div>
       </div>
+
+      {/* 存下来的笔记 */}
+      {notes.length > 0 && (
+        <div className="mb-3">
+          <button className="eyebrow mb-1 flex items-center gap-1" onClick={() => setShowNotes((v) => !v)}>
+            📝 我问出来的笔记（{notes.length}）{showNotes ? '▾' : '▸'}
+          </button>
+          {showNotes && (
+            <div className="space-y-2">
+              {notes.map((n) => (
+                <div key={n.id} className="rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] p-3">
+                  <div className="flex items-start gap-2">
+                    <b className="min-w-0 flex-1 text-[13px] text-[var(--text)]">{n.title}</b>
+                    <button className="shrink-0 text-[11px] text-[var(--text-3)] underline" disabled={!!busy}
+                      onClick={() => void run('delnote', async () => {
+                        if (!window.confirm(`删掉笔记「${n.title}」？`)) return
+                        await deleteVocabNote(n.id)
+                        setNotes((list) => list.filter((x) => x.id !== n.id))
+                      })}>删</button>
+                  </div>
+                  <p className="mt-1 text-[12px] leading-relaxed whitespace-pre-wrap text-[var(--text-2)]">{n.body}</p>
+                  <p className="mt-1 text-[11px] text-[var(--text-3)]">
+                    {(n.created_at || '').slice(0, 10)}{n.turns ? ` · 从 ${n.turns} 轮问答里总结的` : ''}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 备注 + 手改释义 */}
       <div>
@@ -373,11 +486,15 @@ function WordCard({
   onChanged: () => void
 }) {
   const [revealed, setRevealed] = useState(false)
+  // 详情里改完东西（写例句 / 问完 / 删笔记）就让详情重拉一次 —— 外面这张卡也跟着刷新。
+  const [tick, setTick] = useState(0)
   const speak = useSpeak()
   // 这一张卡从出现到现在花了多久 —— 作答复盘时一起报上去，用来找「认得但不熟」的词。
   const shownAt = useRef(Date.now())
 
   useEffect(() => { shownAt.current = Date.now(); setRevealed(false) }, [word.id])
+
+  const changed = useCallback(() => { setTick((t) => t + 1); onChanged() }, [onChanged])
 
   const answer = (r: 'known' | 'fuzzy' | 'forgot') => {
     onReviewed(r, Date.now() - shownAt.current)
@@ -439,8 +556,7 @@ function WordCard({
       </div>
 
       {expanded && (
-        <WordDetail word={word} characters={characters}
-          onChanged={onChanged} onClose={onToggleDetail} />
+        <WordDetail word={word} characters={characters} refreshKey={tick} onChanged={changed} onClose={onToggleDetail} />
       )}
     </div>
   )
