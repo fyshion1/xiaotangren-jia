@@ -242,21 +242,38 @@ def build_query(messages: list[dict], window: int = 4) -> str:
 # ---- Prompt 注入格式 ----
 
 
-def format_memory_block(memories: list[dict], name_of: dict[str, str]) -> str:
+def format_memory_block(
+    memories: list[dict],
+    name_of: dict[str, str],
+    pinned: list[dict] | None = None,
+) -> str:
     """把检索到的记忆块排版进 System Prompt。
 
     - 家记忆：所有在场者都知道
     - 个人记忆：只有该角色自己知道（旁人不该知道，且她也不该主动摊开）
+    - pinned：我的档案里为大老大挑中的记忆（§22.4），原样带上、不参与打分；
+      个人库里挑出来的（`id` 以 `db:` 开头）当成「确定的事实」写。
     """
-    if not memories:
+    pinned = pinned or []
+    if not memories and not pinned:
         return ""
     home = [m for m in memories if m.get("bucket") == HOME]
     personal: dict[str, list[dict]] = {}
     for m in memories:
         if m.get("bucket") == PERSONAL:
             personal.setdefault(m.get("char_id") or "", []).append(m)
+    pinned_mem = [p for p in pinned if not str(p.get("id") or "").startswith("db:")]
+    pinned_facts = [p for p in pinned if str(p.get("id") or "").startswith("db:")]
 
     lines: list[str] = ["【你记得的事 · 长期记忆】"]
+    has_facts = bool(pinned_mem or pinned_facts)
+    if pinned_mem:
+        lines.append("· 大老大特意叮嘱过要记住的：")
+        lines.extend(f"  - {m['text']}" for m in pinned_mem)
+    if pinned_facts:
+        lines.append("· 大老大档案里确定的真实信息（当作事实，别质疑、别猜别的）：")
+        lines.extend(f"  - {(p.get('title') or '').strip()}：{(p.get('content') or '').strip()}"
+                     for p in pinned_facts if (p.get("content") or "").strip())
     if home:
         lines.append("· 大家共同记得的（在场者都知道）：")
         lines.extend(f"  - {m['text']}" for m in home)
@@ -264,5 +281,8 @@ def format_memory_block(memories: list[dict], name_of: dict[str, str]) -> str:
         who = name_of.get(cid) or cid
         lines.append(f"· {who} 自己记得的（只有她自己知道，别人不知道，她也不会主动全盘托出）：")
         lines.extend(f"  - {m['text']}" for m in items)
-    lines.append("这些是过去的片段，只在话题自然相关时自然地流露，不要生硬复述或声明「我记得」。")
+    if not has_facts and not home and not personal:
+        return ""
+    if home or personal:
+        lines.append("这些是过去的片段，只在话题自然相关时自然地流露，不要生硬复述或声明「我记得」。")
     return "\n".join(lines)

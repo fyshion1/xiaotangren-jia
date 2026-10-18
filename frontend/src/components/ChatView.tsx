@@ -1,9 +1,10 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
-import type { ChatSession, ChatMessage } from '../data/chats'
+import type { ChatMessage } from '../data/chats'
 import { buildSessions, personaSessionId, personasAsCast, suggestionsFor, MAIN_PERSONA_ID, SELF_CHARACTER_ID } from '../data/chats'
 import { activeFormId, listForms } from '../lib/forms'
 import SessionList from './SessionList'
+import CardImportDialog from './CardImportDialog'
 import StatusSidebar from './StatusSidebar'
 import PortraitCarousel from './PortraitCarousel'
 import ImageGenOverlay from './ImageGenOverlay'
@@ -108,16 +109,15 @@ function loadConfig(): ModelConfig {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const prev = JSON.parse(raw)
-      // 旧中转（moyuu）已废弃：本地若还存着旧来源/旧模型，只把「命中陈旧」的那条通道
-      // 清回默认，保留另一条通道已配好的值（否则一刀切回默认会把无审查通道一起吞掉）。
-      const staleUrl = (u?: string) => !!u && u.includes('moyuu')
-      const staleModel = (m?: string) => m === 'gemini-3.6-flash' || m === 'gemini-3.1-flash-image'
+      // 中转可以随时换（vsllm / moyuu / 以后别的），所以只清理「旧模型名」：本地若还存着
+      // 已下线的模型，只把「命中陈旧」的那条通道清回默认，保留另一条通道已配好的值。
+      const staleModel = (m?: string) => m === 'gemini-3.6-flash'
       const cleaned = { ...DEFAULT_CONFIG, ...prev } as ModelConfig
       // 老配置里没有「注入条数」（§27）这个字段：补上默认值，别让旧用户吃到 undefined。
       if (typeof prev.historyLimit !== 'number' || !Number.isFinite(prev.historyLimit)) {
         cleaned.historyLimit = DEFAULT_CONFIG.historyLimit
       }
-      if (staleUrl(prev.baseUrl) || staleModel(prev.chatModel) || staleModel(prev.visionModel)) {
+      if (staleModel(prev.chatModel) || staleModel(prev.visionModel)) {
         // 常规通道命中陈旧 → 清回默认，但保留无审查通道与通道选择
         cleaned.baseUrl = DEFAULT_CONFIG.baseUrl
         cleaned.chatModel = DEFAULT_CONFIG.chatModel
@@ -125,7 +125,7 @@ function loadConfig(): ModelConfig {
         cleaned.imageBaseUrl = ''
         cleaned.imageModel = ''
       }
-      if (staleUrl(prev.uncensoredBaseUrl) || staleModel(prev.uncensoredChatModel) || staleModel(prev.uncensoredVisionModel)) {
+      if (staleModel(prev.uncensoredChatModel) || staleModel(prev.uncensoredVisionModel)) {
         cleaned.uncensoredBaseUrl = ''
         cleaned.uncensoredChatModel = ''
         cleaned.uncensoredVisionModel = ''
@@ -407,10 +407,16 @@ type Props = {
   onOpenProfile: (charId: string) => void
   /** 点自己那侧的署名人 → 进私人空间（§21）。 */
   onOpenSelf: () => void
+  /** 「🧠 记忆」：跳到私人空间里这个身份的「记忆」段（§22.4），不在聊天里直接开关 */
+  onOpenMemoryPicks: () => void
   /** 「消息」栏里的入口 → 糖人小窝（§9.6 / §28）。 */
   onOpenNest: () => void
   /** 切换某角色的形态（§17）：写回后端，全局生效。 */
   onSwitchForm: (charId: string, formId: string) => void
+  /** 重新拉一次角色列表（导入 / 删除角色卡之后）。返回落库后的完整列表。 */
+  onRefreshCharacters?: () => Promise<CharacterProfile[]>
+  /** 删掉一张导入的角色卡（含她的会话 / 记忆 / 立绘）—— 由 App 统一做，与介绍页走同一条路。 */
+  onDeleteImportedCard?: (c: CharacterProfile) => Promise<void>
 }
 
 type VoiceOption = { id: string; name: string }
@@ -435,7 +441,7 @@ function StickerIcon({ className }: { className?: string }) {
   )
 }
 
-export default function ChatView({ characters, personas = [], activePersona, initialSessionId, initialMobileTab, onOpenProfile, onOpenSelf, onOpenNest, onSwitchForm, onTitleChange }: Props) {
+export default function ChatView({ characters, personas = [], activePersona, initialSessionId, initialMobileTab, onOpenProfile, onOpenSelf, onOpenMemoryPicks, onOpenNest, onSwitchForm, onTitleChange, onRefreshCharacters, onDeleteImportedCard }: Props) {
   const [storageOpen, setStorageOpen] = useState(false)
   const activePersonaId = activePersona?.id ?? MAIN_PERSONA_ID
   // 当前视角下能出场的全部角色（§22）：小糖人 + 「别的身份」（汐子视角下的大老大）。
@@ -749,9 +755,9 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     })
   }, [active, sessionKey])
 
-  // 同步会话不产生本地回复；只合并远端最新页，保留向上加载的历史。
+  // 桌宠等本机呈现端写入同一会话；生成期间暂停合并，保留较早历史和未落库消息。
   useEffect(() => {
-    if (active?.id !== 'gemini-test') return
+    if (!active || !sessionKey || streaming) return
     let cancelled = false
     let pending = false
     const refresh = async () => {
@@ -761,17 +767,20 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         const page = await loadMessages(sessionKey, undefined, 200)
         if (cancelled) return
         setHistory(prev => {
-          const merged = new Map((prev[sessionKey] || []).map(m => [m.dbId, m]))
+          const previous = prev[sessionKey] || []
+          const localOnly = previous.filter(m => !m.dbId)
+          const merged = new Map(previous.filter(m => m.dbId).map(m => [m.dbId, m]))
           for (const row of page.items) merged.set(row.id, toChatMessage(row))
-          const next = [...merged.values()].sort((a, b) => (a.seq || 0) - (b.seq || 0))
+          const next = [...[...merged.values()].sort((a, b) => (a.seq || 0) - (b.seq || 0)), ...localOnly]
           return JSON.stringify(next) === JSON.stringify(prev[sessionKey] || []) ? prev : { ...prev, [sessionKey]: next }
         })
-      } finally { pending = false }
+      } catch { /* 临时离线保留当前画面，下一轮再同步。 */ }
+      finally { pending = false }
     }
     void refresh()
     const timer = window.setInterval(() => void refresh(), 3000)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [active?.id, sessionKey])
+  }, [active?.id, sessionKey, streaming])
 
   // 向上滚到顶 → 按游标拉更早的一页，插到最前面（不跳视口）
   const onScrollMessages = useCallback(
@@ -1283,19 +1292,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     )
   }, [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant, pendingVideo])
 
-  const onImport = useCallback((name: string) => {
-    const imported: ChatSession = {
-      id: `imported-${Date.now()}`,
-      kind: 'imported',
-      name,
-      emoji: '🎴',
-      subtitle: '导入角色卡（解析待阶段 2）',
-      characterIds: [],
-    }
-    setSessionsExtra((prev) => [...prev, imported])
-    setActiveId(imported.id)
-  }, [])
-
   // 「记住这条」（§9.3 手动记忆）：桶由会话类型决定 —— 私聊进 TA 的个人记忆，群聊进家记忆。
   const rememberThis = useCallback(
     async (key: string, content: string) => {
@@ -1509,10 +1505,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     }
   }, [active, sessionKey, messages, streaming, deleting, editingSeq, editDraft, activePersonaId, config, clearSessionMarks, streamAssistant, stampDb, buildOutbound])
 
-  // 导入的角色卡（阶段 2 才解析）；先挂在会话列表尾部，让 UI 走通
-  const [sessionsExtra, setSessionsExtra] = useState<ChatSession[]>([])
-  const allSessions = [...sessions, ...sessionsExtra]
-
   // 手机端当前显示哪一栏（桌面端不生效）。挂载初值优先取 App 递进来的 initialMobileTab（§28）——
   // 从别的视图切过来时事件早于挂载，收不到；只有已经在聊天页时事件才管用。
   const [mobileTab, setMobileTab] = useState<MobileTab>(
@@ -1538,6 +1530,34 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // trio = 右半边那三颗；recording = 是否已经点了麦克风、露出「按住说话」。
   const [micPanel, setMicPanel] = useState<'none' | 'trio' | 'recording'>('none')
 
+  // 导入角色卡（酒馆）：选出文件后**不马上建角色** —— 先开浮层读卡、立绘落盘、抽词条，
+  // 用户在预览里确认（改不改名字都行）才落库。建完刷新角色列表并跳到她的私聊。
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const onImport = useCallback((file: File) => setImportFile(file), [])
+
+  /** 预览里抽词条走聊天这一份上游 —— 抽取是整理原文，不该逼用户再配一份 key。 */
+  const importRoute = { baseUrl: route.chat.baseUrl, apiKey: route.chat.apiKey, model: route.chat.model }
+
+  const onImported = useCallback(
+    async (char: CharacterProfile) => {
+      setImportFile(null)
+      await onRefreshCharacters?.()
+      setActiveId(`single-${char.id}`)
+      setMobileTab('chat')
+    },
+    [onRefreshCharacters],
+  )
+
+  /** 会话列表里的 🗑：删完刷新列表，当前会话若正是她那条就落回群聊（那条已经没了）。 */
+  const onDeleteImported = useCallback(
+    async (char: CharacterProfile) => {
+      if (!onDeleteImportedCard) return
+      await onDeleteImportedCard(char)
+      if (activeId === `single-${char.id}`) setActiveId('group')
+    },
+    [onDeleteImportedCard, activeId],
+  )
+
   const suggestions = active ? suggestionsFor(active) : []
   useEffect(() => { onTitleChange?.(active?.name || '信息') }, [active?.name, onTitleChange])
 
@@ -1558,7 +1578,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         className={`relative min-h-0 min-w-0 flex-1 overflow-hidden border-[var(--border)] bg-[var(--surface)] max-md:flex max-md:flex-col md:w-[var(--sb-w)] md:flex-none md:border-r ${tabCls('sessions')}`}
       >
         <SessionList
-          sessions={allSessions}
+          sessions={sessions}
           characters={visibleCharacters}
           activeId={active.id}
           onSelect={(id) => {
@@ -1567,6 +1587,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           }}
           onImport={onImport}
           onOpenNest={onOpenNest}
+          onDeleteImported={onDeleteImportedCard ? onDeleteImported : undefined}
         />
         {/* 拖动把手：窄窄一条贴在右缘，鼠标划过去放大到 4px 高亮。手机端（<md）藏掉 */}
         <div
@@ -1585,12 +1606,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
             以前这里还有一排「点进角色介绍」的缩略头像 —— 群聊里几位并排、私聊里一位，
             占掉半行宽度。其实消息区里每位的头像/署名都能点进介绍，功能重复，去掉。 */}
         <header className="hidden items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2 md:flex">
-          {active.characterIds.length === 0 && (
-            <span className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-2)] py-1 pl-1 pr-3 text-[12px] text-[var(--text-2)]">
-              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-[13px]">🎴</span>
-              {active.name}
-            </span>
-          )}
           {/* 形态切换（§17）：私聊时可直接在聊天头部换她的形态，切换即写回后端、全局生效 */}
           {active.characterIds.length === 1 &&
             (() => {
@@ -1673,9 +1688,9 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               🗑 删除
             </button>
             <button
-              onClick={() => setMemoryOpen(true)}
+              onClick={onOpenMemoryPicks}
               className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-              title="记忆：家记忆 / 各人的个人记忆"
+              title="记忆管理：「我的档案 → 记忆」，挑哪些长期记忆带进对话"
             >
               🧠 记忆
             </button>
@@ -2709,8 +2724,8 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               </button>
               <button
                 className="status-action"
-                onClick={() => setMemoryOpen(true)}
-                title="记忆：家记忆 / 各人的个人记忆"
+                onClick={onOpenMemoryPicks}
+                title="记忆管理：「我的档案 → 记忆」，挑哪些长期记忆带进对话"
               >
                 <span className="text-[16px]">🧠</span>记忆
               </button>
@@ -2901,6 +2916,11 @@ export default function ChatView({ characters, personas = [], activePersona, ini
             多选…
           </button>
         </div>
+      )}
+
+      {/* 导入酒馆角色卡（🎴）：预览 → 确认才建角色。建完由 onImported 刷新列表并跳过去 */}
+      {importFile && (
+        <CardImportDialog file={importFile} route={importRoute} onClose={() => setImportFile(null)} onImported={onImported} />
       )}
 
       {/* 画廊浮层（§9.4）：收藏的图片 + 描述；描述按 A 方案进记忆 */}

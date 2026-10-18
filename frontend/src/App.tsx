@@ -6,6 +6,7 @@ import NestView from './components/NestView'
 import type { CharacterProfile } from './data/characters'
 import { PERSONA_FALLBACK, PROFILE_FALLBACK } from './data/characters'
 import { MAIN_PERSONA_ID } from './data/chats'
+import { deleteTavernCard } from './api/cardImport'
 import {
   createProfile,
   deleteProfile,
@@ -93,6 +94,31 @@ export default function App() {
     setCharacters((list) => list.map((c) => (c.id === saved.id ? saved : c)))
   }, [])
 
+  /** 重新拉一次角色列表。导入 / 删除角色卡之后用 —— 让后端说了算，别在前端拼半份。 */
+  const refreshCharacters = useCallback(async () => {
+    const list = await fetchCharacters()
+    setCharacters(list)
+    return list
+  }, [])
+
+  /**
+   * 删掉一张**导入的**角色卡：后端连她的私聊记录、个人记忆、立绘一起清（自家四位是种子
+   * 数据，后端会 400 挡住，这里只负责确认与刷新）。确认框照项目里既有的 `window.confirm` 写法。
+   */
+  const onDeleteImportedCard = useCallback(
+    async (c: CharacterProfile) => {
+      const ok = window.confirm(
+        `删掉导入的「${c.name}」？\n\n` +
+          `和她单独聊的那些记录、你让她记住的事、导入时存下的立绘，会一起清掉。\n` +
+          `自家四位不受影响，画廊里别人存的图也不动。`,
+      )
+      if (!ok) return
+      await deleteTavernCard(c.id, true)
+      setCharacters((list) => list.filter((x) => x.id !== c.id))
+    },
+    [],
+  )
+
   const onSavePersona = useCallback(async (next: CharacterProfile) => {
     const saved = await saveProfile(next)
     setPersonas((list) => list.map((p) => (p.id === saved.id ? saved : p)))
@@ -147,6 +173,13 @@ export default function App() {
 
   const activePersona = personas.find((p) => p.id === activePersonaId) ?? personas[0]
 
+  // 聊天页「🧠 记忆」跳私人空间（§22.4）：带一个自增计数，哪怕已经在私人空间也会重新滚过去。
+  const [focusMemory, setFocusMemory] = useState(0)
+  const openPersonaMemory = useCallback(() => {
+    setFocusMemory((n) => n + 1)
+    setView('space')
+  }, [])
+
   // h-[100dvh] 而不是 h-screen（§19.21）：手机上 100vh 大于可视高度（地址栏收放、
   // 键盘弹出），会让整页产生一层可滚区间，顶栏跟着滚走。dvh 跟着真实可视高度走。
   return (
@@ -162,6 +195,7 @@ export default function App() {
             characters={characters}
             initialCharId={profileCharId}
             onSaveChar={onSaveChar}
+            onDeleteImportedCard={onDeleteImportedCard}
             onEnterChat={openChat}
             onOpenNest={() => setView('nest')}
           />
@@ -181,6 +215,7 @@ export default function App() {
             onDeletePersona={onDeletePersona}
             onEnterChat={openChat}
             onOpenNest={() => setView('nest')}
+            focusMemory={focusMemory}
           />
         ) : (
           <ChatView
@@ -191,9 +226,12 @@ export default function App() {
             initialMobileTab={chatMobileTab}
             onOpenProfile={openProfile}
             onOpenSelf={() => setView('space')}
+            onOpenMemoryPicks={openPersonaMemory}
             onOpenNest={() => setView('nest')}
             onSwitchForm={onSwitchForm}
             onTitleChange={setChatTitle}
+            onRefreshCharacters={refreshCharacters}
+            onDeleteImportedCard={onDeleteImportedCard}
           />
         )}
       </div>

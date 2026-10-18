@@ -32,8 +32,21 @@ export type CharacterProfile = {
   emoji: string // 暂代立绘的 emoji（日后换成 Live2D / 立绘图）
   portrait?: string // 静态立绘 / GIF 图片 URL（未填则用 emoji 占位）
   avatar?: string // 头像图片 URL：聊天气泡 / 会话列表用（未填则回退 emoji）
+  /**
+   * 实机模型（§36）：填了才能把角色卡左上角的显示方式切到那一档。
+   * `model` 是**素材清单里的 key**，不是文件路径 —— 路径由前端 `lib/live2dAssets.ts` /
+   * `lib/vrmAssets.ts` 负责拼（素材放在仓库根 `assets/`，只在本机 dev server 里可取）。
+   */
+  live2d?: { model: string }
+  vrm?: { model: string }
   // 提示词（喂给模型）
   about: string
+  /** 「关于」的**中文译文，只给界面看**（导入的酒馆卡才有）。
+   *  喂给模型的永远是 `about` 原文，一个字不动；这份只是摆着好读，一键能切回原文看。 */
+  aboutZh?: string
+  /** 卡里的开场白（去标签后的纯文本，导入的酒馆卡才有）。
+   *  **绝不自动发言**：导入时默认不勾选，不写进聊天记录；想用去角色介绍页点「插入开场白」。 */
+  greeting?: string
   // 基本词条
   birthday: string
   age: string
@@ -71,6 +84,11 @@ export type CharacterProfile = {
   relation?: string
   /** 当你**不是**这个身份时，她要不要作为可聊角色出现在角色介绍 / 群聊默认阵容。 */
   asCharacter?: boolean
+  // ---- 导入的角色卡专用 ----
+  /** 从「酒馆角色卡」导入的（后端 commit 时置 true）。
+   *  两个作用：① 默认**不进**「小糖人的家」群聊（别人的孩子先单独聊，想拉进群去成员面板勾）；
+   *  ② 只有她能删 —— 自家四位是种子数据，删了会被下次启动补种回来。 */
+  imported?: boolean
 }
 
 /** 后端拉不到人设时的应急占位（正常路径见 api/client.ts 的 fetchCharacters）。 */
@@ -118,6 +136,8 @@ export const PROFILE_FALLBACK: CharacterProfile[] = [
     alias: '大姐头 · 烘焙担当',
     emoji: '🌸',
     about: '你是「大诗音」，小糖人之家里的大姐头，22 岁。',
+    // 实机模型（§36 试点）见 lib/modelBindings.ts —— 素材 key 只在这台机器有意义，
+    // 不写进后端档案，避免后端/前端各存一份。
     birthday: '3 月 14 日',
     age: '22',
     height: '168cm',

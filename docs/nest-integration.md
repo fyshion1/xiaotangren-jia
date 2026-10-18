@@ -97,11 +97,17 @@ POST /api/nest/chat
 
 与游戏层 `POST /api/game/chat` 同构，`game_id` → `feature_id`。字段：
 `feature_id`、`world_id`（可空）、`player_id`（可空）、`character_id`、`character_ids`（可选，最多 8 位，一次模型调用分饰多角）、
-`conversation_id`、`messages`、`images`（可选）、`state`、`stream`、`max_tokens`。
+`conversation_id`、`messages`、`images`（可选）、`state`、`stream`、`max_tokens`、`memory_recall`（见下）。
 
 - 上游由**该功能合并后的配置**决定；没配任何上游 → 409。
   **不会回退到服务端的 .env 或聊天页配置** —— 小窝大脑和聊天接口是两份独立的配置，这是刻意的。
-- 不调用普通聊天组装器，避免把家庭记忆和私人聊天上下文带进功能会话。
+- 默认不调用普通聊天组装器，不主动把家庭记忆和私人聊天上下文带进功能会话（人设和规则由本条接口自己组装）。
+- **长期记忆召回**：请求里传 `memory_recall: true` 才召回；另外 `nest.py` 的 `MEMORY_RECALL_FEATURES`
+  内建登记了 `qq_bridge` —— 它和群聊 / 私聊是同一个大脑，换个入口不该失忆（QQ 桥自己也显式传这个字段，
+  两边任一处都够）。召回规则与普通聊天相同（最近几轮拼 query →
+  家记忆 + 每位在场角色个人记忆 → 排版进 system），检索失败静默跳过，不影响回话。
+  召回的就是**日常聊天那一桶**（`game_id=''`），和群聊 / 私聊共用；`memory.isolate` 只管写入侧
+  （提炼进哪个命名空间），不影响这里的召回。
 - `stream: true` 走 SSE，事件 `token` / `done` / `error`，每帧带 `conversation_id`。
 - 多角色回复的 `message.content` 是 JSON 字符串：`{"replies":[{"character_id":"…","text":"…"}]}`。
 
@@ -168,12 +174,19 @@ PUT /api/nest/features/{feature_id}/settings    # 整份提交，只认声明过
 | `secret` | 前端用密码框（**只是不明文晃眼，不加密、也不回显遮蔽**） |
 | `options` / `min` / `max` | `select` 的候选项 / `number` 的取值范围（越界 422） |
 | `fields` | `type=accounts` 时每一行里的格子（见下） |
+| `invert` | 只给 `bool`：**前端显示成存储值的反**（名字反着写的开关，如 `memory.isolate`） |
 
 两个特殊类型：
 
 - **`character`** —— 下拉选一位小糖人，候选项由前端现拉 `/api/characters`。
 - **`accounts`** —— 「多个账号各演一个人」的重复行编辑器，`fields` 声明每行有哪些格子
   （QQ 桥用它做「一个 QQ 号 = 一个小糖人」，最多 20 行）。
+
+`invert` 值得单独说一句：`memory.isolate` 这种 key **名字是反着写的**（true = 不共享），
+可大老大要看的是正面那句「和群聊 / 私聊共享记忆」。所以声明里标 `invert: true`，
+前端把勾选框和「恢复默认」的提示都翻过来显示 —— **`default` 和 `values` 一律还是存储语义**
+（`default: False` = 不隔离 = 共享 = 默认开着），后端 `_coerce` / `_settings_payload` 也不认这个标记。
+功能侧拉回去直接覆盖 `config.json`，它同样不认 —— 别名只活在显示层。
 
 后端只做四件事，**不解释字段的业务含义**：① 把声明和值拼成一份给前端；② 丢了没声明过的 key
 （返回 `ignored`）；③ 按 `type` 粗校验（收不拢就 422，宁可拒绝不静默改）；④ 按声明补默认值。

@@ -23,6 +23,8 @@ frontend/.vite/
 # 只忽略运行期数据目录，别误伤前端源码 frontend/src/data/（源码里也有叫 data 的目录）
 /data/
 /backend/data/
+# 运行期日志（重启大脑的新进程也往这儿写）—— 里面有本机路径，不进 git
+/backend/logs/
 
 # TTS voice models (large files — download on demand)
 backend/data/tts/piper/
@@ -66,3 +68,6 @@ docs/pending-agent-response-*.json
 
 # 本地编辑器配置（tasks 里可能指向临时 worktree，不进仓库）
 .vscode/
+
+# SnowLuma WebUI 本机的密码哈希（机器相关，不进 git）
+backend/config/webui.json

@@ -152,7 +152,7 @@ MODEL_BASE_URL=https://vsllm.cc/v1   # OpenAI 兼容端点（/v1）
 MODEL_API_KEY=sk-...                  # 你的 key；本地 Ollama 填 ollama
 MODEL_CHAT=gemini-3.8-flash           # 文字聊天模型
 MODEL_VISION=gemini-3.8-flash         # 看图模型
-MODEL_IMAGE=                          # 生图模型（vsllm 无生图通道，需另配中转）
+MODEL_IMAGE=                          # 生图模型（要配一个支持 /images/generations 的中转）
 IMAGE_BASE_URL=                       # 生图中转地址（留空 = 用 MODEL_BASE_URL）
 ```
 
@@ -296,7 +296,7 @@ COMFYUI_TIMEOUT=180                     # 单张图总预算（秒）
 ### 第三方生图 API
 
 `IMAGE_BASE_URL`（留空 = 用 `MODEL_BASE_URL`）+ `MODEL_IMAGE` 填一个支持 `/images/generations` 的中转即可
-（当前 vsllm 中转没有生图通道）。也可在聊天页「⚙ 模型设置」里临时填。
+（生图中转可以和聊天中转分开配）。也可在聊天页「⚙ 模型设置」里临时填。
 
 ---
 
@@ -689,7 +689,9 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 
 Gemini 网页实时文字同步的入口在「糖人小窝 → Gemini 网页同步测试」，安装说明见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)；
 小窝通用外设接入层协议见 [docs/nest-integration.md](./docs/nest-integration.md)，旧的游戏专用协议见 [docs/game-integration.md](./docs/game-integration.md)，
-功能独立仓库约定见 [features/README.md](./features/README.md)。
+功能独立仓库约定见 [features/README.md](./features/README.md)；
+QQ 网关（SnowLuma）那些坑 —— 同时登两个号为什么挂错号、WebUI API、怎么自动换回机器人号 —— 见
+[docs/qq-gateway-snowluma.md](./docs/qq-gateway-snowluma.md)（**下次动 QQ 桥之前先读它**）。
 
 ```
 小糖人之家/

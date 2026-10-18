@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException
 from .. import db
 from ..seed_profiles import MAIN_PERSONA_ID
 from ..services import cleanup
+from ..services import persona_memory as pm
 
 router = APIRouter()
 
@@ -85,3 +86,42 @@ async def delete_profile(profile_id: str) -> dict:
         db.set_active_persona_id(MAIN_PERSONA_ID)
 
     return {"ok": True, "active_id": db.get_active_persona_id(), "removed": removed}
+
+
+# ── 这个身份的记忆（§22.4）────────────────────────────────────────────────────
+# 两个池子（长期记忆 03 / 个人数据库 03）并排给前端；开关按下就是立即生效 ——
+# 下一轮聊天 / QQ 回话组装 prompt 时直接读这张表，没有「保存」这一步。
+
+
+def _ensure_profile(profile_id: str) -> None:
+    if db.get_profile(profile_id) is None:
+        raise HTTPException(status_code=404, detail="没有这份身份档案")
+
+
+@router.get("/profiles/{profile_id}/memory-picks")
+async def list_memory_picks(profile_id: str) -> dict:
+    """两个池子的全量条目 + 这个身份挑中的状态。没挑过 = 全空（不兜底）。"""
+    _ensure_profile(profile_id)
+    return pm.overview(profile_id)
+
+
+@router.put("/profiles/{profile_id}/memory-picks/{kind}/{ref_id:path}")
+async def set_memory_pick(profile_id: str, kind: str, ref_id: str, body: dict) -> dict:
+    """挑中 / 打开 / 关掉一条。body: {"enabled": true|false}"""
+    _ensure_profile(profile_id)
+    enabled = bool(body.get("enabled", True))
+    try:
+        return pm.set_pick(profile_id, kind, ref_id, enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/profiles/{profile_id}/memory-picks/{kind}/{ref_id:path}")
+async def clear_memory_pick(profile_id: str, kind: str, ref_id: str) -> dict:
+    """取消挑选（回到「没挑中」），等同关掉且不留痕。"""
+    _ensure_profile(profile_id)
+    if kind not in (pm.KIND_MEMORY, pm.KIND_DB):
+        raise HTTPException(status_code=422, detail="kind 只能是 memory / db")
+    return {"ok": db.delete_persona_pick(profile_id, kind, ref_id)}

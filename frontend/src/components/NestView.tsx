@@ -27,21 +27,27 @@ import NestDrawer from './NestDrawer'
 import NestFeedPanel from './NestFeedPanel'
 import NestRunnerPanel from './NestRunnerPanel'
 import NestSettingsPanel from './NestSettingsPanel'
+import QqBridgePanel from './QqBridgePanel'
+import DesktopPetPanel from './DesktopPetPanel'
 import { fetchAgentInbox, sendAgentMessage, type AgentMessage } from '../api/agents'
 import { fetchNestFeatures, launchInteractiveHome, type NestFeature } from '../api/client'
 
 // 只有后端注册表里 status='available' 的功能才有可点的入口；planned 的点了给一句规划中提示。
 // 小窝本地的动作（Unity 启动 / 弹面板）在这里挂钩，不塞进后端注册表。
 const AVAILABLE_ACTION: Record<string, 'unity' | 'panel' | 'runner'> = {
+  desktop_pet: 'panel',
   interactive_home: 'unity',
   gemini_sync: 'panel',
   english_study: 'panel',
   japanese_lab: 'panel',
+  // QQ 桥虽然也有 runner，但它要先把外面的网关开起来 —— 有自己的面板，不放「设置与工具」里。
+  qq_bridge: 'panel',
 }
 
 // 能进「项目工作台」的面板（本体内的 / 独立项目的都在这）。键 = 功能 id。
 // 加一个可开的面板功能，就在这加一行 + 注册表里加一条 —— 别处不用动。
 const WORKBENCH_PANELS: Record<string, { title: string; render: () => ReactNode }> = {
+  desktop_pet: { title: '🐾 桌边的小糖人', render: () => <DesktopPetPanel /> },
   japanese_lab: {
     title: '🌸 小糖人日语实验室',
     render: () => <JapaneseLabPanel />,
@@ -53,6 +59,10 @@ const WORKBENCH_PANELS: Record<string, { title: string; render: () => ReactNode 
   gemini_sync: {
     title: '🔗 Gemini 网页同步',
     render: () => <GeminiSyncPanel />,
+  },
+  qq_bridge: {
+    title: '💬 QQ 糖人',
+    render: () => <QqBridgePanel />,
   },
 }
 
@@ -81,6 +91,9 @@ export default function NestView() {
   const [toast, setToast] = useState('')
   const [agentText, setAgentText] = useState('')
   const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([])
+  // 协作消息读不到时说一句（Block 二 ③）：以前 silent catch，那一块就是空的，
+  // 看着和「大家都没留言」一样。
+  const [agentErr, setAgentErr] = useState('')
   const [agentBusy, setAgentBusy] = useState(false)
   // 「让功能跑起来」面板当前选中的功能 id（点卡片时滚过去并选中它）。
   const [runnerId, setRunnerId] = useState('')
@@ -97,8 +110,14 @@ export default function NestView() {
   const [openIds, setOpenIds] = useState<string[]>(() => readStored(OPEN_KEY).filter((id) => id in WORKBENCH_PANELS))
   const [activePanel, setActivePanel] = useState<string>(() => localStorage.getItem(ACTIVE_KEY) || '')
 
+  // 拉不到就当空清单 —— 清单那块自己会说「功能清单没拉到（后端没连上？）」，
+  // 不会假装「本来就一个功能都没有」。
   useEffect(() => { void fetchNestFeatures().then(setFeatures).catch(() => setFeatures([])) }, [])
-  useEffect(() => { void fetchAgentInbox('xiaotangren-ui').then(setAgentMessages).catch(() => {}) }, [])
+  useEffect(() => {
+    void fetchAgentInbox('xiaotangren-ui')
+      .then((list) => { setAgentMessages(list); setAgentErr('') })
+      .catch((e) => setAgentErr(e instanceof Error ? e.message : String(e)))
+  }, [])
 
   useEffect(() => { localStorage.setItem(OPEN_KEY, JSON.stringify(openIds)) }, [openIds])
   useEffect(() => {
@@ -174,7 +193,9 @@ export default function NestView() {
       // 不用大老大再跑去「🚀 让功能跑起来」点一下（§9.6 安全边界不破：前端只报子命令名）。
       flash(f.id === 'japanese_lab' || f.id === 'english_study'
         ? `「${f.name}」开在工作台里了 —— 它的服务正在自动拉起来，一两秒就好。`
-        : `「${f.name}」开在工作台里了 —— 顶上那个 tab 就是它，× 关掉就卸载。`)
+        : f.id === 'qq_bridge'
+          ? `「${f.name}」开在工作台里了 —— 网关卡没开的话，那里有「⚡ 开 QQ 网关」一键起。`
+          : `「${f.name}」开在工作台里了 —— 顶上那个 tab 就是它，× 关掉就卸载。`)
       return
     }
     // 注册表里声明了 runner 的功能（如逛 B站）→ 在小窝里配置 + 启动，不用去终端敲命令。
@@ -340,7 +361,7 @@ export default function NestView() {
       <div id="nest-tools" className="scroll-mt-4">
         <NestDrawer
           title="🛠 设置与工具"
-          hint="大脑 API / 功能开关 / 让功能跑起来 / Agent 协作"
+          hint="大脑 API / 还没搬家的功能开关 / 让功能跑起来 / Agent 协作"
           badge={toolsOpen ? '' : '收起'}
           open={toolsOpen}
           onToggle={() => setToolsOpen((v) => !v)}
@@ -354,14 +375,22 @@ export default function NestView() {
                 <input className="input min-w-0 flex-1" value={agentText} onChange={(e) => setAgentText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void sendToAgent() }} placeholder="写一条协作消息…" />
                 <button className="btn sm" disabled={agentBusy || !agentText.trim()} onClick={() => void sendToAgent()}>发送</button>
               </div>
+              {agentErr && (
+                <p role="alert" className="mb-3 rounded-xl border border-[color-mix(in_srgb,var(--pink)_35%,var(--border))] bg-[var(--pink-soft)] px-3 py-2 text-[12px] text-[var(--pink-deep)]">
+                  ⚠ 协作消息没读到：{agentErr} —— 下面空着是没读到，不是「没人留言」。
+                </p>
+              )}
               {agentMessages.length > 0 && <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">{agentMessages.slice(0, 12).map((m) => <div key={m.id} className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[12px]"><b>{m.sender}</b><span className="mx-1 text-[var(--text-3)]">→</span>{String(m.payload.text ?? JSON.stringify(m.payload))}</div>)}</div>}
             </section>
 
             {/* 小窝大脑 API：全局默认 + 每功能覆盖 */}
             <NestApiPanel bare />
 
-            {/* 功能的开关搬进前端（§9.6.5）：白名单 / 演谁 / 音色 / 表情包…改完立刻生效 */}
-            <NestSettingsPanel features={features} bare />
+            {/* 功能的开关搬进前端（§9.6.5）：白名单 / 演谁 / 音色 / 表情包…改完立刻生效。
+                Block 二 ② 之后，已经在自己面板里出设置的（hideIds）不在这一份里重复列 ——
+                这里只剩「还没搬家的」那几个（比如 B 站侦察，它没有工作台面板）。 */}
+            <NestSettingsPanel features={features} bare
+              hideIds={['desktop_pet', 'qq_bridge', 'japanese_lab', 'english_study']} />
 
             {/* 让独立功能跑起来：选谁去看 + 启动 + 看日志（不用去终端敲命令） */}
             <NestRunnerPanel features={features} activeId={runnerId} onActiveChange={setRunnerId} bare />

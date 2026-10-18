@@ -55,6 +55,10 @@ export default function NestRunnerPanel({
   const feature = runnable.find((f) => f.id === activeId) || runnable[0] || null
 
   const [characters, setCharacters] = useState<CharacterProfile[]>([])
+  // 后端读不到时记一句（Block 二 ③）—— 以前静默 catch，页面就装成「一个角色都没有」/「没在跑」，
+  // 跟真的空一模一样。运行状态和角色清单分开记：它们各自读各自的，别互相抹。
+  const [offline, setOffline] = useState('')
+  const [charErr, setCharErr] = useState('')
   const [picked, setPicked] = useState<string[]>([])
   const [command, setCommand] = useState('')
   const [limit, setLimit] = useState(3)
@@ -76,7 +80,11 @@ export default function NestRunnerPanel({
     || null
 
   useEffect(() => {
-    void fetchCharacters().then(setCharacters).catch(() => setCharacters([]))
+    // 角色清单读不到时别装成「一个角色都没有」（Block 二 ③）—— 那排 chip 会空着，
+    // 看着像「这个家里没人」。记一句，下面说清楚。用独立的一个字段，免得被运行状态的
+    // 成功读回顺手抹掉。
+    void fetchCharacters().then((list) => { setCharacters(list); setCharErr('') })
+      .catch((e) => { setCharacters([]); setCharErr(e instanceof Error ? e.message : String(e)) })
   }, [])
 
   // 换功能 → 换子命令 + 立刻看它是不是已经在跑（比如上次开了循环没关）。
@@ -88,19 +96,22 @@ export default function NestRunnerPanel({
     setNote('')
     setDirectiveSaved('')
     void fetchNestRunStatus(feature.id)
-      .then((s) => setRunning(s.running))
-      .catch(() => setRunning(false))
+      .then((s) => { setRunning(s.running); setOffline('') })
+      // 读不到运行状态时**保持上一次的显示**，不要把「在跑」闪成「没跑」——
+      // 那会让人以为循环自己停了、又去点一次（Block 二 ③）。
+      .catch((e) => setOffline(e instanceof Error ? e.message : String(e)))
     void fetchNestRunLog(feature.id, 200).then(setLog).catch(() => {})
     void fetchNestDirective(feature.id)
       .then((d) => { setLookFor(d.look_for); setAvoid(d.avoid) })
-      .catch(() => { setLookFor(''); setAvoid('') })
+      .catch(() => { /* 口味读不到就留空，不影响启动 */ })
   }, [feature?.id])
 
   // 循环跑起来后，定期把日志尾巴拉过来滚（后端按 utf-8 读，中文不乱码）。
   useEffect(() => {
     if (!running || !feature) return
     const timer = window.setInterval(() => {
-      void fetchNestRunStatus(feature.id).then((s) => setRunning(s.running)).catch(() => {})
+      // 同样是「读不到就别改显示」：轮询失败只是这一轮没拿到，不代表循环停了。
+      void fetchNestRunStatus(feature.id).then((s) => { setRunning(s.running); setOffline('') }).catch(() => {})
       void fetchNestRunLog(feature.id).then(setLog).catch(() => {})
     }, POLL_MS)
     return () => window.clearInterval(timer)
@@ -116,7 +127,8 @@ export default function NestRunnerPanel({
   const solo = feature?.kind === 'im'
   const lookLabel = solo ? '这次启动先演谁' : '选谁去看'
   const lookHint = solo
-    ? '一个 QQ 号 = 一个小糖人。平时在下面「⚙ 功能开关 → 谁在 QQ 上」里配「哪个号演谁」；' +
+    // 设置跟着 QQ 桥搬进了它自己的面板（Block 二 ②），所以这里指路要指到那儿去。
+    ? '一个 QQ 号 = 一个小糖人。平时在 QQ 桥面板里的「⚙ QQ 桥的设置 → 谁在 QQ 上」配「哪个号演谁」；' +
       '这里只临时覆盖第一个号（改完重启桥才换人）。当前：'
     : '人选来自角色介绍里的人；人设本身在大脑里，这里只决定谁出门。当前：'
 
@@ -181,6 +193,14 @@ export default function NestRunnerPanel({
             本体只按一下启动键，逻辑都在 features/ 里那个独立项目
           </span>
         </div>
+      )}
+
+      {/* 读不到运行状态时说清楚（Block 二 ③）：下面显示的状态还是上一次读到的，
+          不代表现在就是这样。不说的话「没跑」看着就跟真的一样。 */}
+      {offline && (
+        <p role="alert" className="mb-3 rounded-xl border border-[color-mix(in_srgb,var(--pink)_35%,var(--border))] bg-[var(--pink-soft)] px-3 py-2 text-[12px] text-[var(--pink-deep)]">
+          ⚠ 读不到它的运行状态：{offline} —— 下面的「在跑 / 没跑」是上次读到的，不是现在。
+        </p>
       )}
 
       {runnable.length === 0 ? (
@@ -271,6 +291,14 @@ export default function NestRunnerPanel({
                       onClick={() => setPicked(characters.map((c) => c.id))}>全选（都去看）</button>
                   )}
                 </div>
+                {/* 一个 chip 都没列出来时给一句人话（Block 二 ③）：不然这块只剩「清空」一个按钮，
+                    看着像「这家一个人都没有」。 */}
+                {characters.length === 0 && (
+                  <p role="alert" className="mt-1 text-[11px] text-[var(--pink-deep)]">
+                    {charErr ? `⚠ 角色清单没读到：${charErr}` : '还在读角色清单…'}
+                    {' '}—— 不是「家里没人」，是这份清单没下来；下面仍可以按功能自己的默认口味跑。
+                  </p>
+                )}
                 <p className="mt-1 text-[11px] text-[var(--text-3)]">
                   {lookHint}
                   <b className="text-[var(--text-2)]">
@@ -337,8 +365,8 @@ export default function NestRunnerPanel({
               {solo && (
                 <p className="text-[11px] text-[var(--text-3)]">
                   先跑一次「自检」：它会告诉你白名单空不空、大脑通不通、要连几个号、每个号演谁 ——
-                  出问题一眼能看出来。白名单 / 演谁 / 音色 / 表情包都在上面「⚙ 功能开关」里改
-                  （不用去编辑 <code>features/qq-bridge/config.json</code>），改完不用重启。
+                  出问题一眼能看出来。白名单 / 演谁 / 音色 / 表情包都在 QQ 桥面板下面的
+                  「⚙ QQ 桥的设置」里改（不用去编辑 <code>features/qq-bridge/config.json</code>），改完不用重启。
                 </p>
               )}
             </div>
@@ -347,7 +375,13 @@ export default function NestRunnerPanel({
             <div>
               <div className="mb-1 flex items-center justify-between">
                 <span className="eyebrow">输出</span>
-                <button className="btn ghost sm" onClick={() => void fetchNestRunLog(feature.id).then(setLog).catch(() => {})}>
+                {/* 读日志失败说明白（Block 二 ③）：以前静默吞掉，点了「刷新」看不出发生了什么，
+                    就以为「日志本来就是空的」。 */}
+                <button className="btn ghost sm" onClick={() => {
+                  void fetchNestRunLog(feature.id)
+                    .then((t) => { setLog(t); setOffline('') })
+                    .catch((e) => setOffline(e instanceof Error ? e.message : String(e)))
+                }}>
                   刷新
                 </button>
               </div>

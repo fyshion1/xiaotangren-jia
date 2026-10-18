@@ -11,8 +11,8 @@
 // 边界：这里只编辑「值」。值的含义、怎么用、什么时候生效，都是功能自己的事
 // （QQ 桥每 30 秒拉一次，改完立刻生效，不用重启）。
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { fetchCharacters, fetchNestFeatureSettings, saveNestFeatureSettings, type NestFeature, type NestSettingField } from '../api/client'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { fetchCharacters, fetchNestFeatureSettings, fetchNestFeatures, saveNestFeatureSettings, type NestFeature, type NestSettingField } from '../api/client'
 import type { CharacterProfile } from '../data/characters'
 
 /** 只给能在前端配的功能显示这个面板（注册表里声明了 settings 的那些）。 */
@@ -32,10 +32,57 @@ function hint(text: string): string {
   return text.replace(/\*\*/g, '')
 }
 
-export default function NestSettingsPanel({ features, bare = false }: { features: NestFeature[]; bare?: boolean }) {
-  const configurable = useMemo(() => features.filter(CONFIGURABLE), [features])
+// ---- 名字反着写的开关（声明里的 `invert`）----
+//
+// 有些底层 key 天生是反的：`memory.isolate` = 「单独记」（true = 隔离），
+// 而大老大要看的是正面那句「和群聊 / 私聊共享记忆」。声明里标 `invert: true` 之后：
+// **勾选框和「恢复默认」按反的显示**，提交上去的（`values`）永远还是存储语义 ——
+// 功能侧拉回去直接覆盖 config.json，它不认得这个标记，也不该认得。
+
+/** 存储值 → 给大老大看的值（只管显示/勾选）。 */
+function shown(field: NestSettingField, value: unknown): unknown {
+  return field.invert && field.type === 'bool' ? !value : value
+}
+
+/** 勾选框回写：显示值 → 存储值。 */
+function stored(field: NestSettingField, checked: boolean): unknown {
+  return field.invert && field.type === 'bool' ? !checked : checked
+}
+
+export default function NestSettingsPanel({
+  features,
+  onlyId,
+  hideIds,
+  bare = false,
+}: {
+  /** 共用模式：把清单传进来（功能 chip 行按它列）。单功能模式可以不给，组件自己去拉。 */
+  features?: NestFeature[]
+  /** 单功能模式：只出这一个功能的设置、**不要 chip 行** —— 嵌进功能自己的面板里用。 */
+  onlyId?: string
+  /** 共用模式：这些功能已经把自己的设置嵌在自己面板里了，这里别再重复列一遍。 */
+  hideIds?: string[]
+  bare?: boolean
+}) {
+  const [selfFeatures, setSelfFeatures] = useState<NestFeature[]>([])
+  const [err, setErr] = useState('')
+
+  // 单功能模式可能没人递清单过来 —— 自己去拉一份（拉不到要说出来，不能装作「没有可配的」）。
+  useEffect(() => {
+    if (features) return
+    void fetchNestFeatures()
+      .then(setSelfFeatures)
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+  }, [features])
+
+  const list = features ?? selfFeatures
+  const configurable = useMemo(
+    () => list.filter(CONFIGURABLE).filter((f) => !(hideIds && hideIds.includes(f.id))),
+    [list, hideIds?.join(',')],  // eslint-disable-line react-hooks/exhaustive-deps
+  )
   const [activeId, setActiveId] = useState('')
-  const feature = configurable.find((f) => f.id === activeId) || configurable[0] || null
+  const feature = onlyId
+    ? configurable.find((f) => f.id === onlyId) || null
+    : configurable.find((f) => f.id === activeId) || configurable[0] || null
 
   const [schema, setSchema] = useState<NestSettingField[]>([])
   const [values, setValues] = useState<Values>({})
@@ -43,20 +90,39 @@ export default function NestSettingsPanel({ features, bare = false }: { features
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
-  const [err, setErr] = useState('')
+  // 屏上这份字段是哪个功能的（'' = 还没读到 / 读失败）—— **渲染的闸门**：
+  // 换功能时先清空、读回来了才画，不然上一个功能的字段会留在屏上，叠在新功能名字底下。
+  const [loadedId, setLoadedId] = useState('')
+  const reqRef = useRef(0)
 
-  useEffect(() => { void fetchCharacters().then(setCharacters).catch(() => setCharacters([])) }, [])
+  // 名册拿不到只影响「选谁」那种下拉，不该把整块设置弄停；但要把话说清楚。
+  useEffect(() => {
+    void fetchCharacters().then(setCharacters)
+      .catch((e) => setNote(`角色名册没拉到（${e instanceof Error ? e.message : e}）—— 选人的下拉会是空的`))
+  }, [])
 
   const load = useCallback(async (id: string) => {
+    // 先把这个功能自己的那份收起来（换功能 = 旧字段立刻下屏），再等新的一份。
+    // 两道闸门缺一不可：`seq` 挡**迟到的旧响应**（中途换了功能，这份结果直接扔），
+    // `loadedId` 挡**还没到的新响应**（没读回来就不画，屏上只剩「正在读」）。
+    const seq = ++reqRef.current
     setErr('')
     setNote('')
+    setSchema([])
+    setValues({})
+    setDirty(false)
+    setLoadedId('')
     try {
       const got = await fetchNestFeatureSettings(id)
+      if (seq !== reqRef.current) return   // 中途又换了功能，这份结果不要了
       setSchema(got.schema || [])
       setValues(got.values || {})
-      setDirty(false)
+      setLoadedId(id)
       setNote(got.configured ? `上次改于 ${got.updated_at}` : '还没改过 —— 现在用的是功能自带的默认值')
     } catch (e) {
+      if (seq !== reqRef.current) return
+      // 读不到就**什么都不显示** —— 绝不能留上一个功能的字段（那是「叠在一起」的来源）。
+      // 这里**故意不设 `loadedId`**：没读到 = 渲染闸门一直关着。
       setErr(e instanceof Error ? e.message : String(e))
     }
   }, [])
@@ -85,10 +151,37 @@ export default function NestSettingsPanel({ features, bare = false }: { features
     }
   }
 
+  // `field.default` 本来就是**存储语义**，直接写进去即可 —— 反着写的开关不用在这里翻
+  // （翻的是显示层：勾选和 title 都走 `shown()`）。做反了会把默认值改成相反的。
   const resetOne = (field: NestSettingField) => set(field.key, field.default)
 
+  // 单功能模式下清单还没拿到 / 拉失败时，别装作「这个功能没有可配的」——
+  // 那正是 Block 二 ③ 要治的「假活」：整块消失，看起来就像这里本来就没有东西。
+  // 话说清楚，宁可多一行字。
+  if (!feature && (onlyId || !features)) {
+    if (err) {
+      return <p role="alert" className="text-[12px] text-[var(--pink-deep)]">⚠ 功能的开关没读到：{err}</p>
+    }
+    if (onlyId) {
+      return (
+        <p className="text-[12px] text-[var(--text-3)]">
+          {list.length === 0 ? '还在读这个功能的开关…' : '这个功能没声明可配的开关。'}
+        </p>
+      )
+    }
+  }
   if (configurable.length === 0) return null
   if (!feature) return null
+
+  // `loadedId` 是**渲染闸门**：屏上这份字段得确实是这个功能的，才准画。
+  // 两个理由，都不是洁癖：
+  //   ① 正在读 / 换功能的那一瞬间，画出来是一排**空值**的格子 —— 看起来像「本来就是空的」，
+  //      存下去就等于把没显示出来的那些项清掉了（`values` 是整份覆盖）；
+  //   ② 读失败时键位都认不出来，更不该让人在空白格子上编辑。
+  // 换功能时 `load` 先把 `loadedId` 清空 → 旧功能的字段**立刻下屏**，等新的读回来才放行。
+  // 这就是「原来那个收起来」；读失败时一直是 ''（catch 故意不设），字段区保持收起。
+  // 只收**字段区**，不收 chip 行 —— 正在读的时候还得能点别的功能切过去。
+  const ready = loadedId === feature.id
 
   // 按 group 分组：同一组的字段放一起（顺序 = 声明顺序，前端不改动）。
   const groups: { name: string; fields: NestSettingField[] }[] = []
@@ -100,14 +193,16 @@ export default function NestSettingsPanel({ features, bare = false }: { features
   }
 
   const renderField = (field: NestSettingField, value: unknown, onChange: (v: unknown) => void, compact = false) => {
-    const v = value
+    // 显示一律走 `shown`（反着写的开关在这里翻过来）；写回去的仍是存储语义。
+    const v = shown(field, value)
     const common = { key: field.key }
     const control = () => {
       switch (field.type) {
         case 'bool':
           return (
             <label className="flex items-center gap-2 text-[13px] text-[var(--text)]">
-              <input type="checkbox" checked={Boolean(v)} onChange={(e) => onChange(e.target.checked)} />
+              <input type="checkbox" checked={Boolean(v)}
+                onChange={(e) => onChange(stored(field, e.target.checked))} />
               <span>{field.label}</span>
             </label>
           )
@@ -164,7 +259,7 @@ export default function NestSettingsPanel({ features, bare = false }: { features
           <span className="text-[13px] font-semibold text-[var(--text)]">{field.label}</span>
           {field.secret && <span className="text-[10px] text-[var(--text-3)]">密钥</span>}
           <button type="button" className="ml-auto text-[10px] text-[var(--text-3)] hover:text-[var(--pink-deep)]"
-            title={`恢复默认：${String(field.default)}`} onClick={() => resetOne(field)}>恢复默认</button>
+            title={`恢复默认：${String(shown(field, field.default))}`} onClick={() => resetOne(field)}>恢复默认</button>
         </div>
         <div className="mt-1.5">{control()}</div>
         {field.desc && <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-3)]">{hint(field.desc)}</p>}
@@ -190,35 +285,52 @@ export default function NestSettingsPanel({ features, bare = false }: { features
         </>
       )}
 
-      <div className="mb-3 flex flex-wrap gap-2">
-        {configurable.map((f) => (
-          <button key={f.id} className={`form-chip ${f.id === feature.id ? 'on' : ''}`}
-            onClick={() => setActiveId(f.id)}>{f.emoji} {f.name}</button>
-        ))}
-      </div>
+      {/* 单功能模式（嵌在功能自己的面板里）：不出 chip 行 —— 挑功能是外面那层的事。 */}
+      {!onlyId && (
+        <div className="mb-3 flex flex-wrap gap-2">
+          {configurable.map((f) => (
+            <button key={f.id} className={`form-chip ${f.id === feature.id ? 'on' : ''}`}
+              onClick={() => setActiveId(f.id)}>{f.emoji} {f.name}</button>
+          ))}
+        </div>
+      )}
 
-      <div className="space-y-4">
-        {groups.map((g) => (
-          <div key={g.name}>
-            <div className="mb-1.5 flex items-baseline gap-2">
-              <span className="text-[14px] font-bold text-[var(--text)]">{g.name}</span>
-              <span className="text-[11px] text-[var(--text-3)]">{g.fields.length} 项</span>
+      {/* 字段区只在「屏上这份就是当前功能」时才画 —— 没读到 / 正读着都收起，
+          绝不留上一个功能的字段在这儿充数。 */}
+      {ready ? (
+        <div className="space-y-4">
+          {groups.map((g) => (
+            <div key={g.name}>
+              <div className="mb-1.5 flex items-baseline gap-2">
+                <span className="text-[14px] font-bold text-[var(--text)]">{g.name}</span>
+                <span className="text-[11px] text-[var(--text-3)]">{g.fields.length} 项</span>
+              </div>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {g.fields.map((field) => renderField(field, values[field.key], (v) => set(field.key, v)))}
+              </div>
             </div>
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-              {g.fields.map((field) => renderField(field, values[field.key], (v) => set(field.key, v)))}
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <p role={err ? 'alert' : undefined}
+            className={err ? 'text-[12px] text-[var(--pink-deep)]' : 'text-[12px] text-[var(--text-3)]'}>
+            {err ? `⚠ 这个功能的开关没读到：${err}` : '正在读这个功能的开关…'}
+          </p>
+          {err && <button className="btn ghost sm" disabled={busy} onClick={() => void load(feature.id)}>重新读一次</button>}
+        </div>
+      )}
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <button className="btn sm" disabled={busy || !dirty} onClick={() => void save()}>
+        <button className="btn sm" disabled={busy || !dirty || !ready} onClick={() => void save()}>
           {busy ? '存着…' : dirty ? '存下来（立刻生效）' : '没有改动'}
         </button>
         <button className="btn ghost sm" disabled={busy} onClick={() => void load(feature.id)}>重新读一次</button>
         {note && <span className="text-[11px] text-[var(--pink-deep)]">{note}</span>}
       </div>
-      {err && <p role="alert" className="mt-2 text-[12px] text-[var(--pink-deep)]">⚠ {err}</p>}
+      {/* 字段区已经在上面说过「没读到」了，别把同一句再说一遍；
+          这条只管**读到了之后**出错的情况（存的时候失败）。 */}
+      {ready && err && <p role="alert" className="mt-2 text-[12px] text-[var(--pink-deep)]">⚠ {err}</p>}
     </>
   )
 

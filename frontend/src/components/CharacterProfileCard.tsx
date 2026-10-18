@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
+import { insertTavernCardGreeting } from '../api/cardImport'
 import { activeFormId, listForms, resolveForm } from '../lib/forms'
 import { extractPalette, firstFrameOf, isGif, paletteGradient } from '../lib/portraitFx'
+import { live2dUrl, resolveLive2DAsset } from '../lib/live2dAssets'
+import { resolveVrmAsset, vrmUrl } from '../lib/vrmAssets'
+import { modelBindingFor } from '../lib/modelBindings'
+import { Live2DModelView } from './Live2DModelView'
+import { VrmModelView } from './VrmModelView'
 
 type Props = {
   p: CharacterProfile
@@ -40,6 +46,17 @@ function Chips({ items }: { items: string[] }) {
   )
 }
 
+/** 模型没配 / 没加载起来时的兜底卡片（§36）——把「为什么空着」直接写在脸上。 */
+function ModelFallback({ emoji, title, detail }: { emoji: string; title: string; detail: string }) {
+  return (
+    <div className="flex max-w-[260px] flex-col items-center gap-2 px-4 text-center text-[var(--text-3)]">
+      <span className="text-[56px] leading-none">{emoji}</span>
+      <span className="text-[13px] font-semibold text-[var(--text-2)]">{title}</span>
+      <span className="text-[11px] leading-relaxed break-words">{detail}</span>
+    </div>
+  )
+}
+
 export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchForm, onOpenPortrait, extra }: Props) {
   const [showPriv, setShowPriv] = useState(false)
   // 立绘显示方式（§19）：静态 / Live2D 占位 / 3D 占位。用左上角标签里的下拉切换，
@@ -52,15 +69,53 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
   // GIF 只在鼠标移上去时播放（§19）：静止态显示首帧静态图
   const [hovering, setHovering] = useState(false)
   const [firstFrame, setFirstFrame] = useState<string | null>(null)
+  // 「关于」看译文还是看原文（导入的酒馆卡才有译文；原文一键可切）
+  const [viewRaw, setViewRaw] = useState(false)
+  // 「插入开场白」：把档案里存着的那份写成她私聊的第一条（默认不写，用户点了才写）
+  const [greetingBusy, setGreetingBusy] = useState(false)
+  const [greetingNote, setGreetingNote] = useState('')
 
   // 形态（§17）：没配形态的角色 = 只有基础形态，chip 不渲染，页面与从前一模一样。
   const forms = listForms(p)
   const hasForms = forms.length > 1
   const curFormId = activeFormId(p)
   const view = resolveForm(p).profile
+  const aboutZh = (view.aboutZh || '').trim()
+  const greeting = (view.greeting || '').trim()
+
+  // 换了角色就把「看原文 / 插入结果」这些一次性状态收回去，别串台。
+  useEffect(() => {
+    setViewRaw(false)
+    setGreetingNote('')
+  }, [p.id])
+
+  /** 「插入开场白」：档案里那份一直躺着，什么时候想用都行。成功后直接进她的私聊。
+   *  会话已经聊过时后端会 400（开场白该在最前面），把原话摆出来给用户看。 */
+  const insertGreeting = async () => {
+    setGreetingBusy(true)
+    setGreetingNote('')
+    try {
+      await insertTavernCardGreeting(p.id)
+      setGreetingNote('开场白已经写成她私聊的第一条了 —— 这就去她的私聊看看。')
+      onEnterChat?.()
+    } catch (e) {
+      setGreetingNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setGreetingBusy(false)
+    }
+  }
 
   const portrait = view.portrait
   const gif = Boolean(portrait && isGif(portrait))
+
+  // 实机模型（§36）：档案里配了 `live2d.model` / `vrm.model` 才能切过去。
+  // 没配的角色，下拉里那两项是灰的 —— 不至于切过去只看到一句「没配模型」。
+  // 档案没填时再查本机绑定表（lib/modelBindings.ts，素材清单的 key 只在这台机器有意义）。
+  const binding = modelBindingFor(p.id)
+  const live2dAsset = resolveLive2DAsset(view.live2d?.model ?? binding.live2d)
+  const vrmAsset = resolveVrmAsset(view.vrm?.model ?? binding.vrm)
+  // 模型自己加载失败（文件缺了 / WebGL 挂了）：退回占位提示，别整张卡片白屏。
+  const [modelError, setModelError] = useState<string>('')
 
   // 换角色 / 换形态 / 换立绘 → 重新量主色与首帧
   useEffect(() => {
@@ -68,6 +123,7 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
     setPalette([])
     setFirstFrame(null)
     setHovering(false)
+    setModelError('')
     if (!portrait) return
     void extractPalette(portrait).then((pal) => {
       if (!cancelled && pal?.colors.length) setPalette(pal.colors)
@@ -91,9 +147,21 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
   ]
 
   const MODES = [
-    { id: 'image' as const, label: '静态图片 / GIF', hint: '显示上传的立绘；GIF 只在鼠标移上去时播放' },
-    { id: 'live2d' as const, label: 'Live2D（2D）占位', hint: '规划中：接入 pixi-live2d-display' },
-    { id: 'vrm' as const, label: '3D（VRM）占位', hint: '规划中：接入 three.js + three-vrm' },
+    { id: 'image' as const, label: '静态图片 / GIF', hint: '显示上传的立绘；GIF 只在鼠标移上去时播放', ready: true },
+    {
+      id: 'live2d' as const,
+      label: 'Live2D（2D）',
+      hint: live2dAsset
+        ? `${live2dAsset.name} · 点模型会看向鼠标`
+        : '这个角色还没配 Live2D 模型（档案里填 live2d.model，见 lib/live2dAssets.ts）',
+      ready: Boolean(live2dAsset),
+    },
+    {
+      id: 'vrm' as const,
+      label: '3D（VRM）',
+      hint: vrmAsset ? `${vrmAsset.name} · 按住拖动可转视角` : '这个角色还没配 VRM 模型（档案里填 vrm.model）',
+      ready: Boolean(vrmAsset),
+    },
   ]
   const modeLabel = MODES.find((m) => m.id === portraitMode)?.label ?? ''
 
@@ -138,17 +206,19 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
                   <button
                     key={m.id}
                     type="button"
+                    disabled={!m.ready}
                     onClick={() => {
                       setPortraitMode(m.id)
                       setModeOpen(false)
                     }}
                     title={m.hint}
-                    className={`block w-full px-3 py-1.5 text-left text-[12px] transition hover:bg-[var(--surface-2)] ${
+                    className={`block w-full px-3 py-1.5 text-left text-[12px] transition enabled:hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-45 ${
                       m.id === portraitMode ? 'font-semibold text-[var(--pink-deep)]' : 'text-[var(--text-2)]'
                     }`}
                   >
                     {m.id === portraitMode ? '✓ ' : ''}
                     {m.label}
+                    {!m.ready && <span className="ml-1 text-[10px]">· 未配</span>}
                   </button>
                 ))}
               </div>
@@ -194,15 +264,37 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
             <div className="mb-4 text-[130px] leading-none drop-shadow-[0_14px_20px_rgba(140,96,58,0.18)]">{view.emoji}</div>
           )
         ) : portraitMode === 'live2d' ? (
-          <div className="flex flex-col items-center gap-2 text-[var(--text-3)]">
-            <span className="text-[64px] leading-none">🧍‍♀️</span>
-            <span className="text-[12px]">Live2D 模型占位 · 后续接入 pixi-live2d-display</span>
-          </div>
+          live2dAsset && !modelError ? (
+            /* 实机 Live2D（§36）：模型自己会看鼠标、眨眼、呼吸、播待机动作 */
+            <Live2DModelView
+              url={live2dUrl(live2dAsset)}
+              idleMotion={live2dAsset.idleMotion}
+              expression={live2dAsset.expression}
+              onError={setModelError}
+              className="relative z-[2] h-full w-full"
+            />
+          ) : (
+            <ModelFallback
+              emoji="🧍‍♀️"
+              title={live2dAsset ? 'Live2D 模型没加载起来' : '还没配 Live2D 模型'}
+              detail={
+                modelError ||
+                '档案里加一段 live2d.model；模型清单见 frontend/src/lib/live2dAssets.ts（素材在仓库根 assets/live2d/）'
+              }
+            />
+          )
+        ) : vrmAsset && !modelError ? (
+          /* 实机 3D（§36）：three.js + three-vrm，按身高自动入画 + 自己慢慢转圈 */
+          <VrmModelView url={vrmUrl(vrmAsset)} onError={setModelError} className="relative z-[2] h-full w-full" />
         ) : (
-          <div className="flex flex-col items-center gap-2 text-[var(--text-3)]">
-            <span className="text-[64px] leading-none">🧊</span>
-            <span className="text-[12px]">VRM 3D 模型占位 · 后续 three.js + three-vrm</span>
-          </div>
+          <ModelFallback
+            emoji="🧊"
+            title={vrmAsset ? '3D 模型没加载起来' : '还没配 3D 模型'}
+            detail={
+              modelError ||
+              '档案里加一段 vrm.model；模型清单见 frontend/src/lib/vrmAssets.ts（素材在仓库根 assets/models/vrm/）'
+            }
+          />
         )}
       </div>
 
@@ -234,8 +326,25 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
           )}
         </div>
 
-        {/* 关于 = 角色提示词 */}
-        <p className="mb-4 max-w-[620px] text-[15px] leading-relaxed text-[var(--text-2)]">{view.about}</p>
+        {/* 关于 = 角色提示词；中文译文只给界面看，原文仍是实际喂给模型的正文 */}
+        <div className="mb-4 max-w-[620px]">
+          {aboutZh && (
+            <div className="mb-1.5 flex items-center gap-1.5">
+              <span className="eyebrow">关于 · 中文译文</span>
+              <button
+                type="button"
+                className="chip"
+                onClick={() => setViewRaw((v) => !v)}
+                title={viewRaw ? '切回中文译文' : '查看原文；原文才会喂给模型'}
+              >
+                {viewRaw ? '看译文' : '看原文'}
+              </button>
+            </div>
+          )}
+          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-[var(--text-2)]">
+            {viewRaw || !aboutZh ? view.about : view.aboutZh}
+          </p>
+        </div>
 
         {/* 基本词条 */}
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
@@ -290,6 +399,26 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
         {/* CTA */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {onEnterChat && <button className="btn" onClick={onEnterChat}>进入她的小窝 · 聊天</button>}
+          {/* 开场白按钮永远在：档案里没有开场白时按钮是虚的，旁边写明为什么 ——
+              不藏起来，免得用户以为这功能没做。 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className="btn ghost sm"
+              onClick={() => void insertGreeting()}
+              disabled={!greeting || greetingBusy}
+              title={greeting ? '' : '这角色的档案里没有开场白'}
+            >
+              {greetingBusy ? '插入中…' : '插入开场白'}
+            </button>
+            {!greeting && (
+              <span className="max-w-[360px] text-[11px] leading-snug text-[var(--text-3)]">
+                {p.imported
+                  ? '档案里没有开场白 —— 这张卡的 first_mes 是空的，或者她是在「存开场白」之前就导入的老卡；重新导一次这张卡才会补进来。'
+                  : '档案里没有开场白 —— 家里这几位小糖人本来就没有；自己写一句填进「开场白」就能用。'}
+              </span>
+            )}
+            {greetingNote && <span className="max-w-[360px] text-[11px] leading-snug text-[var(--text-3)]">{greetingNote}</span>}
+          </div>
           <button className="btn ghost sm ml-auto" onClick={onEdit}>
             ✎ 编辑资料
           </button>

@@ -268,20 +268,33 @@ def build_system_prompt(
     # 记忆三层 RAG（§9.2）：query = 最近几轮拼接，只注入「在场者」的记忆
     mem_ids = [p.get("id") for p in profiles if p.get("id")]
     query = memory_service.build_query(messages, MEMORY_QUERY_WINDOW)
+    name_of = {p.get("id") or "": p.get("name") or "小糖人" for p in profiles}
+    # 身份挑选（§22.4）：我的档案里挑中的记忆强制带上，关掉的连召回也不要。
+    # 没挑中的不兜底 —— 这个身份就是不看那条，宁可暂时想不起来。
+    # 没有身份（比如直接调 /api/chat 不带 persona）时维持旧行为：只按相关度召回。
+    pinned: list[dict] = []
+    excluded: set[str] = set()
+    persona_id = (persona or {}).get("id") or ""
+    if persona_id:
+        try:
+            from .. import persona_memory as pm
+            pinned, excluded = pm.injectable(persona_id, mem_ids)
+        except Exception:  # noqa: BLE001
+            pinned, excluded = [], set()
+    recalled: list[dict] = []
     if mem_ids and query:
         try:
-            recalled = memory_service.recall_for(
+            recalled = [m for m in memory_service.recall_for(
                 mem_ids,
                 query,
                 session_kind="single" if len(profiles) == 1 else "group",
-            )
-            name_of = {p.get("id") or "": p.get("name") or "小糖人" for p in profiles}
-            mem_block = memory_service.format_memory_block(recalled, name_of)
-            if mem_block:
-                parts.append(mem_block)
+            ) if m.get("id") not in excluded]
         except Exception:  # noqa: BLE001
             # 记忆检索失败不该拖垮聊天：模型没装好 / 向量库异常时静默跳过
-            pass
+            recalled = []
+    mem_block = memory_service.format_memory_block(recalled, name_of, pinned=pinned)
+    if mem_block:
+        parts.append(mem_block)
 
     settings = db.get_settings()
     jailbreak = (settings.get("jailbreak") or "").strip()

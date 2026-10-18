@@ -17,7 +17,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, NotRequired, TypedDict
+# NotRequired 在 Python 3.11 才进 typing；本项目跑 3.10，从 typing_extensions 拿（已装）。
+try:
+    from typing import NotRequired  # noqa: F401 —— 3.11+ 直接用标准库
+except ImportError:
+    from typing_extensions import NotRequired
+from typing import Any, Literal, TypedDict
 
 
 class RunnerCommand(TypedDict):
@@ -57,8 +62,32 @@ class SettingField(TypedDict):
     options: NotRequired[list[dict]]  # type=select 时用
     min: NotRequired[float]
     max: NotRequired[float]
+    # 只给 `bool` 用：**前端显示的是这个值的反**（存的还是 `default` 那一套语义）。
+    # 为什么要有它：有些开关的名字天生是反着写的（`memory.isolate` = 「单独记」），
+    # 而大老大要看的是正面那句「和群聊 / 私聊共享记忆」。前端勾上 = 存进去 False。
+    # 值本身（`values`）**始终是存储语义** —— 功能侧拉回去直接覆盖 config.json，
+    # 不认得这个标记，也不该认得。
+    # ⚠ 只在**顶层字段**上生效；`accounts` 行里的格子不认它（目前也没人用，别指望）。
+    invert: NotRequired[bool]
     # type=accounts 时：一行里有哪些格子（同一种形状，少 `group`/`secret` 之外都能用）。
     fields: NotRequired[list[dict]]
+
+
+class RunnerGateway(TypedDict):
+    """功能**要先有个外部的服务**才连得上时，那个服务怎么开（现在只有 QQ 桥的 SnowLuma）。
+
+    桥报「Cannot connect to host 127.0.0.1:3001」十有八九就是网关根本没开 —— 以前得自己去
+    D:\\SnowLuma 双击 launcher.bat，再回来点启动。现在小窝替大老大按这一下。
+    - `folder`：网关目录（可在功能设置 `gateway.folder` 里覆盖，见 routers/nest.py 的 `_gateway_spec`）。
+    - `node`：node 可执行文件路径（相对 folder，默认用网关自带的 `node.exe`，不吃系统 node 版本）。
+    - `script`：入口脚本（相对 folder）。不走 launcher.bat —— 它最后有个 pause，会一直挂着。
+    - `port`：开好之后该有东西在听的端口（轮询它判断「真的起来了」）。
+    """
+    label: str
+    folder: str
+    node: str
+    script: str
+    port: int
 
 
 class Runner(TypedDict):
@@ -71,6 +100,8 @@ class Runner(TypedDict):
     folder: str
     module: str
     commands: list[RunnerCommand]
+    # 有 gateway = 这个功能连的是外部服务，面板上给一个「开网关」按钮（见 routers/nest.py 的 gateway 接口）。
+    gateway: NotRequired[RunnerGateway]
 
 
 class Feature(TypedDict):
@@ -92,6 +123,49 @@ class Feature(TypedDict):
 # ---- 功能清单 ----
 # 顺序 = 前端展示顺序。加新功能就往这里加一条，并在 features/<folder>/ 建独立仓库。
 FEATURES: list[Feature] = [
+    {
+        "id": "desktop_pet", "name": "桌边的小糖人", "emoji": "🐾", "kind": "home",
+        "status": "available", "desc": "摸摸她，在桌面直接聊天；与小窝共用群聊、私聊和记忆。",
+        "needs_vision": False, "folder": "desktop-pet",
+        "runner": {"folder": "desktop-pet", "module": "pet", "commands": [
+            {"name": "run", "label": "来到桌面", "desc": "启动 Electron 桌宠", "params": [], "background": True},
+            {"name": "doctor", "label": "检查准备情况", "desc": "检查 Electron、构建与本机素材", "params": []},
+        ]},
+        "settings": [
+            {"key": "auto_speak", "label": "自动朗读回复", "type": "bool", "group": "声音",
+             "default": True, "desc": "只朗读桌面新发送后收到的回复；气泡 ♪ 可重播或停止。"},
+            {"key": "voice_engine", "label": "语音引擎", "type": "select", "group": "声音",
+             "default": "edge", "options": [{"value": "edge", "label": "Edge 在线"}, {"value": "piper", "label": "Piper 本地"}], "desc": "沿用小窝语音接口；本地音色需已安装。"},
+            {"key": "voice", "label": "音色 ID", "type": "text", "group": "声音",
+             "default": "zh-CN-XiaoxiaoNeural", "desc": "Edge 默认晓晓；Piper 可填 zh_CN-huayan-medium 等已安装音色。"},
+            {"key": "voice_volume", "label": "朗读音量", "type": "number", "group": "声音",
+             "default": 0.8, "min": 0, "max": 1, "desc": "0 为静音，1 为最大音量。"},
+            {"key": "font_size", "label": "聊天字号", "type": "number", "group": "气泡",
+             "default": 13, "min": 11, "max": 20, "desc": "桌面聊天正文字号。"},
+            {"key": "bubble_opacity", "label": "气泡不透明度", "type": "number", "group": "气泡",
+             "default": 0.98, "min": 0.65, "max": 1, "desc": "降低后可透出桌面，文字保持清晰。"},
+            {"key": "bubble_width", "label": "聊天框宽度", "type": "number", "group": "气泡",
+             "default": 488, "min": 340, "max": 760, "desc": "单位为逻辑像素；桌面也可拖动气泡右下角调整。"},
+            {"key": "bubble_height", "label": "聊天框高度", "type": "number", "group": "气泡",
+             "default": 360, "min": 260, "max": 620, "desc": "单位为逻辑像素，小屏幕自动缩小。"},
+            {"key": "theme", "label": "气泡配色", "type": "select", "group": "气泡",
+             "default": "lilac", "options": [{"value": "lilac", "label": "丁香紫"}, {"value": "rose", "label": "樱花粉"}, {"value": "mint", "label": "薄荷绿"}], "desc": "保存后约 5 秒更新。"},
+            {"key": "character", "label": "陪在桌边的角色", "type": "character", "group": "陪伴",
+             "default": "dashiyin", "desc": "使用小窝角色的人设与记忆；样例模型只作临时形象。"},
+            {"key": "session", "label": "桌面消息发到哪里", "type": "select", "group": "陪伴",
+             "default": "single", "options": [{"value": "single", "label": "她的私聊"}, {"value": "group", "label": "家庭群聊"}],
+             "desc": "沿用当前用户身份与现有聊天记录。群聊沿用小窝成员名单。"},
+            {"key": "model", "label": "临时 Live2D 形象", "type": "select", "group": "外观",
+             "default": "hiyori", "options": [{"value": "haru", "label": "Haru"}, {"value": "hiyori", "label": "Hiyori · 米黄色开衫"}],
+             "desc": "从本机 assets 加载公开样例，不复制或打包模型。"},
+            {"key": "scale", "label": "人物大小", "type": "number", "group": "外观",
+             "default": 1.0, "min": 0.65, "max": 1.3, "desc": "保存后桌面自动更新。"},
+            {"key": "always_on_top", "label": "保持在其他窗口上方", "type": "bool", "group": "窗口",
+             "default": True, "desc": "关闭后桌宠作为普通窗口显示。"},
+            {"key": "auto_memory", "label": "自动提炼记忆", "type": "bool", "group": "陪伴",
+             "default": True, "desc": "沿用普通聊天规则：私聊写入个人记忆，群聊写入相应记忆桶。"},
+        ],
+    },
     {
         "id": "dont_starve_together",
         "name": "饥荒联机版",
@@ -166,6 +240,14 @@ FEATURES: list[Feature] = [
                 {"name": "run", "label": "接上 QQ（常驻）", "desc": "连 OneBot 网关，收消息、回消息、同步进小窝；关掉窗口才停", "params": ["characters"], "background": True},
                 {"name": "whoami", "label": "这个号演谁", "desc": "看看本号对应哪位小糖人 + 家里有哪些人可选", "params": []},
             ],
+            # 网关（SnowLuma）没开的时候，桥连 3001 必然是「拒绝连接」—— 面板上给个按钮直接开。
+            "gateway": {
+                "label": "SnowLuma 网关",
+                "folder": r"D:\SnowLuma",
+                "node": "node.exe",
+                "script": "index.mjs",
+                "port": 3001,
+            },
         },
         # 这个功能的配置项**全部在前端改**（值存本体，桥每轮读一次）——
         # 大老大原话：「这块希望在前端可以自己配置，现在说比较复杂」。
@@ -231,6 +313,20 @@ FEATURES: list[Feature] = [
              "default": "", "desc": "网关设了才填，**两边要填一样的**。"
                                      "SnowLuma 的 token 在 WebUI「配置 → 网络」里能看到（默认会生成一个）。"
                                      "留空 = 不校验：任何能连到本机这个端口的东西都能指挥小糖人发消息。"},
+            {"key": "gateway.folder", "label": "网关装在哪个目录", "type": "text", "group": "接入方式",
+             "default": r"D:\SnowLuma",
+             "desc": "「开网关」按钮去这儿起 SnowLuma（用它自带的 node.exe 跑 index.mjs）。"
+                     "换过位置就填新的绝对路径。"},
+            {"key": "gateway.webui_port", "label": "网关网页端口", "type": "number", "group": "接入方式",
+             "default": 5099, "min": 1, "max": 65535,
+             "desc": "SnowLuma 的 WebUI 端口。开网关时小窝用它来问「现在是哪个号挂上了」"
+                     "并自动换到上面那个机器人号。没改过就别动。"},
+            {"key": "gateway.password", "label": "网关网页密码", "type": "text", "secret": True, "group": "接入方式",
+             "default": "",
+             "desc": "SnowLuma WebUI 的登录密码（打开 http://127.0.0.1:5099 时输的那个）。"
+                     "**填了才能自动换号**：同时登着两个 QQ 时，两个号的配置抢同一对端口 "
+                     "3000/3001，谁先被挂上谁赢 —— 小窝会用这个密码把抢到端口的**别的号**摘下来，"
+                     "让机器人号顶上去。不填就只提醒、手动换。只存在本机数据库，不进日志、不进 git。"},
 
             # ---- 语音 ----
             {"key": "voice.enabled", "label": "会发语音条", "type": "bool", "group": "声音",
@@ -297,8 +393,15 @@ FEATURES: list[Feature] = [
              "default": True, "desc": "群聊 → 小窝群聊，私聊 → 对应小糖人的私聊。关掉就只在 QQ 里聊。"},
             {"key": "sync.persona_id", "label": "放进谁的私聊", "type": "character", "group": "同步",
              "default": "", "desc": "留空 = 大老大的身份。填了就写进那位小糖人的私聊会话。"},
-            {"key": "memory.isolate", "label": "QQ 的事单独记", "type": "bool", "group": "同步",
-             "default": False, "desc": "关着 = QQ 里聊的也进日常记忆（小糖人平时就记得）；打开 = 只在 QQ 场景里记得。"},
+            # ⚠ 这条**是反着写的**：底层 key 是 `memory.isolate`（true = 隔离），
+            # 但大老大要看的是正面那句「共享」，所以标 `invert: true` —— 前端显示成
+            # 勾选框「和群聊 / 私聊共享记忆」，勾上时存进去的是 isolate=False。
+            # `default` 仍是**存储语义**（False = 不隔开 = 共享，也就是默认开着）；
+            # 大老大原话：「默认开，不然有点割裂」。
+            {"key": "memory.isolate", "label": "和群聊 / 私聊共享记忆", "type": "bool", "group": "同步",
+             "default": False, "invert": True,
+             "desc": "开着 = QQ 里聊的也进日常记忆，小糖人平时就记得（**推荐**，不然 QQ 里聊完切回私聊就像没聊过）。"
+                     "关掉 = 只在 QQ 场景里记得，QQ 和群聊 / 私聊的记忆就分家了。"},
             {"key": "memory.idle_seconds", "label": "不说话了就记下来（秒）", "type": "int", "group": "同步",
              "default": 300,
              "desc": "多久没人说话就把这段提炼成记忆，不用等攒够。默认 300 秒。别指望点「停止」时才记 —— 那条路在 Windows 上根本不生效。"},

@@ -1,3 +1,5 @@
+import BrainHealthDot from './BrainHealthDot'
+
 type View = 'home' | 'chat' | 'nest' | 'space'
 
 type Props = {
@@ -52,6 +54,7 @@ export default function TopBar({ theme, view, onToggleTheme, onView, title }: Pr
               </button>
             ))}
           </nav>
+          <BrainHealthDot />
           <button
             onClick={onToggleTheme}
             className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-2.5 py-1.5 text-[13px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)] sm:px-3.5"

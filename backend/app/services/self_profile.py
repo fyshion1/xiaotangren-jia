@@ -245,6 +245,15 @@ def export_all(persona_id: str) -> list[dict]:
 
 # ── 注入相关 ───────────────────────────────────────────────────────────────────
 
+def external_ai_layer_root() -> Path:
+    """个人数据库 `03_AI注入层` 目录（可用 PERSONAL_DATABASE_ROOT 改根）。"""
+    return Path(os.getenv("PERSONAL_DATABASE_ROOT", str(_SELF_PROFILE_ROOT.parents[2] / "个人数据库"))) / "03_AI注入层"
+
+
+def is_visible(visible_to: str | list, char_ids_present: list[str]) -> bool:
+    return _is_visible(visible_to, char_ids_present)
+
+
 def get_injectable_texts(persona_id: str, char_ids_present: list[str]) -> list[dict]:
     """返回所有 inject=true、且角色可见的区块文本（供 prompt 注入）。
 
@@ -256,7 +265,7 @@ def get_injectable_texts(persona_id: str, char_ids_present: list[str]) -> list[d
     texts: list[dict] = []
 
     # 已批准的个人数据库 AI 注入层：只读取 approved + inject=true 的 Markdown。
-    external_root = Path(os.getenv("PERSONAL_DATABASE_ROOT", str(_SELF_PROFILE_ROOT.parents[2] / "个人数据库"))) / "03_AI注入层"
+    external_root = external_ai_layer_root()
     if external_root.is_dir():
         for p in sorted(external_root.rglob("*.md")):
             try:

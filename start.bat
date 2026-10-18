@@ -8,7 +8,7 @@ echo ========================================
 
 echo.
 echo [1/2] Starting backend on :8000 ...
-start "xiaotang-backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn app.main:app --port 8000"
+start "xiaotang-backend" cmd /k "cd /d %~dp0backend && .venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 --reload"
 
 echo [2/2] Starting frontend on :5173 (LAN enabled) ...
 start "xiaotang-frontend" cmd /k "cd /d %~dp0frontend && npm run dev"

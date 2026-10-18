@@ -18,14 +18,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -35,6 +37,8 @@ from .. import db
 from ..config import get_settings
 from ..features_registry import all_features, default_needs_vision, get_feature, runner_of
 from ..providers import openai
+from ..services import memory as memory_service
+from ..services import snowluma
 from ..services.prompt.forms import resolve_form
 
 router = APIRouter(prefix="/nest", tags=["nest"])
@@ -149,6 +153,155 @@ async def put_brain_default_config(body: BrainDefaultIn) -> dict:
     return {"configured": True, "config": saved}
 
 
+# ---- 测一下路通不通 ----
+#
+# 为什么要有这个：上游报「405 / 401 / model not found」这类错时，从功能面板只能看到
+# 一句转述过的话，猜不出是**哪一段**坏了。这里从大脑这一头逐段试：
+#   ① 大脑自己活着吗 → ② 地址拼出来的 /chat/completions 通不通（流式那条实际走的路）
+#   → ③ 非流式那条（记忆提炼、功能自己的 JSON 调用走这条）→ ④ 视觉路
+# **真的发一次最小请求**（几个 token），因为好多错只有发出去才知道。
+#
+# 报回来的错就是上游原话（`_error_text` 抠不出 message 时兜底成「上游 N（无响应体）」）
+# —— 猜一百遍不如试一次。
+
+
+def _hint_for(status: int, detail: str, base_url: str) -> str:
+    """把上游错误码翻译成「该去改哪里」。只给动作，不猜上游内部。"""
+    if status in (401, 403):
+        return "密钥上游不认：检查全局默认里的 API Key（换服务商后旧 key 会失效）。"
+    if status == 404:
+        return (f"路径对不上：Base URL 现在填的是 {base_url or '（空）'}。"
+                "OpenAI 兼容口子要的是能拼出 `/chat/completions` 的那种（例：`https://xxx/v1`）。")
+    if status == 405:
+        return ("这个方法上游不收：多半是 Base URL 缺了 `/v1`（或写成了带页面的根地址），"
+                "POST 打到了网站的页面上。按「建议地址」改完再测。")
+    if status == 429:
+        return "上游限流或余额不够：等一会儿，或换个通道。"
+    if status in (500, 502, 503, 504):
+        return "上游自己抖了（中转通道没就绪）：先重试；一直这样就是上游的事，不是配置错。"
+    if status == 400 and "model" in (detail or "").lower():
+        return "模型名上游不认：检查「对话模型」写的是不是上游列出来的 id。"
+    return ""
+
+
+def _suggest_base(base_url: str) -> str:
+    """给个「大概该填什么」的建议 —— 只补一个 /v1，不改别的。"""
+    url = (base_url or "").strip().rstrip("/")
+    if not url or url.endswith("/v1"):
+        return ""
+    return url + "/v1"
+
+
+async def _probe_stream(cfg: dict, model: str) -> dict:
+    """真正走「功能让她说话」那条路：`stream_chat`，最小一句话。"""
+    messages = [{"role": "user", "content": "ping"}]
+    try:
+        async for event in openai.stream_chat(
+            messages, model, cfg["base_url"], cfg["api_key"], max_tokens=8, timeout=30.0
+        ):
+            if event["type"] == "error":
+                return {"ok": False, "status": event.get("status") or 0, "detail": event["message"]}
+            if event["type"] == "text":
+                return {"ok": True, "status": 200, "detail": "回了几个字，路是通的"}
+        return {"ok": True, "status": 200, "detail": "连上了（这条上游没吐正文，也算通）"}
+    except Exception as exc:  # noqa: BLE001 - 诊断接口，什么错都要如实报出来
+        return {"ok": False, "status": 0, "detail": f"{type(exc).__name__}: {exc}"}
+
+
+async def _probe_complete(cfg: dict, model: str) -> dict:
+    """非流式那条：功能自己的严格 JSON 调用 / 记忆提炼走它。"""
+    try:
+        text = await openai.complete_chat(
+            [{"role": "user", "content": "ping"}], model, cfg["base_url"], cfg["api_key"],
+            max_tokens=8, temperature=0.0,
+        )
+        return {"ok": True, "status": 200, "detail": f"回了 {len(text)} 个字"}
+    except Exception as exc:  # noqa: BLE001
+        raw = str(exc)
+        # RuntimeError 的正文形如「上游 405: …」——把码抠出来给前端翻成人话。
+        status = 0
+        if raw.startswith("上游 "):
+            head = raw[3:].split(":", 1)[0].split("：", 1)[0].strip()
+            status = int(head) if head.isdigit() else 0
+        return {"ok": False, "status": status, "detail": raw}
+
+
+async def _probe_vision(cfg: dict) -> dict:
+    """视觉路：发一张 1×1 的透明 PNG，只验「这条路收不收」，不验它看不看得懂。"""
+    tiny = ("data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    if not cfg.get("vision_model"):
+        return {"ok": False, "status": 0, "detail": "全局默认里没填视觉模型（留空 = 跟对话同一路时也该填一个）"}
+    content = [{"type": "text", "text": "这是什么颜色？一个字。"},
+               {"type": "image_url", "image_url": {"url": tiny}}]
+    try:
+        async for event in openai.stream_chat(
+            [{"role": "user", "content": content}], cfg["vision_model"],
+            cfg["vision_base_url"], cfg["vision_api_key"], max_tokens=8, timeout=30.0,
+        ):
+            if event["type"] == "error":
+                return {"ok": False, "status": event.get("status") or 0, "detail": event["message"]}
+            if event["type"] == "text":
+                return {"ok": True, "status": 200, "detail": "这条路收图"}
+        return {"ok": True, "status": 200, "detail": "这条路收图"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "status": 0, "detail": f"{type(exc).__name__}: {exc}"}
+
+
+@router.post("/features/{feature_id}/api-test")
+async def test_feature_api(feature_id: str) -> dict:
+    """**真的发请求**地测一遍这个功能的上游。
+
+    不写库、不记账、不落日志（key 只在这段内存里过一下）。前端「🧪 测一下」按钮调它。
+    返回每段的 ok / status / detail / hint —— hint 是「该去改哪里」，不是猜上游内部。
+    """
+    cfg = _effective_config(feature_id)
+    checks: list[dict] = []
+
+    def add(name: str, label: str, ok: bool, status: int, detail: str) -> None:
+        checks.append({
+            "name": name, "label": label, "ok": ok, "status": status, "detail": detail,
+            "hint": "" if ok else _hint_for(status, detail, cfg.get("base_url", "")),
+        })
+
+    # ① 配置本身填全了没 —— 后面几段都靠它。
+    missing = [k for k in ("base_url", "api_key", "model") if not cfg.get(k)]
+    if missing:
+        add("config", "配置齐不齐", False, 0,
+            f"缺 {'、'.join(missing)}（来源：{'功能独立配置' if cfg.get('source') == 'feature_override' else '全局默认'}）")
+        return {"feature_id": feature_id, "source": cfg.get("source", ""),
+                "base_url": cfg.get("base_url", ""), "model": cfg.get("model", ""),
+                "suggest_base_url": "", "ok": False, "checks": checks}
+    add("config", "配置齐不齐", True, 0,
+        f"{cfg['base_url']} · 模型 {cfg['model']}（来源："
+        f"{'功能独立配置' if cfg.get('source') == 'feature_override' else '全局默认'}）")
+
+    # ② 流式路 —— 「让她写例句 / 讲话」走的就是这条。
+    got = await _probe_stream(cfg, cfg["model"])
+    add("stream", "对话（流式，功能常用）", got["ok"], got["status"], got["detail"])
+
+    # ③ 非流式路 —— 功能自己的 JSON 调用（批改 / 出题 / 记忆提炼）。
+    got = await _probe_complete(cfg, cfg["model"])
+    add("complete", "对话（非流式，要 JSON 的活）", got["ok"], got["status"], got["detail"])
+
+    # ④ 视觉路 —— 屏蔽了就不试，如实说明。
+    if not cfg.get("needs_vision"):
+        add("vision", "视觉（看图）", True, 0, "这个功能已屏蔽视觉，跳过")
+    else:
+        got = await _probe_vision(cfg)
+        add("vision", "视觉（看图）", got["ok"], got["status"], got["detail"])
+
+    return {
+        "feature_id": feature_id,
+        "source": cfg.get("source", ""),
+        "base_url": cfg.get("base_url", ""),
+        "model": cfg.get("model", ""),
+        "suggest_base_url": _suggest_base(cfg.get("base_url", "")) if not checks[1]["ok"] else "",
+        "ok": all(c["ok"] for c in checks),
+        "checks": checks,
+    }
+
+
 @router.get("/features/{feature_id}/api-config")
 async def get_feature_api_config(feature_id: str) -> dict:
     """该功能实际生效的配置（全局默认 + 功能覆盖合并后的结果）。"""
@@ -199,6 +352,10 @@ class NestChatIn(BaseModel):
     state: dict = Field(default_factory=dict)
     stream: bool = False
     max_tokens: int = Field(default=2048, ge=1, le=8192)
+    # 长期记忆召回（可选，默认关）。开着时按普通聊天同一套规则把「家记忆 + 在场角色个人记忆」
+    # 拼进 system prompt —— QQ 桥这种「同一个大脑、只是换了个入口」的功能需要它，
+    # 其他功能各自决定，默认保持不召回。
+    memory_recall: bool = False
 
 
 MAX_INLINE_IMAGE_CHARS = 8 * 1024 * 1024  # 单张 data URL 上限（防手滑塞整段视频）
@@ -214,6 +371,45 @@ def _vision_content(text: str, images: list[str]) -> list[dict]:
     return [{"type": "text", "text": text}] + [
         {"type": "image_url", "image_url": {"url": url}} for url in images
     ]
+
+
+MEMORY_QUERY_WINDOW = 4
+# 这些功能就是「同一个大脑换了个入口」（QQ 桥 → 群聊 / 私聊那个大脑），默认召回长期记忆。
+# 其余功能默认不召回；需要召回的自己在这里登记，或者请求里显式传 `memory_recall: true`。
+MEMORY_RECALL_FEATURES = frozenset({"qq_bridge"})
+
+
+def _wants_memory_recall(body: "NestChatIn") -> bool:
+    return body.memory_recall or body.feature_id in MEMORY_RECALL_FEATURES
+
+
+def _recall_memory_block(body: "NestChatIn", ids: list[str], characters: list[dict]) -> str:
+    """按普通聊天的规则召回长期记忆，排版成可拼进 system 的块。
+
+    规则与 `services/prompt/assembler.py` 一致：最近几轮拼 query → 家记忆 + 每位在场角色个人记忆
+    → `format_memory_block`。召回的就是日常聊天那一桶（`game_id=''`）—— 登记在这里的功能是
+    「同一个大脑换个入口」，不该因为换了个入口就看不到同一个人的记忆。检索失败一律返回空串：
+    记忆不该拖垮一次对话。
+    """
+    try:
+        query = memory_service.build_query(
+            [t.model_dump() for t in body.messages], MEMORY_QUERY_WINDOW
+        )
+        if not query:
+            return ""
+        recalled = memory_service.recall_for(
+            ids, query,
+            session_kind="single" if len(ids) == 1 else "group",
+        )
+        # 身份挑选（§22.4）：功能侧和外设没有「当前身份」的念头，统一按大老大的挑选口径 ——
+        # 小糖人在 QQ 里也是同一个人，不该因为换了个入口就换一套记忆。
+        from ..services import persona_memory as pm
+        pinned, excluded = pm.injectable(db.get_active_persona_id(), ids)
+        recalled = [m for m in recalled if m.get("id") not in excluded]
+        name_of = {cid: (c.get("name") or "小糖人") for cid, c in zip(ids, characters, strict=True)}
+        return memory_service.format_memory_block(recalled, name_of, pinned=pinned)
+    except Exception:  # 记忆检索失败不该拖垮聊天
+        return ""
 
 
 @router.post("/chat")
@@ -248,7 +444,12 @@ async def nest_chat(body: NestChatIn):
     else:
         character = characters[0]
         system = f"你是{character.get('name', ids[0])}。\n{character.get('about', '')}\n" + rules + "只返回对话文字。"
-    # 不调用普通聊天组装器，避免把家庭记忆和私人聊天上下文带入功能会话。
+    # 默认不调用普通聊天组装器（不主动带家庭记忆和私人聊天上下文）；memory_recall=True 的功能
+    # 只借组装器里的「召回 + 排版」这一段，人设和规则仍由本函数自己的 system 决定。
+    if _wants_memory_recall(body):
+        memory_block = _recall_memory_block(body, ids, characters)
+        if memory_block:
+            system += "\n\n" + memory_block
     context = {"feature_id": body.feature_id, "world_id": body.world_id,
                "player_id": body.player_id, "state": body.state}
     settings = get_settings()
@@ -668,6 +869,21 @@ def _log_path(feature_id: str) -> Path:
     return RUNS_DIR / f"{feature_id}.log"
 
 
+# 功能子进程必须自己一个「控制台进程组」：
+#   ① 不这么做，它就跟小窝后端在同一个组里 —— 窗口一关 / Ctrl+C / 注销，信号会顺着组打到功能进程，
+#      后端自己的 asyncio 接收循环也跟着炸（`WinError 64 指定的网络名不再可用`）；
+#   ② 自己一组之后，停止时才能把 CTRL_BREAK 只发给它那一组。
+# ⚠ 实测：只有在控制台里跑时才送得到（Python 的 send_signal 要求「本进程在控制台里」）。
+#   从资源管理器/后台无控制台启动时 CTRL_BREAK 会被静默丢掉，_stop_one 会在宽限期后强杀 ——
+#   程序不会卡住，只是那一次收尾（finally）跑不到。
+_CREATE_NEW_GROUP = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+                     if os.name == "nt" else 0)
+
+# 活着的子进程（pid -> Popen）。库里 latest_feature_run 只留「最近一次」，拿不到 Popen，
+# 就没法对它发 CTRL_BREAK。进程退出就顺手剔掉。
+_procs: dict[int, subprocess.Popen] = {}
+
+
 @router.post("/features/{feature_id}/run")
 async def run_feature(feature_id: str, body: RunIn) -> dict:
     """把独立功能项目跑起来。**常驻子命令**（注册表里标了 `background`，如「一直逛」「接上 QQ」）
@@ -692,7 +908,9 @@ async def run_feature(feature_id: str, body: RunIn) -> dict:
             proc = subprocess.Popen(  # noqa: S603 - argv 全部由注册表白名单拼出
                 argv, cwd=str(info["cwd"]), stdout=fp, stderr=subprocess.STDOUT,
                 env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
+                creationflags=_CREATE_NEW_GROUP,
             )
+        _procs[proc.pid] = proc
         db.record_feature_run(feature_id, spec["name"], proc.pid)
         if spec.get("background"):
             return {"ok": True, "running": True, "pid": proc.pid, "log": str(log),
@@ -700,7 +918,7 @@ async def run_feature(feature_id: str, body: RunIn) -> dict:
         # 等它跑完这件事**丢给线程**（上面 docstring 说过为什么）—— 最多等 10 分钟。
         code = await asyncio.to_thread(_wait_capped, proc, 600)
         if code is None:
-            proc.kill()
+            await asyncio.to_thread(_stop_one, proc)
             db.stop_feature_runs(feature_id)
             raise HTTPException(504, "跑太久了（超过 10 分钟），已停掉 —— 看看日志")
         db.stop_feature_runs(feature_id)
@@ -729,6 +947,49 @@ def _wait_capped(proc: subprocess.Popen, timeout: float) -> int | None:
         return proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil  # type: ignore
+        return psutil.pid_exists(pid)
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def _stop_one(proc: subprocess.Popen, grace: float = 5.0) -> bool:
+    """**先好好说，再动手**：CTRL_BREAK → 等 grace 秒 → kill → 确认。
+
+    返回是否「好好说」成功（功能自己把 finally 跑完了）。
+    Windows 上 terminate() 等于直接 TerminateProcess，Python 的 finally 根本不会跑
+    （QQ 桥的「收工前把记忆刻一遍」就是这么丢的），所以这里发 CTRL_BREAK_EVENT：
+    本进程组里的子进程会收到 SIGBREAK，CPython 把它当 KeyboardInterrupt，收尾代码正常执行。
+    老进程（升级前起的、不在组里）收不到，就直接走 kill —— 这是可接受的降级。
+    """
+    if proc.poll() is not None:
+        _procs.pop(proc.pid, None)
+        return True
+    graceful = False
+    if os.name == "nt":
+        # TimeoutExpired 也要吞掉：它只是「好好说没奏效」，下面照常 kill。
+        # （之前漏了它，进程不理会 CTRL_BREAK 时这个函数会直接抛错，kill 那一步根本走不到。）
+        with contextlib.suppress(OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+            graceful = proc.wait(timeout=grace) is not None
+    else:
+        with contextlib.suppress(OSError):
+            proc.send_signal(signal.SIGINT)
+        graceful = _wait_capped(proc, grace) is not None
+    if not graceful:
+        with contextlib.suppress(OSError):
+            proc.kill()
+        _wait_capped(proc, grace)
+    _procs.pop(proc.pid, None)
+    return graceful and proc.poll() is not None
 
 
 def _running_pid(feature_id: str) -> int:
@@ -771,17 +1032,295 @@ async def feature_run_log(feature_id: str, lines: int = Query(400, ge=1, le=4000
 
 @router.delete("/features/{feature_id}/run")
 async def stop_feature(feature_id: str) -> dict:
-    """停掉这个功能的循环进程。"""
+    """停掉这个功能的循环进程 —— 先按「好好说」停一次（功能能跑完自己的收尾），5 秒不走才强杀。
+
+    返回是**如实**的：`stopped` 说进程确实没了没；`graceful` 说它是不是自己乖乖退出的。
+    以前这里不管停没停住都回 ok，前端就看不出「其实还在跑、还占着端口」。
+    """
     pid = _running_pid(feature_id)
     if not pid:
         return {"ok": True, "stopped": False, "message": "本来就没在跑"}
-    try:
-        import psutil  # type: ignore
-        psutil.Process(pid).terminate()
-    except ImportError:
-        os.kill(pid, 15)  # noqa: S603 - pid 来自我们自己记的表
+    proc = _procs.get(pid)
+    graceful = False
+    if proc is not None:
+        graceful = await asyncio.to_thread(_stop_one, proc)
+    else:
+        # 后端重启前起的进程，手里没有 Popen —— 只能直接停。
+        try:
+            import psutil  # type: ignore
+            psutil.Process(pid).terminate()
+        except Exception:  # noqa: BLE001 - 进程可能刚好自己退了
+            pass
+    for _ in range(20):  # 最多再等 2 秒让它真消失
+        if not _pid_alive(pid):
+            break
+        await asyncio.sleep(0.1)
     db.stop_feature_runs(feature_id)
-    return {"ok": True, "stopped": True, "pid": pid}
+    alive = _pid_alive(pid)
+    message = ("已停下（它自己收完尾退出的）" if graceful
+               else "已停下" if not alive
+               else f"发过停止信号了，但 pid {pid} 还在 —— 再点一次停止，或重启小窝")
+    return {"ok": not alive, "stopped": not alive, "pid": pid,
+            "graceful": graceful, "message": message}
+
+
+# ---- 网关（功能要连的外部服务，如 SnowLuma）--------------------------------
+# 桥连不上 3001 最常见的原因不是桥坏了，是**网关根本没开**。以前得自己去 D:\SnowLuma 双击
+# launcher.bat —— 现在面板上按一下，本体替它开（照样是只读注册表声明，不接受前端传命令）。
+
+
+def _gateway_spec(feature_id: str) -> dict:
+    runner = runner_of(feature_id) or {}
+    gw = runner.get("gateway")
+    if not gw:
+        raise HTTPException(404, "这个功能没有「外部网关」可开")
+    # 目录允许在功能设置里覆盖（换过安装位置就不用改代码）。
+    try:
+        saved = (db.get_feature_settings(feature_id) or {}).get("data") or {}
+        override = str(saved.get("gateway.folder") or "").strip()
+        # 还没保存过任何设置时，库里是空的 —— 这时默认值和注册表声明里的 default 一样，
+        # 拿注册表里的 gateway.folder 兜一下，免得两处写死的路径对不上。
+        if not override:
+            spec_fields = (get_feature(feature_id) or {}).get("settings") or []
+            field = next((f for f in spec_fields if f.get("key") == "gateway.folder"), None)
+            override = str((field or {}).get("default") or "").strip()
+    except Exception:  # noqa: BLE001 - 读设置失败不该把「开网关」整个打死
+        override = ""
+    return {**gw, "folder": override or gw["folder"]}
+
+
+def _setting(feature_id: str, key: str, default: Any = "") -> Any:
+    """读这个功能的一个设置（只认注册表声明过的 key，取不到就用声明里的默认）。"""
+    try:
+        field = next((f for f in (_settings_spec(feature_id) or []) if f.get("key") == key), None)
+        fallback = (field or {}).get("default", default)
+        saved = (db.get_feature_settings(feature_id) or {}).get("data") or {}
+        return saved.get(key, fallback)
+    except Exception:  # noqa: BLE001 - 读设置失败一律走兜底，别把调用方打死
+        return default
+
+
+def _port_listening(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
+    import socket as _socket
+
+    try:
+        with _socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+# 网关进程（pid -> Popen）。和功能子进程分开存，但它也进 _procs —— 停止/强杀走同一套。
+_gateway_pids: dict[str, int] = {}
+
+
+def _gateway_uin(log: Path) -> str:
+    """网关日志里最后一条 `UIN=<号>` —— 它现在挂上的是哪个 QQ。
+
+    SnowLuma 不是自己登录，而是注入到一个已经在跑的 QQ 进程里。机器人号没登录、
+    电脑上开着大老大自己的号时，它会默默挂到**错的那个号**上 —— 桥连过去看着一切正常，
+    说话的身份却是错的。把号带回前端，前端才能提醒。
+
+    日志只当兜底：它记的是「谁被挂上过」，换过号之后不一定马上有新的 UIN 行 ——
+    真正现在的号看 `_live_uin`（问网关的 WebUI，端口现在是谁的就是谁的）。
+    """
+    try:
+        import re as _re
+
+        found = _re.findall(r"UIN=(\d+)", _tail(log, 300))
+        return found[-1] if found else ""
+    except Exception:  # noqa: BLE001 - 日志读不到不该影响「开没开」这个结论
+        return ""
+
+
+# 端口归属的短缓存：{feature_id: (号, 到期时刻)}。
+# 面板每 4 秒问一次状态，每次都跑去 WebUI 问一遍太浪费；但缓存又不能长 ——
+# 换号之后状态条得马上跟着变。6 秒：比轮询周期长一点，换号完一轮内就能看到。
+_UIN_CACHE: dict[str, tuple[str, float]] = {}
+_UIN_TTL = 6.0
+
+
+def _live_uin(feature_id: str, port: int, webui_port: int, password: str) -> str:
+    """现在**真正**占着这个端口的是哪个号（问网关 WebUI）。查不到就返回空。"""
+    import time as _time
+
+    hit = _UIN_CACHE.get(feature_id)
+    now = _time.time()
+    if hit and hit[1] > now:
+        return hit[0]
+    info = snowluma.bot_uin_online(password, port, webui_port)
+    owners = info.get("owners") or []
+    uin = str(owners[0]) if len(owners) == 1 else ""
+    _UIN_CACHE[feature_id] = (uin, now + _UIN_TTL)
+    return uin
+
+
+def _gateway_status(feature_id: str) -> dict:
+    gw = _gateway_spec(feature_id)
+    port = int(gw["port"])
+    pid = _gateway_pids.get(feature_id, 0)
+    ours_alive = bool(pid) and _pid_alive(pid)
+    if not ours_alive:
+        _gateway_pids.pop(feature_id, None)
+    online = _port_listening(port)
+    log = _log_path(f"{feature_id}-gateway")
+    if online and not ours_alive:
+        # 端口在听但不是这次从小窝起的 —— 大老大自己双击的、或后端重启前起的，都算在线。
+        message = f"{gw['label']} 在线（不是从小窝起的）"
+    elif online:
+        message = f"{gw['label']} 在线"
+    elif ours_alive:
+        message = f"{gw['label']} 进程在，但 {port} 还没起来 —— 可能还在登录，稍等"
+    else:
+        message = f"{gw['label']} 没开 —— 桥连 {port} 会被拒绝"
+    expected = str(_setting(feature_id, "onebot.self_id", "") or "").strip()
+    password = str(_setting(feature_id, "gateway.password", "") or "").strip()
+    webui_port = int(_setting(feature_id, "gateway.webui_port", snowluma.DEFAULT_WEBUI_PORT)
+                     or snowluma.DEFAULT_WEBUI_PORT)
+    # 谁挂上了：先问网关（准，还能看出「一个号都没挂」），问不到再退回日志。
+    uin = _live_uin(feature_id, port, webui_port, password) if (online and password) else ""
+    if not uin and online and ours_alive:
+        uin = _gateway_uin(log)
+    return {"feature_id": feature_id, "label": gw["label"], "port": port,
+            "online": online, "pid": pid if ours_alive else 0,
+            "started_by_nest": ours_alive, "log": str(log),
+            "uin": uin,
+            "expected_uin": expected,
+            # 只回「填没填」不回口令本身 —— 前端拿它决定要不要提示去填。
+            "has_password": bool(password),
+            "message": message}
+
+
+@router.get("/features/{feature_id}/gateway")
+async def gateway_status(feature_id: str) -> dict:
+    """网关开没开（前端状态条 + 「开网关」按钮显不显示）。只探测端口，不启动任何东西。"""
+    return await asyncio.to_thread(_gateway_status, feature_id)
+
+
+def _auto_swap_bot(feature_id: str, gw: dict) -> dict:
+    """把网关的 OneBot 端口**换给机器人号**独占（同时登两个号时用）。
+
+    两个号的 snowluma 配置写死同一对端口，谁先被挂上谁赢 —— 赢的多半是大号。
+    有 WebUI 密码就替大老大把这个号摘下来、让机器人号顶上去；没填密码就老实说
+    「只是提醒，自己换」。**任何失败都只是没换成**，不影响「网关已经开好了」这件事。
+    """
+    want = str(_setting(feature_id, "onebot.self_id", "") or "").strip()
+    password = str(_setting(feature_id, "gateway.password", "") or "").strip()
+    webui_port = int(_setting(feature_id, "gateway.webui_port", snowluma.DEFAULT_WEBUI_PORT)
+                     or snowluma.DEFAULT_WEBUI_PORT)
+    if not want:
+        return {"ok": False, "message": "没配「机器人 QQ 号」，不自动换号"}
+    if not password:
+        return {"ok": False, "message": f"没填「网关网页密码」，没法自动换号 —— "
+                                        f"看看网关挂的是不是机器人 {want}，不是就手动换"}
+    result = snowluma.ensure_bot_account(password, want, int(gw["port"]), webui_port)
+    _UIN_CACHE.pop(feature_id, None)   # 刚换过，别让状态条还显示旧号
+    return result
+
+
+@router.post("/features/{feature_id}/gateway/start")
+async def start_gateway(feature_id: str) -> dict:
+    """把网关（SnowLuma）开起来，等它的端口真的在听再回话。
+
+    已经在线 → 直接回 ok（重复点不会起第二个）。起了但端口等不到 → 504，附日志尾巴
+    （一般是 node 版本不对 / 安装目录不对 / 要重新登录）。
+    """
+    gw = _gateway_spec(feature_id)
+    if await asyncio.to_thread(_port_listening, gw["port"]):
+        return {**await asyncio.to_thread(_gateway_status, feature_id),
+                "ok": True, "message": f"{gw['label']} 本来就开着"}
+
+    folder = Path(gw["folder"])
+    if not folder.is_dir():
+        raise HTTPException(503, f"网关目录不存在：{folder} —— 在「接入方式 → 网关装在哪个目录」里改一下")
+    node = folder / gw["node"]
+    if not node.is_file():
+        raise HTTPException(503, f"网关目录里没有 {gw['node']}：{node}")
+    script = folder / gw["script"]
+    if not script.is_file():
+        raise HTTPException(503, f"网关目录里没有 {gw['script']}：{script}")
+
+    log = _log_path(f"{feature_id}-gateway")
+    with log.open("ab") as fp:
+        fp.write(f"\n===== {datetime.now().isoformat(timespec='seconds')}  开网关 =====\n".encode())
+        fp.flush()
+        # 不走 launcher.bat：它开头查 node 版本、结尾有 pause，会一直挂着不退出。
+        # 用网关自带的 node.exe（系统 node 大版本不一定对得上）；输出直接落日志。
+        proc = subprocess.Popen(  # noqa: S603 - 路径全部来自注册表，不接前端输入
+            [str(node), str(script)], cwd=str(folder),
+            stdout=fp, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            # ⚠ 必须有：SnowLuma 默认 hookAutoLoad=false，**不会自己挂到已经在跑的 QQ 上** ——
+            #   表现就是「WebUI 开了、3001 一个都不开」，看着像卡死。设了这个环境变量它才会
+            #   发现 QQ 进程就注入（等于 launcher.bat + WebUI 里手动点「加载」）。
+            env={**os.environ, "SNOWLUMA_HOOK_AUTOLOAD": "1"},
+            creationflags=_CREATE_NEW_GROUP,
+        )
+    _procs[proc.pid] = proc
+    _gateway_pids[feature_id] = proc.pid
+
+    # 最多等 60 秒：SnowLuma 冷启动要读登录态、连 QQ，慢的时候十几秒也正常。
+    deadline = 60.0
+    waited = 0.0
+    while waited < deadline:
+        await asyncio.sleep(1.0)
+        waited += 1.0
+        if _port_listening(gw["port"]):
+            # 端口开了不等于**对的那个号**抢到了：同时登两个 QQ 时两个号抢同一对端口，
+            # 谁先被挂上谁赢。这里顺手换给机器人号 —— 换不成也只是没换，不影响网关已开。
+            swap = await asyncio.to_thread(_auto_swap_bot, feature_id, gw)
+            status = await asyncio.to_thread(_gateway_status, feature_id)
+            tail = ("\n" + "\n".join(swap.get("lines") or [])) if swap.get("lines") else ""
+            return {**status, "ok": True, "waited": int(waited),
+                    "swap": {k: v for k, v in swap.items() if k != "lines"},
+                    "message": f"{gw['label']} 开好了（{int(waited)} 秒）—— "
+                               f"{swap.get('message') or ''}{tail}".strip()}
+        code = await asyncio.to_thread(_wait_capped, proc, 0)
+        if code is not None:
+            _procs.pop(proc.pid, None)
+            _gateway_pids.pop(feature_id, None)
+            raise HTTPException(502, f"网关进程一启动就退出了（退出码 {code}）—— 日志尾巴：\n"
+                                     f"{_tail(log, 20)}")
+    raise HTTPException(504, f"等了 {int(deadline)} 秒 {gw['label']} 还没起来 —— 日志尾巴：\n"
+                             f"{_tail(log, 20)}")
+
+
+@router.post("/features/{feature_id}/gateway/stop")
+async def stop_gateway(feature_id: str) -> dict:
+    """关掉**从小窝起的**网关（换过 QQ 号之后「重开」用）。
+
+    不是从小窝起的网关一律不动（409）—— 它的控制台不在我们手里，也不该去杀一个
+    不属于自己的进程；那种情况去启动它的窗口 / 任务管理器里关。
+    """
+    gw = _gateway_spec(feature_id)
+    pid = _gateway_pids.get(feature_id, 0)
+    proc = _procs.get(pid) if pid else None
+    if proc is None:
+        _gateway_pids.pop(feature_id, None)
+        raise HTTPException(409, f"{gw['label']} 不是从小窝起的，这边关不了 —— "
+                                 "去启动它的那个窗口 / 任务管理器里关。")
+    await asyncio.to_thread(_stop_one, proc, 5.0)
+    _procs.pop(pid, None)
+    _gateway_pids.pop(feature_id, None)
+    return {**await asyncio.to_thread(_gateway_status, feature_id),
+            "ok": True, "message": f"{gw['label']} 关掉了"}
+
+
+@router.post("/features/{feature_id}/gateway/claim")
+async def claim_gateway(feature_id: str) -> dict:
+    """把网关的 OneBot 端口换给**配置里的机器人号**（面板上「换给机器人号」那颗按钮）。
+
+    开机自动换过一次还不对（比如机器人号是后来才登上的），点这个再来一次 ——
+    换号要联网关的 WebUI，所以单独一条，不在状态轮询里做。
+    """
+    gw = _gateway_spec(feature_id)
+    if not await asyncio.to_thread(_port_listening, gw["port"]):
+        raise HTTPException(409, f"{gw['label']} 没开 —— 先把网关开起来")
+    swap = await asyncio.to_thread(_auto_swap_bot, feature_id, gw)
+    _UIN_CACHE.pop(feature_id, None)
+    status = await asyncio.to_thread(_gateway_status, feature_id)
+    return {**status, "ok": bool(swap.get("ok")), "swap": {k: v for k, v in swap.items() if k != "lines"},
+            "message": (swap.get("message") or "") +
+                       (("\n" + "\n".join(swap.get("lines") or [])) if swap.get("lines") else "")}
 
 
 @router.get("/capabilities")

@@ -170,10 +170,42 @@ export default function StatusSidebar({
               )
             })}
           </div>
+        ) : single ? (
+          /* 私聊一位，但不是自家四位：羁绊 / 心情 / 地点那套是写死的壳子（DEFAULT_STATUS），
+             对导入进来的角色没有意义 —— 硬套一个假数值不如不显示。改成摊开卡里的原词条：
+             都是导入时从原文抽出来、用户能在 ✎ 编辑资料里改的，一个字不编。 */
+          <div className="status-box">
+            <div className="status-title">{single.name} · 卡里的词条</div>
+            {(
+              [
+                ['别名', single.alias],
+                ['职业', single.occupation],
+                ['生日', single.birthday],
+                ['年龄', single.age],
+                ['身高', single.height],
+                ['关系', single.relationships],
+              ] as [string, string | undefined][]
+            )
+              .filter(([, v]) => (v || '').trim())
+              .map(([label, v]) => (
+                <div key={label} className="status-row">
+                  <span>{label}</span>
+                  <span className="text-right">{v}</span>
+                </div>
+              ))}
+            {single.catchphrase?.trim() && (
+              <div className="mt-2 text-[12px] leading-snug text-[var(--text-2)]">
+                口头禅：<span className="text-[var(--text)]">{single.catchphrase}</span>
+              </div>
+            )}
+            <p className="mt-2 text-[11px] leading-snug text-[var(--text-3)]">
+              ＊ 到这儿来的角色：羁绊 / 心情那套数值只给自家四位算，她这儿就照原文摆词条。
+            </p>
+          </div>
         ) : (
           <div className="status-box">
-            <div className="status-title">角色卡</div>
-            <p className="text-[12px] leading-snug text-[var(--text-3)]">导入的角色卡暂无人设解析（阶段 2），先占位。</p>
+            <div className="status-title">状态</div>
+            <p className="text-[12px] leading-snug text-[var(--text-3)]">这一条会话还没有在场角色 —— 去成员面板勾一位。</p>
           </div>
         )}
       </div>

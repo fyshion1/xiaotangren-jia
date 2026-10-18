@@ -260,6 +260,82 @@ class NestRouterTests(unittest.TestCase):
         self.assertEqual(captured["model"], "chat-model")
 
 
+class NestChatMemoryRecallTests(unittest.TestCase):
+    """QQ 桥要走普通聊天那套长期记忆召回；别的功能默认不动。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
+        self.path.start()
+        self.addCleanup(self.path.stop)
+        db.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with db._tx() as conn:
+            conn.executescript(db._SCHEMA)
+            db._migrate(conn)
+        app = FastAPI()
+        app.include_router(nest.router, prefix="/api")
+        self.client = TestClient(app)
+        self.addCleanup(self.client.close)
+        self.client.put("/api/nest/api-config", json={
+            "base_url": "https://brain/v1", "api_key": "k", "model": "chat-model"})
+        self.captured: dict = {}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _post(self, feature_id: str, text: str = "你记得我家猫叫什么吗", **extra):
+        async def fake_stream(messages, model, base_url, api_key="", **kw):
+            self.captured["messages"] = messages
+            yield {"type": "text", "text": "记得"}
+            yield {"type": "done", "finish_reason": "stop"}
+
+        with patch.object(nest.db, "get_character", return_value={"name": "糖糖", "about": "x"}), \
+             patch.object(nest.openai, "stream_chat_retry", side_effect=fake_stream):
+            r = self.client.post("/api/nest/chat", json={
+                "feature_id": feature_id, "character_id": "dashiyin",
+                "messages": [{"role": "user", "content": text}], **extra})
+        self.assertEqual(r.status_code, 200)
+        return self.captured["messages"][0]["content"]
+
+    def _seed(self, game_id: str = ""):
+        db.add_memory("home", "家里养了一只叫团子的猫", fingerprint="h1", game_id=game_id)
+        db.add_memory("personal", "团子最喜欢睡在窗台上", char_id="dashiyin",
+                      fingerprint="p1", game_id=game_id)
+
+    def test_qq_bridge_recalls_shared_memories_by_default(self):
+        self._seed()
+        system = self._post("qq_bridge")
+        self.assertIn("家里养了一只叫团子的猫", system)
+        self.assertIn("团子最喜欢睡在窗台上", system)
+
+    def test_other_features_do_not_recall_by_default(self):
+        self._seed()
+        self.assertNotIn("团子", self._post("bilibili_scout"))
+
+    def test_opt_in_flag_enables_recall_for_any_feature(self):
+        self._seed()
+        self.assertIn("团子", self._post("bilibili_scout", memory_recall=True))
+
+    def test_recall_uses_shared_memory_even_when_isolation_is_on(self):
+        """记忆隔离只管**写**（提炼进哪个命名空间）；召回永远走日常聊天那一桶。
+
+        QQ 桥要的是「和群聊 / 私聊是同一个大脑」，不该因为那个开关就看不见家里的记忆。
+        """
+        self._seed()
+        db.add_memory("home", "QQ 群里约好了周末去爬山", fingerprint="q1", game_id="qq_bridge")
+        self.client.put("/api/nest/features/qq_bridge/settings",
+                        json={"values": {"memory.isolate": True}})
+        system = self._post("qq_bridge")
+        self.assertIn("家里养了一只叫团子的猫", system)
+        self.assertNotIn("周末去爬山", system)
+
+    def test_recall_failure_does_not_break_chat(self):
+        with patch.object(nest.memory_service, "recall_for", side_effect=RuntimeError("boom")):
+            system = self._post("qq_bridge")
+        self.assertNotIn("长期记忆", system)
+        self.assertTrue(system.startswith("你是糖糖"))
+
+
 class FeatureSettingsTests(unittest.TestCase):
     """功能设置（§9.6.5）：声明归功能、值归本体，前端照着 schema 渲染。
 
@@ -293,6 +369,23 @@ class FeatureSettingsTests(unittest.TestCase):
         # 没存过 → 值就是声明里的默认值。
         self.assertFalse(body["configured"])
         self.assertEqual(body["values"]["allow.groups"], [])
+
+    def test_invert_flag_is_passed_through_untouched(self):
+        """名字反着写的开关（`memory.isolate`）：本体不解释 `invert`，值永远是存储语义。
+
+        前端把「和群聊 / 私聊共享记忆」显示成勾上，勾上存的是 `isolate=False`；
+        本体这边**照原样**收发 —— default 不翻、PUT 进来的也不翻。翻了就全反了。
+        """
+        body = self.client.get("/api/nest/features/qq_bridge/settings").json()
+        field = next(f for f in body["schema"] if f["key"] == "memory.isolate")
+        self.assertTrue(field["invert"])
+        # 默认值仍是存储语义：False = 不隔离 = 共享（前端把它显示成勾上）。
+        self.assertFalse(field["default"])
+        self.assertFalse(body["values"]["memory.isolate"])
+        # 存进去什么就是什么，本体不做任何取反。
+        saved = self.client.put("/api/nest/features/qq_bridge/settings",
+                                json={"values": {"memory.isolate": True}}).json()
+        self.assertTrue(saved["values"]["memory.isolate"])
 
     def test_put_then_get_round_trip(self):
         r = self.client.put("/api/nest/features/qq_bridge/settings", json={

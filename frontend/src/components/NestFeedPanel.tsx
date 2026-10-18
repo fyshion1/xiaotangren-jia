@@ -75,11 +75,15 @@ export default function NestFeedPanel({ features, bare = false }: { features: Ne
   const [items, setItems] = useState<NestFeedItem[]>([])
   const [filter, setFilter] = useState('')  // '' = 全部
   const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
 
   const load = () => {
     setBusy(true)
     void fetchNestFeed({ featureId: filter || undefined, limit: 60 })
-      .then(setItems).catch(() => setItems([]))
+      .then((list) => { setItems(list); setErr('') })
+      // 读不到就说读不到（Block 二 ③）：以前这里 catch 成空清单，页面装成「还没推过东西」——
+      // 后端没连上时看着和「真的空」一模一样，白等一场。
+      .catch((e) => { setItems([]); setErr(e instanceof Error ? e.message : String(e)) })
       .finally(() => setBusy(false))
   }
   useEffect(load, [filter])
@@ -106,9 +110,19 @@ export default function NestFeedPanel({ features, bare = false }: { features: Ne
         ))}
       </div>
 
+      {err && (
+        <div role="alert" className="mb-3 rounded-xl border border-[color-mix(in_srgb,var(--pink)_35%,var(--border))] bg-[var(--pink-soft)] px-3 py-2 text-[12px] text-[var(--pink-deep)]">
+          ⚠ 动态流没读到：{err}
+        </div>
+      )}
+
       {items.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-[var(--border-strong)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] p-5 text-[13px] text-[var(--text-3)]">
-          {busy ? '读取中…' : '还没有东西。功能是独立项目，跑起来后会把刷到的、聊到的推到这里（POST /api/nest/feed）。'}
+          {busy
+            ? '读取中…'
+            : err
+              ? '读不到，不是「没有」—— 后端连上再刷新（上面那句就是原因）。'
+              : '还没有东西。功能是独立项目，跑起来后会把刷到的、聊到的推到这里（POST /api/nest/feed）。'}
         </div>
       ) : (
         <div className="space-y-2.5">{items.map((i) => <FeedCard key={i.id} item={i} onChanged={load} />)}</div>

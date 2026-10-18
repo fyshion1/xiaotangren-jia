@@ -31,7 +31,11 @@ export default function GroupRosterPanel({ open, onClose, castable, roster, onSa
   // 每次打开都从「当前阵容」重新起算 —— 上次点了没保存的改动不该留到下一次。
   useEffect(() => {
     if (open) {
-      setSel(roster.length > 0 ? roster : castable.map((c) => c.id))
+      // 没设置过阵容时，默认勾的是**自家的几位**：导入来的角色卡默认不进群
+      // （别人的孩子先单独聊），想拉进来得在这儿手动勾一位。已经有阵容了就照阵容来，
+      // 里面本来包含的导入角色不会被这次默认值踢掉。
+      const natives = castable.filter((c) => !c.imported).map((c) => c.id)
+      setSel(roster.length > 0 ? roster : natives.length > 0 ? natives : castable.map((c) => c.id))
       setErr('')
     }
     // roster / castable 每次渲染都是新数组，直接进依赖会每帧重跑 —— 用长度与内容签名代替
@@ -108,7 +112,7 @@ export default function GroupRosterPanel({ open, onClose, castable, roster, onSa
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] font-medium text-[var(--text)]">{c.name}</span>
                     <span className="block truncate text-[11px] text-[var(--text-3)]">
-                      {c.alias || '小糖人'}
+                      {c.alias || (c.imported ? '导入的角色卡 · 默认不进群' : '小糖人')}
                     </span>
                   </span>
                   <span className={`text-[11px] ${on ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)]'}`}>

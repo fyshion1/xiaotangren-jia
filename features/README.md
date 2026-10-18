@@ -18,6 +18,7 @@
 ```
 features/
 ├── README.md                 # 本文件（本体仓库收录的唯一文件）
+├── desktop-pet/             # Electron 桌面聊天（独立 git 仓库）
 ├── dont-starve-together/     # 饥荒联机（独立 git 仓库）
 ├── bilibili-scout/           # 小糖人逛 B站（独立 git 仓库）
 └── qq-bridge/                # QQ 桥（独立 git 仓库）
@@ -46,6 +47,10 @@ git init dont-starve-together   # 或 git clone <远端> 进来
 - **记忆**：自动提炼记忆时带 `feature_id`（落 `memories.game_id`），
   这样玩游戏 / 逛 B站 攒下的记忆**不会漏进日常聊天**。
 - **通用队列 / 消息中转**：用 `/api/game/commands` 和 `/api/agents/messages` 那套协议。
+
+桌宠属于普通聊天的另一个呈现端，按用户要求与私聊/群聊共享记录与记忆，使用
+`/api/chat/session`，不单独建立外设记忆桶，也不把模型凭证交给渲染进程。
+具体契约与本机启动方式见 [`docs/desktop-pet-mvp.md`](../docs/desktop-pet-mvp.md)。
 
 ## 给第三方留的口子
 

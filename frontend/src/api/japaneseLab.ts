@@ -181,6 +181,31 @@ export type JpGrammarOutline = {
   sample: { book: string; unit: number; lesson: number; title: string; point: string }[]
 }
 
+/** 大纲树的一个语法点。 */
+export type JpOutlineNode = { point: string; tags: string }
+
+/** 大纲树的一课（初级逐课；中高级是「单元块」，课次给的是区间起点）。 */
+export type JpOutlineLesson = {
+  lesson: number
+  /** 教材里这一课叫什么（中高级是单元主题）。 */
+  title: string
+  count: number
+  nodes: JpOutlineNode[]
+}
+
+export type JpOutlineUnit = { unit: number; count: number; lessons: JpOutlineLesson[] }
+
+export type JpOutlineBook = { book: string; count: number; units: JpOutlineUnit[] }
+
+/** 大纲整棵树（**看**用的）+ 库里现有卡片的进度 —— 一次请求两样都拿到。 */
+export type JpGrammarOutlineTree = {
+  books: JpOutlineBook[]
+  total: number
+  lesson_cards: number
+  path: string
+  counts: JpGrammarCounts
+}
+
 export type JpImportRow = {
   term: string
   reading: string
@@ -288,10 +313,68 @@ export const deleteJpExample = (id: number) =>
 
 // ── 问小糖人（语法 / 用法 / 辨析）──
 
-export const askJpCoach = (question: string, opts: { characterId?: string; context?: string } = {}) =>
+/** 一问一答。**追问就是把前面几轮原样带上**（`turns`）—— 服务端拼成对话，她才接得上话。 */
+export type JpTurn = { q: string; a: string }
+
+export const askJpCoach = (question: string, opts: {
+  characterId?: string; context?: string; turns?: JpTurn[]
+} = {}) =>
   asJson<{ character_id: string; answer: string }>('/api/ask', json({
     question, character_id: opts.characterId ?? '', context: opts.context ?? '',
+    turns: opts.turns ?? [],
   }))
+
+// ── 追问笔记：聊完存下来，以后翻 ──
+//
+// 聊的过程中**不落盘**（前端内存里攒），点「记下来」才走 POST /api/threads ——
+// 所以这套接口只管「已经决定要留的那几条」。
+
+export type JpThread = {
+  id: number
+  title: string
+  character_id: string
+  context: string
+  summary: string
+  summary_at: string
+  starred: boolean
+  created_at: string
+  updated_at: string
+  /** 一共聊了几轮（列表里显示，正文要走单篇接口）。 */
+  turn_count: number
+  /** 第一问 —— 列表里当简介用。 */
+  head: string
+  /** 只在单篇接口里带（`full` 那版）。 */
+  turns?: JpTurn[]
+}
+
+export const fetchJpThreads = (keyword = '') =>
+  asJson<{ threads: JpThread[] }>(`/api/threads${keyword.trim() ? `?q=${encodeURIComponent(keyword.trim())}` : ''}`)
+
+export const fetchJpThread = (id: number) => asJson<{ thread: JpThread }>(`/api/threads/${id}`)
+
+/** 把这一屏追问存成笔记。`summary` 可以不传（之后再让她总结）。 */
+export const saveJpThread = (body: { turns: JpTurn[]; characterId?: string; context?: string; summary?: string }) =>
+  asJson<{ thread: JpThread }>('/api/threads', json({
+    turns: body.turns, character_id: body.characterId ?? '', context: body.context ?? '',
+    summary: body.summary ?? '',
+  }))
+
+export const patchJpThread = (id: number, body: { title?: string; starred?: boolean; summary?: string }) =>
+  asJson<{ thread: JpThread }>(`/api/threads/${id}`, { ...json(body), method: 'PATCH' })
+
+export const deleteJpThread = (id: number) =>
+  asJson<{ ok: boolean }>(`/api/threads/${id}`, { method: 'DELETE' })
+
+/** 她来总结这一段。**没存的草稿**走这个（只总结不落库 —— 好就存，不好接着问）。 */
+export const summarizeDraftJpThread = (body: { turns: JpTurn[]; characterId?: string; context?: string }) =>
+  asJson<{ character_id: string; summary: string }>('/api/threads/summarize', json({
+    turns: body.turns, character_id: body.characterId ?? '', context: body.context ?? '',
+  }))
+
+/** 已经存下的那篇，重新总结一次（结果写回库里那栏）。 */
+export const summarizeJpThread = (id: number, characterId = '') =>
+  asJson<{ character_id: string; summary: string; thread: JpThread }>(
+    `/api/threads/${id}/summarize`, json({ character_id: characterId }))
 
 // ── 成绩 ──
 
@@ -409,6 +492,10 @@ export const checkJpSentence = (id: number, sentence: string, characterId = '') 
 
 /** 大纲（`语法大纲.md`）里有多少张卡 —— **不写库**，先看一眼再导。 */
 export const fetchJpGrammarOutline = () => asJson<JpGrammarOutline>('/api/grammar/outline')
+
+/** 大纲的**树**（册 → 单元 → 课 → 语法点）—— 「📖 大纲」那块用它展开看要学什么。 */
+export const fetchJpGrammarOutlineTree = () =>
+  asJson<JpGrammarOutlineTree>('/api/grammar/outline/tree')
 
 /** 把大纲导成语法卡。只补空字段 —— 讲过的、改过的不冲掉；重复点是安全的。 */
 export const importJpGrammarOutline = () =>

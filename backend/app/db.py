@@ -85,6 +85,14 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_memories_bucket ON memories (bucket, char_id);
+CREATE TABLE IF NOT EXISTS persona_memory_picks (
+    persona_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ref_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (persona_id, kind, ref_id)
+);
 CREATE TABLE IF NOT EXISTS game_sessions (
     game_id TEXT NOT NULL,
     world_id TEXT NOT NULL,
@@ -424,6 +432,17 @@ def upsert_character(char_id: str, data: dict) -> None:
             "ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
             (char_id, json.dumps(data, ensure_ascii=False)),
         )
+
+
+def delete_character(char_id: str) -> bool:
+    """删一个角色档案行。**不做任何级联** —— 会话 / 记忆 / 画廊的清理由 routers 层安排，
+    因为那要动文件系统（与 `delete_profile` 同一套分工）。
+
+    注意：种子角色（自家四位小糖人）删了会被下次启动补种回来，判断留给调用方。
+    """
+    with _tx() as conn:
+        cur = conn.execute("DELETE FROM characters WHERE id = ?", (char_id,))
+        return bool(cur.rowcount)
 
 
 # ---- 个人档案（profiles / 私人空间，§22）----
@@ -914,6 +933,7 @@ def get_memory(mem_id: str) -> dict | None:
 
 def delete_memory(mem_id: str) -> bool:
     with _tx() as conn:
+        conn.execute("DELETE FROM persona_memory_picks WHERE kind = 'memory' AND ref_id = ?", (mem_id,))
         cur = conn.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
         return bool(cur.rowcount)
 
@@ -933,6 +953,11 @@ def clear_memories(bucket: str | None = None, char_id: str | None = None) -> int
         sql += " WHERE " + " AND ".join(where)
     with _tx() as conn:
         cur = conn.execute(sql, args)
+        # 清空后身份那边挑中的行也要跟着清，否则会留下指向已消失记忆的孤儿
+        conn.execute(
+            "DELETE FROM persona_memory_picks WHERE kind = 'memory' "
+            "AND ref_id NOT IN (SELECT id FROM memories)"
+        )
         return int(cur.rowcount or 0)
 
 
@@ -966,6 +991,75 @@ def update_memory_vector(mem_id: str, engine: str, vector: bytes, dim: int) -> N
             "UPDATE memories SET engine = ?, vector = ?, dim = ? WHERE id = ?",
             (engine, vector, int(dim), mem_id),
         )
+
+
+def list_memories_missing_vectors(limit: int = 100, engine: str | None = None) -> list[dict]:
+    """找不到向量的记忆：从没算出来的（vector 为空），或口径和当前不一致的。
+
+    engine 给了就顺带收「口径过期」的行 —— 换过 embedding 引擎后重建索引用这个。
+    """
+    sql = "SELECT * FROM memories WHERE vector IS NULL"
+    args: list = []
+    if engine:
+        sql += " OR (engine <> '' AND engine <> ?)"
+        args.append(engine)
+    sql += " ORDER BY rowid LIMIT ?"
+    args.append(max(1, int(limit)))
+    with _tx() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [_row_to_memory(r) for r in rows]
+
+
+# ---- 身份挑选的记忆（我的档案 → 记忆，§22.4）----
+# kind='memory' → ref_id 是 memories.id；kind='db' → ref_id 是个人数据库 03 的 .md 相对路径。
+# 一张表可能从来没有某个身份的行 —— 那就等于「这个身份一条都没挑」= 默认空。
+
+
+def list_persona_picks(persona_id: str) -> list[dict]:
+    with _tx() as conn:
+        rows = conn.execute(
+            "SELECT * FROM persona_memory_picks WHERE persona_id = ? ORDER BY enabled DESC, ref_id",
+            (persona_id,),
+        ).fetchall()
+    return [
+        {"kind": r["kind"], "ref_id": r["ref_id"], "enabled": bool(r["enabled"]), "updated_at": r["updated_at"]}
+        for r in rows
+    ]
+
+
+def set_persona_pick(persona_id: str, kind: str, ref_id: str, enabled: bool) -> dict:
+    with _tx() as conn:
+        conn.execute(
+            "INSERT INTO persona_memory_picks (persona_id, kind, ref_id, enabled) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(persona_id, kind, ref_id) DO UPDATE SET enabled = excluded.enabled, updated_at = datetime('now')",
+            (persona_id, kind, ref_id, 1 if enabled else 0),
+        )
+        row = conn.execute(
+            "SELECT * FROM persona_memory_picks WHERE persona_id = ? AND kind = ? AND ref_id = ?",
+            (persona_id, kind, ref_id),
+        ).fetchone()
+    return {"kind": row["kind"], "ref_id": row["ref_id"], "enabled": bool(row["enabled"]), "updated_at": row["updated_at"]}
+
+
+def delete_persona_pick(persona_id: str, kind: str, ref_id: str) -> bool:
+    with _tx() as conn:
+        cur = conn.execute(
+            "DELETE FROM persona_memory_picks WHERE persona_id = ? AND kind = ? AND ref_id = ?",
+            (persona_id, kind, ref_id),
+        )
+        return bool(cur.rowcount)
+
+
+# ---- 角色第一次见到用户（first_met）----
+
+def get_message_range(session_id: str) -> tuple[int, str | None]:
+    """(条数, 最早一条的时间)；没有消息时时间是 None。"""
+    with _tx() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS first FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    return int(row["n"] or 0), row["first"]
 
 
 # ---- 通用游戏接入状态（不包含任何具体游戏实现）----
@@ -1141,6 +1235,14 @@ def latest_feature_run(feature_id: str) -> dict | None:
         row = conn.execute("SELECT * FROM feature_runs WHERE feature_id=? ORDER BY started_at DESC, rowid DESC LIMIT 1",
                            (feature_id,)).fetchone()
     return dict(row) if row else None
+
+
+def list_feature_runs(limit: int = 8) -> list[dict]:
+    """最近几次「本体替功能开了进程」的记录（崩溃日志里用来佐证「炸之前它在干嘛」）。"""
+    with _tx() as conn:
+        rows = conn.execute("SELECT * FROM feature_runs ORDER BY rowid DESC LIMIT ?",
+                            (int(limit),)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def stop_feature_runs(feature_id: str) -> int:

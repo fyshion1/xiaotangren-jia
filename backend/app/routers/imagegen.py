@@ -94,7 +94,7 @@ async def _build_engines() -> list[dict]:
                 + (
                     "已配置，可直接用。"
                     if thirdparty_ok
-                    else "需在 .env 填 IMAGE_BASE_URL + MODEL_IMAGE（vsllm 无生图通道）。"
+                    else "需在 .env 填 IMAGE_BASE_URL + MODEL_IMAGE（填一个支持 /images/generations 的中转）。"
                 )
             ),
         },
@@ -179,7 +179,7 @@ async def _run_thirdparty(req: ImageGenRequest) -> list[tuple[bytes, str]]:
         raise HTTPException(
             status_code=400,
             detail="thirdparty 引擎缺少生图模型：请在「模型设置」填一个支持 /images/generations 的模型名"
-            "（当前 vsllm 中转无生图通道，可另填一个生图中转地址）。",
+            "（IMAGE_BASE_URL 可单独填一个生图中转，不一定和聊天中转一样）。",
         )
     try:
         items = await openai.generate_images(req.prompt, model, base_url, api_key, req.size, req.n)

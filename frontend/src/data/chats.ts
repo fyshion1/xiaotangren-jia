@@ -3,7 +3,7 @@
 
 import type { CharacterProfile } from './characters'
 
-export type SessionKind = 'group' | 'single' | 'imported'
+export type SessionKind = 'group' | 'single'
 
 export type ChatSession = {
   id: string
@@ -11,7 +11,7 @@ export type ChatSession = {
   name: string
   emoji: string
   subtitle: string
-  characterIds: string[] // 在场角色（imported 为空，暂无人设）
+  characterIds: string[] // 在场角色
   readOnly?: boolean
   memoryDisabled?: boolean
 }
@@ -69,32 +69,38 @@ export function personasAsCast(profiles: CharacterProfile[], activePersonaId: st
 // 加前缀，与阵容本身无关。
 //
 // `roster`（§25）＝ 群聊阵容：settings 里的 `group_roster`（角色 id 的 JSON 数组）。
-// 传了非空数组就只留这些人在群里；不传 / 传空 / 传 null ＝ 全员在场（老行为不变）。
+// 传了非空数组就只留这些人在群里；不传 / 传空 / 传 null ＝ 家里四位全员在场（老行为不变）。
 // 注意：阵容只影响群聊的 characterIds，私聊一条不少 —— 「不在场」是暂时不想让她插话，
 // 不是把她从家里删掉。
+//
+// 导入的角色卡（`imported`）**默认不进群**：别人的孩子先单独聊，想拉进群就去成员面板
+// 手动勾一位 —— 勾了才会进 roster，那时按阵容走（roster 非空时阵容说了算）。
 export function buildSessions(
   chars: CharacterProfile[],
   extra: CharacterProfile[] = [],
   roster?: string[] | null,
 ): ChatSession[] {
-  const everyone = chars.filter((c) => c.id !== SELF_CHARACTER_ID).map((c) => c.id)
-  // 空数组当「没设置」处理：空阵容会让后端回退成全员在场，不如这里就认成全员。
+  const home = chars.filter((c) => c.id !== SELF_CHARACTER_ID)
+  const everyone = home.map((c) => c.id)
+  const natives = home.filter((c) => !c.imported).map((c) => c.id)
+  // 空数组当「没设置」处理：空阵容会让后端回退成全员在场，不如这里就认成家里四位。
   // 只保留仍然存在的角色 —— 阵容里可能留着已删角色的 id。
-  const cast = roster && roster.length > 0 ? everyone.filter((id) => roster.includes(id)) : everyone
+  const picked = roster && roster.length > 0 ? everyone.filter((id) => roster.includes(id)) : natives
+  const cast = picked.length > 0 ? picked : natives.length > 0 ? natives : everyone
   const group: ChatSession = {
     id: 'group',
     kind: 'group',
     name: '小糖人的家（群聊）',
     emoji: '🏠',
     subtitle: `${cast.length} 位在场 · 可编辑`,
-    characterIds: cast.length > 0 ? cast : everyone,
+    characterIds: cast,
   }
   const singles: ChatSession[] = chars.map((c) => ({
     id: `single-${c.id}`,
     kind: 'single' as const,
     name: c.name,
     emoji: c.emoji,
-    subtitle: c.alias,
+    subtitle: c.alias || (c.imported ? '导入的角色卡' : ''),
     characterIds: [c.id],
   }))
   const extraSingles: ChatSession[] = extra.map((p) => ({
@@ -107,7 +113,7 @@ export function buildSessions(
   }))
   const geminiTest: ChatSession = {
     id: 'gemini-test', kind: 'group', name: 'test · Gemini', emoji: '🔄',
-    subtitle: '网页同步 · 不进入记忆', characterIds: everyone,
+    subtitle: '网页同步 · 不进入记忆', characterIds: natives.length > 0 ? natives : everyone,
     readOnly: true, memoryDisabled: true,
   }
   return [group, geminiTest, ...singles, ...extraSingles]

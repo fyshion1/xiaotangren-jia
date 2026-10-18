@@ -37,6 +37,7 @@ import { generateImages } from '../api/imagegen'
 import { buildAppearancePrompt } from '../lib/comfyPrompt'
 import { uploadAttachmentsBatch } from '../api/storage'
 import type { CharacterProfile } from '../data/characters'
+import NestSettingsPanel from './NestSettingsPanel'
 
 type Tab = 'review' | 'words' | 'grammar' | 'analysis'
 
@@ -1511,6 +1512,19 @@ export default function EnglishStudyPanel() {
         插图和小糖人的例句都落在附件库（{overview?.attachment_session ?? 'english-vocab'} 那个目录），
         不在小窝里另存一份 —— 清理附件时它们一起被管。
       </p>
+
+      {/* ---- 自己的设置（Block 二 ②）----
+          以前这些开关跟别的功能挤在「🛠 设置与工具 → ⚙ 功能开关」里一起列，得在那排 chip 里挑；
+          现在跟着英语学习待在同一个面板 —— 学什么 / 谁陪你 / 导入都在这里改，不用重启。 */}
+      <div className="mt-4 border-t border-[var(--border)] pt-3">
+        <div className="mb-2 flex flex-wrap items-baseline gap-2">
+          <span className="text-[14px] font-bold text-[var(--text)]">⚙ 英语学习的设置</span>
+          <span className="text-[11px] text-[var(--text-3)]">
+            只看哪个分类 / 每天几个 / 一屏几个 / 谁来陪你 / 导入目录 —— 改完下一轮就用上
+          </span>
+        </div>
+        <NestSettingsPanel onlyId="english_study" bare />
+      </div>
     </section>
   )
 }

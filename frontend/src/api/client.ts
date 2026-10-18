@@ -17,6 +17,29 @@ async function asJson<T>(url: string, init?: RequestInit): Promise<T> {
   return resp.json() as Promise<T>
 }
 
+export type BrainHealth = {
+  status: string
+  name: string
+  /** 这一份大脑是什么时候起来的（「%Y-%m-%d %H:%M:%S」）。 */
+  started_at: string
+  pid: number
+  uptime_seconds: number
+}
+
+export async function fetchHealth(): Promise<BrainHealth> {
+  return asJson<BrainHealth>('/api/health')
+}
+
+/**
+ * 一键重启大脑（顶栏那颗灯旁边）。
+ *
+ * 后端先把新进程叫起来再回话，所以**这句几乎总能拿到 200**；随后老进程退位、新进程接上，
+ * 中间大概断一两秒 —— 调用方别看它自己的返回值判断好了没，要等 `/api/health` 报出**新的 pid**。
+ */
+export async function restartBrain(): Promise<{ ok: boolean; message: string; log: string }> {
+  return asJson('/api/system/restart', { method: 'POST' })
+}
+
 export async function fetchCharacters(): Promise<CharacterProfile[]> {
   return asJson<CharacterProfile[]>('/api/characters')
 }
@@ -141,6 +164,9 @@ export type NestSettingField = {
   group: string
   /** 密码框显示（**只是不明文晃眼，不是加密**）。 */
   secret?: boolean
+  /** 只给 bool 用：前端显示的是**存储值的反**（`memory.isolate` 那种名字反着写的开关）。
+      勾上 = 存进去 false。`values` 回来的一律还是存储语义，前端的反只发生在显示层。 */
+  invert?: boolean
   options?: { value: string; label: string }[]
   min?: number
   max?: number
@@ -223,6 +249,35 @@ export async function clearNestFeatureConfig(featureId: string, configId: string
   return asJson<NestEffectiveConfig>(
     `/api/nest/features/${encodeURIComponent(featureId)}/api-config/${encodeURIComponent(configId)}`,
     { method: 'DELETE' },
+  )
+}
+
+/** 「测一下路通不通」的一段：ok=false 时 hint 是「该去改哪里」。 */
+export type NestApiCheck = {
+  name: 'config' | 'stream' | 'complete' | 'vision'
+  label: string
+  ok: boolean
+  /** 上游 HTTP 码；0 = 没走到上游（本地缺配置 / 连不上）。 */
+  status: number
+  detail: string
+  hint: string
+}
+
+export type NestApiTestResult = {
+  feature_id: string
+  source: 'global_default' | 'feature_override' | ''
+  base_url: string
+  model: string
+  /** 非空 = 建议把 Base URL 改成它再测（只补一个 /v1）。 */
+  suggest_base_url: string
+  ok: boolean
+  checks: NestApiCheck[]
+}
+
+/** **真的发几个 token** 地测一遍这个功能的上游（不写库、不记账）。 */
+export async function testNestFeatureApi(featureId: string): Promise<NestApiTestResult> {
+  return asJson<NestApiTestResult>(
+    `/api/nest/features/${encodeURIComponent(featureId)}/api-test`, { method: 'POST' },
   )
 }
 
@@ -315,6 +370,60 @@ export async function stopNestFeature(featureId: string): Promise<{ ok: boolean;
   return asJson(`/api/nest/features/${encodeURIComponent(featureId)}/run`, { method: 'DELETE' })
 }
 
+// ---- 外部网关（QQ 桥的 SnowLuma）----
+// 桥连的是网关的 3001 端口；网关没开时桥只会每 5 秒报一次「拒绝连接」。
+// 所以面板上直接给一个按钮，点一下由后端把 SnowLuma 起起来，等端口通了再回话。
+// 只有注册表里声明了 runner.gateway 的功能才有，别处调会 404。
+
+export type NestGatewayStatus = {
+  feature_id: string
+  label: string
+  port: number
+  online: boolean
+  pid: number
+  /** true = 这个进程是这次从小窝起的（重启大脑后就算 false，但端口在听仍然算在线）。 */
+  started_by_nest: boolean
+  /** 网关**现在**挂着的 QQ 号：问网关的 WebUI 得到（没填密码时退回日志）。空 = 一个都没挂上。 */
+  uin: string
+  /** 配置里写的机器人号（onebot.self_id）。和 uin 不一样 = 挂错号了。 */
+  expected_uin: string
+  /** 填了网关网页密码没有 —— 没填就只能提醒，不能自动换号。命令原文不回给前端。 */
+  has_password: boolean
+  log: string
+  message: string
+  /** 只有 start / claim 的返回里有。 */
+  ok?: boolean
+  waited?: number
+  swap?: { ok: boolean; uin: string; changed: boolean; message: string }
+}
+
+export async function fetchNestGatewayStatus(featureId: string): Promise<NestGatewayStatus> {
+  return asJson<NestGatewayStatus>(
+    `/api/nest/features/${encodeURIComponent(featureId)}/gateway`,
+  )
+}
+
+/** 开网关。后端最多等 60 秒（要注入 QQ、起 OneBot），前端按钮要转圈等着。 */
+export async function startNestGateway(featureId: string): Promise<NestGatewayStatus> {
+  return asJson<NestGatewayStatus>(
+    `/api/nest/features/${encodeURIComponent(featureId)}/gateway/start`, { method: 'POST' },
+  )
+}
+
+/** 关网关。只关得掉**从小窝起的**那个进程；别人手动开的后端会 409（不该去杀不属于自己的进程）。 */
+export async function stopNestGateway(featureId: string): Promise<NestGatewayStatus> {
+  return asJson<NestGatewayStatus>(
+    `/api/nest/features/${encodeURIComponent(featureId)}/gateway/stop`, { method: 'POST' },
+  )
+}
+
+/** 把网关的端口换给配置里的机器人号独占（同时登两个 QQ 时用）。换号要网关密码，慢，按钮要转圈等。 */
+export async function claimNestGateway(featureId: string): Promise<NestGatewayStatus> {
+  return asJson<NestGatewayStatus>(
+    `/api/nest/features/${encodeURIComponent(featureId)}/gateway/claim`, { method: 'POST' },
+  )
+}
+
 /** 「主要看什么」：大老大写给功能的方向说明。本体只存原文，怎么用是功能自己的事。 */
 export type NestDirective = {
   feature_id: string
@@ -371,6 +480,69 @@ export async function createProfile(
 /** 「成为这个身份」：切当前身份。只改一个服务端设置，不动任何消息。 */
 export async function switchProfile(profileId: string): Promise<{ active_id: string }> {
   return asJson<{ active_id: string }>(`/api/profiles/active/${profileId}`, { method: 'PUT' })
+}
+
+// ---- 这个身份的记忆挑选（§22.4）----
+// 两池子：长期记忆（03 记忆池）+ 个人数据库 03 里已批准的真实信息。
+// 没挑中 = 一条都不带，不兜底；挑中开着 = 强制注入；挑中关着 = 连召回也不要。
+
+export type PersonaMemoryItem = {
+  id: string
+  text: string
+  bucket: 'home' | 'personal'
+  char_id: string
+  created_at: string
+  picked: boolean
+  enabled: boolean
+}
+
+export type PersonaDbItem = {
+  ref_id: string
+  title: string
+  content: string
+  visible_to: string | string[]
+  created_at: string
+  picked: boolean
+  enabled: boolean
+}
+
+export type PersonaPicks = {
+  persona_id: string
+  memories: PersonaMemoryItem[]
+  database: PersonaDbItem[]
+}
+
+export async function fetchPersonaPicks(personaId: string): Promise<PersonaPicks> {
+  return asJson<PersonaPicks>(`/api/profiles/${encodeURIComponent(personaId)}/memory-picks`)
+}
+
+/** 挑中 / 打开 / 关掉一条。kind = 'memory' | 'db'，refId 用 encodeURIComponent 包好。 */
+export async function setPersonaPick(
+  personaId: string,
+  kind: 'memory' | 'db',
+  refId: string,
+  enabled: boolean,
+): Promise<void> {
+  await asJson(
+    `/api/profiles/${encodeURIComponent(personaId)}/memory-picks/${kind}/${refId.split('/').map(encodeURIComponent).join('/')}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    },
+  )
+}
+
+/** 取消挑选（回到「没挑中」）。 */
+export async function clearPersonaPick(
+  personaId: string,
+  kind: 'memory' | 'db',
+  refId: string,
+): Promise<void> {
+  await asJson(
+    `/api/profiles/${encodeURIComponent(personaId)}/memory-picks/${kind}/${refId.split('/').map(encodeURIComponent).join('/')}`,
+    { method: 'DELETE' },
+  )
 }
 
 /** 删档案：后端会连这个身份名下的会话一起清掉（每个身份各自一条，§22）。 */

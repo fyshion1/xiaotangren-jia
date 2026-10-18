@@ -8,6 +8,7 @@ import GalleryGrid from './GalleryGrid'
 import GalleryLightbox from './GalleryLightbox'
 import CharacterEditor from './CharacterEditor'
 import SelfProfilePanel from './SelfProfilePanel'
+import PersonaMemorySection from './PersonaMemorySection'
 import PersonalDatabasePanel from './PersonalDatabasePanel'
 import PatrolPanel from './PatrolPanel'
 import WorldbookPanel from './WorldbookPanel'
@@ -23,6 +24,8 @@ type Props = {
   activePersonaId?: string
   onSaveChar: (next: CharacterProfile) => void
   onEnterChat: (sessionId?: string) => void
+  /** 从聊天页「🧠 记忆」跳过来（§22.4）：滚到「这个身份的记忆」并高亮。 */
+  focusMemory?: number
   /** 跳到「糖人小窝」（§9.6）：成员切换行最左边那个入口。 */
   onOpenNest: () => void
   // ---- 以下仅私人空间用（§22）----
@@ -31,6 +34,11 @@ type Props = {
   /** 「成为这个身份」：全局一处切换，聊天记录各自一条。 */
   onBecomePersona?: (personaId: string) => void | Promise<void>
   onDeletePersona?: (personaId: string) => void | Promise<void>
+  /**
+   * 删掉一张**导入的**角色卡（只有导入的卡能删，自家四位是种子数据）。
+   * 与最近对话里那个 🗑 是同一个动作 —— 两处都能删，确认框与清理由上面统一做。
+   */
+  onDeleteImportedCard?: (c: CharacterProfile) => void | Promise<void>
 }
 
 function emptyProfile(): Omit<CharacterProfile, 'id'> {
@@ -79,9 +87,11 @@ export default function HomeView({
   onSaveChar,
   onEnterChat,
   onOpenNest,
+  focusMemory,
   onCreateProfile,
   onBecomePersona,
   onDeletePersona,
+  onDeleteImportedCard,
 }: Props) {
   // 私人空间（§22）：characters 传进来的就是身份档案列表，active 跟着「当前身份」走。
   // 列表为空时（后端不可用）下面整块不渲染，不会白屏。
@@ -230,12 +240,39 @@ export default function HomeView({
           onEnterChat={space ? undefined : () => onEnterChat(`single-${active.id}`)}
           onSwitchForm={(formId) => onSaveChar({ ...active, activeFormId: formId })}
           onOpenPortrait={setLightbox}
-          extra={space ? <PersonaActions p={active} onDelete={onDeletePersona ? onDelete : undefined} /> : undefined}
+          extra={
+            space ? (
+              <PersonaActions p={active} onDelete={onDeletePersona ? onDelete : undefined} />
+            ) : active.imported ? (
+              /* 导入的角色卡：家里四位是种子数据、删了会被补种回来，所以只有她能删。
+                 删完 App 会把 characters 换掉，active 自动回落到列表第一位（见上面 active 的兜底）。 */
+              <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-4">
+                <p className="text-[11px] leading-snug text-[var(--text-3)]">
+                  ＊ 这张是从酒馆角色卡导入的（原文照搬，没做清洗）。不想留了就删掉 ——
+                  连她单独聊的记录、你让她记住的事、导入时存下的立绘一起清。
+                </p>
+                <button
+                  className="self-start rounded-xl border border-[var(--border-strong)] px-3 py-1.5 text-[13px] text-[#d9534f] transition-colors hover:bg-[#d9534f]/10"
+                  onClick={() => void onDeleteImportedCard?.(active)}
+                >
+                  🗑 删掉这张角色卡
+                </button>
+              </div>
+            ) : undefined
+          }
         />
       )}
 
       {/* 自我档案面板（§23）：私人空间里放在档案卡下方 */}
       {space && <SelfProfilePanel personaId={active.id} />}
+      {/* 这个身份的记忆（§22.4）：从 03 里挑哪些记忆带进和她们的对话 */}
+      {space && (
+        <PersonaMemorySection
+          personaId={active.id}
+          personaName={active.name}
+          highlight={Boolean(focusMemory)}
+        />
+      )}
       {/* 巡检 · 成果收录（任务①）：待确认卡片，接在自我档案下方，不改布局 */}
       {space && <PatrolPanel />}
       {space && <PersonalDatabasePanel personaId={active.id} />}
