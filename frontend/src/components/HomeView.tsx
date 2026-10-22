@@ -1,3 +1,6 @@
+import { useTavernMode } from '../lib/tavernMode'
+import ProfileSection from '../visual/ProfileSection'
+import CharacterStage from '../visual/CharacterStage'
 import { useEffect, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import { MAIN_PERSONA_ID } from '../data/chats'
@@ -22,7 +25,7 @@ type Props = {
   space?: boolean
   /** 当前正在用的身份（只有私人空间有）。 */
   activePersonaId?: string
-  onSaveChar: (next: CharacterProfile) => void
+  onSaveChar: (next: CharacterProfile) => void | Promise<void>
   onEnterChat: (sessionId?: string) => void
   /** 从聊天页「🧠 记忆」跳过来（§22.4）：滚到「这个身份的记忆」并高亮。 */
   focusMemory?: number
@@ -86,7 +89,6 @@ export default function HomeView({
   activePersonaId,
   onSaveChar,
   onEnterChat,
-  onOpenNest,
   focusMemory,
   onCreateProfile,
   onBecomePersona,
@@ -95,7 +97,11 @@ export default function HomeView({
 }: Props) {
   // 私人空间（§22）：characters 传进来的就是身份档案列表，active 跟着「当前身份」走。
   // 列表为空时（后端不可用）下面整块不渲染，不会白屏。
-  const list = characters
+  const [tavernMode] = useTavernMode()
+  const [showHidden, setShowHidden] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  // The recovery toggle includes both manual hiding and tavern-mode hiding.
+  const list = space ? characters : characters.filter(c => showHidden || (!c.hiddenInProfiles && (tavernMode || !c.imported)))
   const [activeId, setActiveId] = useState(initialCharId ?? list[0]?.id)
   const [editing, setEditing] = useState<CharacterProfile | null>(null)
   // 看立绘原图（§19.13）：介绍页自己的浮层，跟画廊那个同款。Esc 也能关。
@@ -169,7 +175,7 @@ export default function HomeView({
   }
 
   return (
-    <main className="mx-auto max-w-6xl overflow-y-auto px-4 pb-16 pt-5">
+    <main className={(space ? "visual-space" : "visual-character-home") + " mx-auto max-w-6xl overflow-y-auto px-4 pb-16 pt-5"}>
       <p className="mb-4 rounded-[14px] border border-dashed border-[var(--border-strong)] bg-[color-mix(in_srgb,var(--surface)_60%,transparent)] px-4 py-2.5 text-[13px] text-[var(--text-2)]">
         {space ? (
           <>
@@ -189,7 +195,7 @@ export default function HomeView({
       {space ? (
         <div className="mb-6 flex flex-wrap gap-3">
           {characters.map((p) => (
-            <div key={p.id} className={`persona-card ${p.id === active.id ? 'on' : ''}`}>
+            <div key={p.id} className={`persona-card ${p.id === active?.id ? 'on' : ''}`}>
               <button className="flex min-w-0 flex-1 items-center gap-2" onClick={() => setActiveId(p.id)}>
                 <Avatar name={p.name} avatar={p.avatar} emoji={p.emoji} size={30} className="ear" />
                 <span className="truncate">{p.name}</span>
@@ -215,29 +221,27 @@ export default function HomeView({
         </div>
       ) : (
         <div className="mb-6 flex flex-wrap gap-3">
-          <button
-            className="member"
-            onClick={onOpenNest}
-            title="糖人小窝：全家的共同回忆（共用画廊）+ 以后的小游戏 / 互动小家"
-          >
-            <span className="ear">🏠</span>
-            糖人小窝
-          </button>
-          {characters.map((c) => (
-            <button key={c.id} className={`member ${c.id === active.id ? 'on' : ''}`} onClick={() => setActiveId(c.id)}>
+          <label className="member"><input type="checkbox" checked={showHidden} onChange={e => setShowHidden(e.target.checked)} />显示已隐藏角色</label>
+          {list.map((c) => (
+            <button key={c.id} className={`member ${c.id === active?.id ? 'on' : ''}`} onClick={() => setActiveId(c.id)}>
               <Avatar name={c.name} avatar={c.avatar} emoji={c.emoji} size={30} className="ear" />
               {c.name}
+              {c.hiddenInProfiles && <span className="text-xs text-[var(--text-3)]">（已隐藏）</span>}
+              {!c.hiddenInProfiles && c.imported && !tavernMode && <span className="text-xs text-[var(--text-3)]">（酒馆模式已关闭）</span>}
             </button>
           ))}
         </div>
       )}
 
+      {!space && active && (showHidden || !active.hiddenInProfiles) && <CharacterStage p={active} onChat={active.imported && !tavernMode ? undefined : ()=>onEnterChat(`single-${active.id}`)}/>}
+      {!space && active?.imported && !tavernMode && <p role="status" className="mb-4 text-sm text-[var(--text-2)]">此角色因酒馆模式关闭而隐藏。开启酒馆模式后可进入她的聊天。</p>}
+      <details open className="visual-original-profile"><summary>{space?'身份档案':'完整档案与形态设置'}<span>展开查看 / 编辑</span></summary>
       {active && (
         <CharacterProfileCard
           key={active.id}
           p={active}
           onEdit={() => setEditing(active)}
-          onEnterChat={space ? undefined : () => onEnterChat(`single-${active.id}`)}
+          onEnterChat={space || (active.imported && !tavernMode) ? undefined : () => onEnterChat(`single-${active.id}`)}
           onSwitchForm={(formId) => onSaveChar({ ...active, activeFormId: formId })}
           onOpenPortrait={setLightbox}
           extra={
@@ -262,35 +266,31 @@ export default function HomeView({
           }
         />
       )}
+      </details>
 
       {/* 自我档案面板（§23）：私人空间里放在档案卡下方 */}
-      {space && <SelfProfilePanel personaId={active.id} />}
-      {/* 这个身份的记忆（§22.4）：从 03 里挑哪些记忆带进和她们的对话 */}
-      {space && (
-        <PersonaMemorySection
-          personaId={active.id}
-          personaName={active.name}
-          highlight={Boolean(focusMemory)}
-        />
-      )}
-      {/* 巡检 · 成果收录（任务①）：待确认卡片，接在自我档案下方，不改布局 */}
-      {space && <PatrolPanel />}
-      {space && <PersonalDatabasePanel personaId={active.id} />}
+      {space && active && <SelfProfilePanel personaId={active.id} />}
+      {space && active && <div className="personal-libraries">
+        <PersonaMemorySection personaId={active.id} personaName={active.name} highlight={Boolean(focusMemory)} />
+        <PersonalDatabasePanel personaId={active.id} />
+      </div>}
+      {space && <ProfileSection title="巡检与成果"><PatrolPanel /></ProfileSection>}
 
       {/* 这位角色的专属画廊（§9.4 归属）；家共用的那部分在「糖人小窝」 */}
-      <GalleryGrid owner={active?.id} />
+      {active && <GalleryGrid owner={active.id} />}
 
-      <WorldbookPanel owner={active?.id ?? ''} ownerLabel={`${active?.name ?? '家'}的世界书`} />
+      {!space && tavernMode && active && <WorldbookPanel owner={active.id} ownerLabel={`${active.name}的世界书`} />}
 
-      <JailbreakPanel />
+      {tavernMode && <JailbreakPanel />}
 
+      {saveError && <p role="alert">{saveError}</p>}
       {editing && (
         <CharacterEditor
           initial={editing}
           onClose={() => setEditing(null)}
-          onSave={(next) => {
-            onSaveChar(next)
-            setEditing(null)
+          onSave={async (next) => {
+            setSaveError('')
+            try { await onSaveChar(next); setEditing(null) } catch (e) { setSaveError(String(e)); throw e }
           }}
         />
       )}

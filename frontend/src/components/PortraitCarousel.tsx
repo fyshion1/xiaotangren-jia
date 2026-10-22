@@ -34,12 +34,13 @@ export default function PortraitCarousel({ characters, onOpenImage }: Props) {
     let cancelled = false
     Promise.all(
       characters.map((c) =>
-        fetchGallery(c.id)
+        fetchGallery(c.id, false)
           .then(
             (rows) =>
               [
                 c.id,
                 rows
+                  .filter((g) => !g.private)
                   .map((g) => ({ thumb: g.thumb || g.orig, orig: g.orig || g.thumb }))
                   .filter((s) => Boolean(s.thumb)),
               ] as const,
@@ -162,10 +163,13 @@ export default function PortraitCarousel({ characters, onOpenImage }: Props) {
               <span className="text-[11px]">还没有立绘或画廊图</span>
             </div>
           )}
-          <span className="absolute right-2 top-2 rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_80%,transparent)] px-2 py-0.5 text-[11px] text-[var(--text-2)] backdrop-blur">
+
+        </div>
+
+        <div className="visual-carousel-controls">          <span className="rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_80%,transparent)] px-2 py-0.5 text-[11px] text-[var(--text-2)] backdrop-blur">
             {idx + 1}/{all.length}
           </span>
-          <span className="absolute left-2 top-2 rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_80%,transparent)] px-2 py-0.5 text-[11px] text-[var(--text-3)] backdrop-blur">
+          <span className="rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_80%,transparent)] px-2 py-0.5 text-[11px] text-[var(--text-3)] backdrop-blur">
             {cur.tag}
           </span>
           {all.length > 1 && (
@@ -173,20 +177,19 @@ export default function PortraitCarousel({ characters, onOpenImage }: Props) {
               <button
                 onClick={() => step(-1)}
                 title="上一张"
-                className="absolute left-1 top-1/2 -translate-y-1/2 rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_78%,transparent)] px-2 py-1 text-[12px] text-[var(--text-2)] backdrop-blur transition hover:text-[var(--pink-deep)]"
+                className="rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_78%,transparent)] px-2 py-1 text-[12px] text-[var(--text-2)] backdrop-blur transition hover:text-[var(--pink-deep)]"
               >
                 ◀
               </button>
               <button
                 onClick={() => step(1)}
                 title="下一张"
-                className="absolute right-1 top-1/2 -translate-y-1/2 rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_78%,transparent)] px-2 py-1 text-[12px] text-[var(--text-2)] backdrop-blur transition hover:text-[var(--pink-deep)]"
+                className="rounded-full border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_78%,transparent)] px-2 py-1 text-[12px] text-[var(--text-2)] backdrop-blur transition hover:text-[var(--pink-deep)]"
               >
                 ▶
               </button>
             </>
-          )}
-        </div>
+          )}</div>
 
         {/* 缩略图条：点一张直接跳过去。占位格（src 为空）不放缩略图。 */}
         {all.filter((s) => s.src).length > 1 && (

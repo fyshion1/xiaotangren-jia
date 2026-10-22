@@ -1,0 +1,226 @@
+{
+  "model": "gpt-6.1-sol",
+  "base_url": "https://moyuu.cc/v1",
+  "requests": [
+    {
+      "number": 1,
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 18,
+        "total_tokens": 606,
+        "prompt_tokens": 588,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [
+        "local_find"
+      ],
+      "finish_reason": "tool_calls",
+      "seconds": 3.46
+    },
+    {
+      "number": 2,
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 22,
+        "total_tokens": 664,
+        "prompt_tokens": 642,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [
+        "local_read"
+      ],
+      "finish_reason": "tool_calls",
+      "seconds": 3.49
+    },
+    {
+      "number": 3,
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 47,
+        "total_tokens": 756,
+        "prompt_tokens": 709,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [],
+      "finish_reason": "stop",
+      "seconds": 4.9
+    },
+    {
+      "number": 4,
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 22,
+        "total_tokens": 680,
+        "prompt_tokens": 658,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [
+        "local_read"
+      ],
+      "finish_reason": "tool_calls",
+      "seconds": 2.67
+    },
+    {
+      "number": 5,
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 17,
+        "total_tokens": 742,
+        "prompt_tokens": 725,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [],
+      "finish_reason": "stop",
+      "seconds": 2.55
+    },
+    {
+      "number": 6,
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 20,
+        "total_tokens": 727,
+        "prompt_tokens": 707,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [
+        "local_read"
+      ],
+      "finish_reason": "tool_calls",
+      "seconds": 3.04
+    },
+    {
+      "number": 7,
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 30,
+        "total_tokens": 799,
+        "prompt_tokens": 769,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [],
+      "finish_reason": "stop",
+      "seconds": 2.76
+    }
+  ],
+  "cases": [
+    {
+      "name": "web_multistep",
+      "passed": true,
+      "http_status": 200,
+      "run_status": "completed",
+      "model_requests": 3,
+      "tool_results": [
+        {
+          "type": "tool_result",
+          "call_id": "call-5df35c22bb41414783f0abf505ace5b9",
+          "name": "local_find",
+          "ok": true,
+          "code": "ok",
+          "attempts": 1,
+          "truncated": false
+        },
+        {
+          "type": "tool_result",
+          "call_id": "call-b5cbe5734d054a53ad4775ab8adccac0",
+          "name": "local_read",
+          "ok": true,
+          "code": "ok",
+          "attempts": 1,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "name": "pet_read",
+      "passed": true,
+      "http_status": 200,
+      "run_status": "completed",
+      "model_requests": 2,
+      "tool_results": [
+        {
+          "type": "tool_result",
+          "call_id": "call-d00266cd316a4b5dba2ede7c7bbb2ed5",
+          "name": "local_read",
+          "ok": true,
+          "code": "ok",
+          "attempts": 1,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "name": "web_boundary",
+      "passed": true,
+      "http_status": 200,
+      "run_status": "completed",
+      "model_requests": 2,
+      "tool_results": [
+        {
+          "type": "tool_result",
+          "call_id": "call-7e632d8386e945aab3192a6dad5d219a",
+          "name": "local_read",
+          "ok": false,
+          "code": "denied",
+          "attempts": 1,
+          "truncated": false
+        }
+      ]
+    }
+  ]
+}

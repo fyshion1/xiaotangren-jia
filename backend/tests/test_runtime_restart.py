@@ -5,8 +5,9 @@
 这里验的是「话怎么说、顺序对不对」，不是「进程真换没换」。
 """
 
+import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -64,9 +65,50 @@ class BrainHealthTests(unittest.TestCase):
         argv = popen.call_args.args[0]
         self.assertEqual(argv[1:3], ["-m", "app.restart_helper"])
         self.assertEqual(popen.call_args.kwargs["cwd"], str(runtime.BACKEND_DIR))
+        targets = json.loads(argv[5])
+        self.assertEqual(targets[0]["pid"], runtime.PID)
+        self.assertNotIn("XIAOTANGREN_RESTART_REQUESTED", popen.call_args.kwargs["env"])
+
+    def test_managed_restart_never_spawns_or_exits(self):
+        response = Mock(status=202)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        opener = Mock()
+        opener.open.return_value = response
+        with patch.dict(runtime.os.environ, {"XTR_LAUNCHER_URL": "http://127.0.0.1:1234", "XTR_LAUNCHER_TOKEN": "test"}), \
+             patch.object(runtime.urllib.request, "build_opener", return_value=opener), \
+             patch.object(runtime.subprocess, "Popen") as popen, \
+             patch.object(runtime.os, "_exit") as exit_process:
+            runtime.restart()
+            runtime.exit_soon()
+        popen.assert_not_called()
+        exit_process.assert_not_called()
+        self.assertEqual(opener.open.call_args.args[0].get_header("Authorization"), "Bearer test")
 
 
 class RestartHelperTests(unittest.TestCase):
+    def test_restart_server_has_no_reload_and_reports_early_failure(self):
+        from app import restart_helper
+
+        child = Mock(returncode=1)
+        child.poll.return_value = 1
+        with patch.object(restart_helper, "_port_free", return_value=True), \
+             patch.object(restart_helper.subprocess, "Popen", return_value=child) as call:
+            self.assertEqual(restart_helper.main(["helper", "8000", "127.0.0.1"]), 1)
+        self.assertNotIn("--reload", call.call_args.args[0])
+
+    def test_retire_does_not_kill_reused_pid(self):
+        import psutil
+        from app import restart_helper
+
+        process = Mock()
+        process.create_time.return_value = 101
+        with patch.object(psutil, "Process", return_value=process), \
+             patch.object(psutil, "wait_procs", return_value=([], [])):
+            restart_helper._retire([{"pid": 123, "created": 100}])
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
     def test_port_free_probe(self):
         """中间人靠「能不能 bind」判断端口腾没腾出来 —— 自己占着的时候必须判为没空。"""
         import socket

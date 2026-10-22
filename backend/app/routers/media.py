@@ -21,14 +21,14 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import db
 from ..providers import openai
 from ..services import attachments
-from ..services.prompt import build_system_prompt
+from .chat import ChatMessage, _to_openai_messages, _resolve_persona, context_debug
 
 router = APIRouter(prefix="/media", tags=["media"])
 ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "media_tasks"
@@ -36,6 +36,60 @@ MAX_BYTES = 50 * 1024 * 1024  # 50MB
 MAX_DURATION = 15  # 秒
 MAX_FRAMES = 8  # 抽帧上限（token 安全）
 ALLOWED_EXT = (".mp4", ".mov", ".webm", ".mkv")
+
+
+@router.post('/audio/transcribe-local')
+async def transcribe_local_audio(request: Request):
+    """Bounded, temporary audio upload; never contacts a cloud provider."""
+    import asyncio
+    import tempfile
+    from ..services.local_voice import transcribe_pcm
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > 25 * 1024 * 1024:
+            raise HTTPException(413, '语音超过 25MB')
+    if not data:
+        raise HTTPException(400, '语音为空')
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        raise HTTPException(503, '本地语音识别需要 ffmpeg')
+    def run():
+        with tempfile.TemporaryDirectory(prefix='local-asr-') as folder:
+            source = Path(folder) / 'audio'
+            source.write_bytes(data)
+            # QQ sends Tencent SILK, which standard ffmpeg builds cannot decode.
+            if data.startswith((b'\x02#!SILK_V3', b'#!SILK_V3')):
+                try:
+                    import pilk
+                    pcm = Path(folder) / 'decoded.pcm'
+                    pilk.decode(str(source), str(pcm), 16000)
+                    if pcm.stat().st_size > 120 * 16000 * 2:
+                        raise HTTPException(422, '语音超过 120 秒')
+                    source = pcm
+                    input_options = ['-f', 's16le', '-ar', '16000', '-ac', '1']
+                except ImportError:
+                    raise HTTPException(503, 'QQ SILK 解码需要安装 pilk（local-voice 依赖）') from None
+                except (OSError, ValueError, RuntimeError):
+                    raise HTTPException(422, 'QQ SILK 语音解码失败') from None
+            else:
+                input_options = []
+            try:
+                result = subprocess.run([ffmpeg, '-v', 'error', *input_options, '-i', str(source),
+                    '-t', '121', '-ar', '16000', '-ac', '1', '-f', 's16le', 'pipe:1'],
+                    capture_output=True, timeout=45, check=True)
+            except (subprocess.SubprocessError, OSError):
+                raise HTTPException(422, '语音解码失败，请检查网关音频格式') from None
+            if len(result.stdout) > 120 * 16000 * 2:
+                raise HTTPException(422, '语音超过 120 秒')
+            try:
+                text = transcribe_pcm(result.stdout)
+            except (RuntimeError, ImportError):
+                raise HTTPException(503, '本地识别不可用，请检查模型和 sherpa-onnx 依赖') from None
+            if not text:
+                raise HTTPException(422, '本地识别未检测到文字')
+            return {'text': text, 'provider': 'local'}
+    return await asyncio.to_thread(run)
 
 # 帧文件名：MediaStorage 上传附件存成 "video-<hex>.jpg"（thumb 由 /thumb/ 规则加 .jpg 推导）。
 # 所以这里生成的帧不能再叫 video-*.jpg（会和缩略图推导撞名），统一换成交付过的名字。
@@ -96,7 +150,7 @@ async def analyze_video(file: UploadFile = File(...)) -> dict:  # noqa: B008
     name = (file.filename or "video").lower()
     if not (file.content_type or "").startswith("video/") and not name.endswith(ALLOWED_EXT):
         raise HTTPException(400, "请上传视频文件")
-    raw = await file.read()
+    raw = await file.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         raise HTTPException(413, "视频不能超过 50 MB")
     ffprobe = shutil.which("ffprobe")
@@ -120,7 +174,7 @@ async def analyze_video(file: UploadFile = File(...)) -> dict:  # noqa: B008
         frames = folder / "frames"
         frames.mkdir()
         subprocess.run(  # noqa: S603
-            [ffmpeg, "-y", "-i", str(source), "-vf", "fps=1/2", "-frames:v", str(MAX_FRAMES), str(frames / FRAME_NAME)],
+            [ffmpeg, "-y", "-i", str(source), "-vf", "fps=1/2,scale=1280:1280:force_original_aspect_ratio=decrease", "-frames:v", str(MAX_FRAMES), str(frames / FRAME_NAME)],
             capture_output=True, timeout=30, check=True,
         )
     except HTTPException:
@@ -148,6 +202,8 @@ async def analyze_video(file: UploadFile = File(...)) -> dict:  # noqa: B008
 
 
 class VideoChatRequest(BaseModel):
+    saved_message_id: str = ""
+    messages: list[ChatMessage] = Field(default_factory=list)
     task_id: str
     frames: list[str] = Field(default_factory=list)  # /api/media-files/... 帧 URL
     prompt: str = "（这是发给你的视频抽帧）请看帧回答。"
@@ -183,35 +239,21 @@ async def video_chat(req: VideoChatRequest) -> StreamingResponse:
     for url in frames:
         raw_frames.append(_load_frame(url))
 
-    # 抽帧那轮也要知道「在和谁说话」（§22），否则切到汐子后她的反应仍是大老大视角。
-    pid = (req.persona_id or "").strip() or db.get_active_persona_id()
-    persona = db.get_profile(pid) if pid else None
-    system = build_system_prompt(
-        character_ids=req.character_ids,
-        messages=[{"role": "user", "content": req.prompt}],
-        uncensored=req.uncensored,
-        persona=persona,
-    )
-    content: list[dict] = [{"type": "text", "text": req.prompt}]
-    for raw, mime in raw_frames:
-        # 帧必须用 data URL（data:image/...;base64,xxx）。裸 base64 会被部分中转
-        # （vsllm 等）打成 400「API key not valid」/ 上游拒绝。
-        content.append({"type": "image_url", "image_url": {"url": attachments.to_data_url(raw, mime)}})
-    messages: list[dict] = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": content})
+    saved = db.get_message(req.saved_message_id) if req.saved_message_id else None
+    # 确认原视频与帧已转入可管理的附件库后，才回收临时抽帧任务。
+    if saved and saved.get('image_source') == 'video' and saved.get('image', '').startswith('/api/files/') and saved.get('frames'):
+        _cleanup(task)
+
+    history = [*req.messages, ChatMessage(role="user", content=req.prompt, images=[
+        attachments.to_data_url(raw, mime) for raw, mime in raw_frames
+    ])]
+    messages = _to_openai_messages(history, req.character_ids, req.uncensored, _resolve_persona(req.persona_id))
 
     async def gen() -> AsyncIterator[str]:
-        try:
-            async for ev in openai.stream_chat_retry(messages, model, base_url, api_key, max_tokens=max_tokens):
-                if ev["type"] == "text":
-                    yield _sse("token", {"text": ev["text"]})
-                elif ev["type"] == "done":
-                    yield _sse("done", {"finish_reason": ev.get("finish_reason")})
-                else:
-                    yield _sse("error", {"message": ev["message"]})
-        except Exception as exc:  # noqa: BLE001
-            yield _sse("error", {"message": str(exc)})
+        from ..services.conversation_runtime import transient_stream
+        yield _sse("context", context_debug(messages, model))
+        async for event in transient_stream(messages, model, base_url, api_key, max_tokens=max_tokens, source="media"):
+            kind = event.pop('type')
+            yield _sse(kind, event)
 
     return StreamingResponse(gen(), media_type="text/event-stream")

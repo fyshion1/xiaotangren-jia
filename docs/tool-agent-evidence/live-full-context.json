@@ -1,0 +1,114 @@
+{
+  "model": "gpt-6.1-sol",
+  "base_url": "https://moyuu.cc/v1",
+  "requests": [
+    {
+      "number": 1,
+      "context_verified": {
+        "character": true,
+        "memory": true
+      },
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 18,
+        "total_tokens": 1074,
+        "prompt_tokens": 1056,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [
+        "local_find"
+      ],
+      "finish_reason": "tool_calls",
+      "seconds": 2.75
+    },
+    {
+      "number": 2,
+      "context_verified": {
+        "character": true,
+        "memory": true
+      },
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 22,
+        "total_tokens": 1132,
+        "prompt_tokens": 1110,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [
+        "local_read"
+      ],
+      "finish_reason": "tool_calls",
+      "seconds": 3.3
+    },
+    {
+      "number": 3,
+      "context_verified": {
+        "character": true,
+        "memory": true
+      },
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 47,
+        "total_tokens": 1224,
+        "prompt_tokens": 1177,
+        "prompt_tokens_details": {
+          "cached_tokens": 1024,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [],
+      "finish_reason": "stop",
+      "seconds": 7.24
+    }
+  ],
+  "cases": [
+    {
+      "name": "web_multistep",
+      "passed": true,
+      "http_status": 200,
+      "run_status": "completed",
+      "model_requests": 3,
+      "tool_results": [
+        {
+          "type": "tool_result",
+          "call_id": "call-8f431ddd2a514cd19b85984278ba2e15",
+          "name": "local_find",
+          "ok": true,
+          "code": "ok",
+          "attempts": 1,
+          "truncated": false
+        },
+        {
+          "type": "tool_result",
+          "call_id": "call-d6c5935ea98546b78f99f872a292fe98",
+          "name": "local_read",
+          "ok": true,
+          "code": "ok",
+          "attempts": 1,
+          "truncated": false
+        }
+      ]
+    }
+  ]
+}

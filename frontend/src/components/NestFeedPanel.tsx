@@ -21,6 +21,10 @@ const STATUS_LABEL: Record<NestFeedItem['status'], string> = {
 
 function FeedCard({ item, onChanged }: { item: NestFeedItem; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
+  const [coverFailed, setCoverFailed] = useState(false)
+  const cover = item.cover.replace(/^http:\/\/((?:[a-z0-9-]+\.)*hdslb\.com)(?=\/)/i, 'https://$1')
+    .replace(/^\/\//, 'https://')
+  useEffect(() => setCoverFailed(false), [cover])
 
   const act = async (fn: () => Promise<void>) => {
     if (busy) return
@@ -30,8 +34,9 @@ function FeedCard({ item, onChanged }: { item: NestFeedItem; onChanged: () => vo
 
   return (
     <article className="flex gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
-      {item.cover ? (
-        <img src={item.cover} alt="" loading="lazy"
+      {cover && !coverFailed ? (
+        <img src={cover} alt="" loading="lazy" referrerPolicy="no-referrer"
+          onError={() => setCoverFailed(true)}
           className="h-20 w-32 shrink-0 rounded-lg object-cover" />
       ) : (
         <div className="flex h-20 w-32 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-2)] text-[22px]">

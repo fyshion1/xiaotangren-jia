@@ -265,15 +265,7 @@ def get_injectable_texts(persona_id: str, char_ids_present: list[str]) -> list[d
     texts: list[dict] = []
 
     # 已批准的个人数据库 AI 注入层：只读取 approved + inject=true 的 Markdown。
-    external_root = external_ai_layer_root()
-    if external_root.is_dir():
-        for p in sorted(external_root.rglob("*.md")):
-            try:
-                block = read_external_block(p)
-            except (OSError, UnicodeError):
-                continue
-            if block.get("inject") and block.get("review_status") == "approved" and _is_visible(block.get("visible_to", "all"), char_ids_present):
-                texts.append(block)
+    # 外部 03 事实统一经过 persona_memory 的身份挑选与权限检查，避免旁路注入。
 
     # _shared
     shared = _SELF_PROFILE_ROOT / _SHARED_DIR
@@ -302,15 +294,14 @@ def get_injectable_texts(persona_id: str, char_ids_present: list[str]) -> list[d
     return texts
 
 def read_external_block(path: Path) -> dict:
+    from .memory_workflow import document
     raw = path.read_text(encoding="utf-8-sig")
-    meta, body_lines = _split_front(raw)
-    # _parse_front ignores custom review_status; preserve it for injection gating.
-    if raw.startswith("---"):
-        lines = raw.splitlines()
-        for line in lines[1:]:
-            if line.strip() == "---": break
-            if line.startswith("review_status:"): meta["review_status"] = line.split(":", 1)[1].strip()
-    return {**meta, "filename": path.name, "persona_id": "database", "content": "\n".join(body_lines), "source_path": str(path)}
+    fields, body = document(raw)
+    meta = {**DEFAULT_FRONT, **fields}
+    visible = meta.get("visible_to", "all")
+    if isinstance(visible, str) and visible != "all":
+        meta["visible_to"] = [v.strip() for v in visible.split(",") if v.strip()]
+    return {**meta, "filename": path.name, "content": body, "source_path": str(path)}
 
 
 def _is_visible(visible_to: str | list, char_ids_present: list[str]) -> bool:

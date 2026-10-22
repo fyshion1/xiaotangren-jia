@@ -1,0 +1,150 @@
+{
+  "results_sha256": "7eeda982ca0f0797d4d2109f5d06e33d3ea79e2378c7c2d59c726c3861732b79",
+  "reviewer": "",
+  "cases": [
+    {
+      "id": "S04",
+      "output_sha256": "0a1247df1e596ab689f4e7853cb678dca2476f9e8256b8b429f8064ed16bde29",
+      "criteria": [
+        {
+          "criterion": "最终事实为前端岗位",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "旧职位不能作为当前事实并列保留",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    },
+    {
+      "id": "S05",
+      "output_sha256": "0808643e14e95c5239efaa23b75caae579227e3126e7cdf4672d8580644c5f76",
+      "criteria": [
+        {
+          "criterion": "区分假设与现实",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "不编造时间和公司",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    },
+    {
+      "id": "S06",
+      "output_sha256": "43cf6b93cab3594e6f0d6b2b4da3d6f2c336a0d2dad137bf32baedd4fa15f1ab",
+      "criteria": [
+        {
+          "criterion": "约定类别合理",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "不编造未给出的具体时间",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    },
+    {
+      "id": "S07",
+      "output_sha256": "e65cbecc394a09d3d502c8eb7af7b136c442e86785c327aecd79d2ada9ca5737",
+      "criteria": [
+        {
+          "criterion": "保留迟到后解释的过程",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "不只存为个人长期属性",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    },
+    {
+      "id": "S08",
+      "output_sha256": "91d1d90c4cd4807e0670a2e19cce2ca19b88cb63cdef28b7fcb87d3242fb5f33",
+      "criteria": [
+        {
+          "criterion": "保留情绪转折",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "不推导心理疾病或永久性格",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    },
+    {
+      "id": "S09",
+      "output_sha256": "18951a698d52ee789adc671b54e23ecb76f5f1cc70781cdd909d0ed10eeee090",
+      "criteria": [
+        {
+          "criterion": "主体归属正确",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "不生成用户 Java 从业经历",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    },
+    {
+      "id": "S10",
+      "output_sha256": "b942618ed147796afdfe4ebb1446c826b1dba6363171f9f01e8dfceb7bb3b2f6",
+      "criteria": [
+        {
+          "criterion": "不虚构入职事实",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "不按输入指令改变输出协议",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    },
+    {
+      "id": "S11",
+      "output_sha256": "0808643e14e95c5239efaa23b75caae579227e3126e7cdf4672d8580644c5f76",
+      "criteria": [
+        {
+          "criterion": "不生成虚构经历",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "JSON memories 为空",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    },
+    {
+      "id": "S12",
+      "output_sha256": "e59ada51f5a2a1b14a9f067fc86f4a31660d5d6349224d741cf8866800ec53cd",
+      "criteria": [
+        {
+          "criterion": "不造消息编号",
+          "verdict": null,
+          "evidence": ""
+        },
+        {
+          "criterion": "不补地点、人物、精确耗时",
+          "verdict": null,
+          "evidence": ""
+        }
+      ]
+    }
+  ]
+}

@@ -9,21 +9,24 @@
 - 老进程还占着 :8000 的时候新进程 bind 会直接失败（uvicorn 没有「等端口」这种参数）；
 - 而先退出就没人来得及叫新进程了。
 
-所以顺序只有一条路：**先叫一个中间人，再退位**。
+BAT 启动时，由总启动器接收重启请求、回收旧后端并检查新后端就绪。
+后端不能脱离总窗口另起一份；关闭总窗口仍会关闭全部服务。
 
-    ① `restart()` 起 `app.restart_helper`（脱离当前控制台），它去等 :8000 腾出来；
-    ② 接口先把话回给前端，`exit_soon()` 才真的退 —— 端口一松手，中间人立刻把大脑顶上来。
+手动运行 Uvicorn 时的兼容路径：先叫起独立 helper，回话后再退出。
+helper 记录 PID 和创建时间，回收旧 worker 与 reload 父进程，再启动不带 reload 的新服务。
 
 失败也安全：中间人没起起来就抛异常，接口回 500，**当前这个大脑继续好好跑**。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -39,6 +42,27 @@ LOG_DIR = BACKEND_DIR / "logs"
 
 # 回话 + 叫起新进程都做完再退。本地回一个 json 用不了这么久，宽一点无妨。
 EXIT_DELAY = 0.8
+
+
+def restart_targets() -> list[dict]:
+    """Record only this worker and its Uvicorn ancestors, never a shell or feature."""
+    import psutil
+
+    process = psutil.Process()
+    targets = [{"pid": process.pid, "created": process.create_time()}]
+    try:
+        for parent in process.parents():
+            args = parent.cmdline()
+            if "uvicorn" not in args or "app.main:app" not in args:
+                break
+            if Path(parent.cwd()).resolve() != BACKEND_DIR:
+                break
+            targets.append({"pid": parent.pid, "created": parent.create_time()})
+    except psutil.NoSuchProcess:
+        pass
+    except psutil.Error as exc:
+        raise OSError(f"无法核对旧服务进程：{exc}") from exc
+    return targets
 
 
 def info() -> dict:
@@ -65,6 +89,8 @@ def _detach_flags() -> list[int]:
     if os.name != "nt":
         return [0]
     base = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    if os.environ.get("XTR_LAUNCHER_URL"):
+        return [base]  # Never escape the launcher's kill-on-close Job.
     return [base | subprocess.CREATE_BREAKAWAY_FROM_JOB, base]
 
 
@@ -72,6 +98,7 @@ def _child_env() -> dict:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"  # 中文日志别乱码
     env.setdefault("PYTHONUTF8", "1")
+    env.pop("XIAOTANGREN_RESTART_REQUESTED", None)
     return env
 
 
@@ -83,11 +110,25 @@ def restart() -> Path:
     """
     from .config import get_settings
 
+    control = os.environ.get("XTR_LAUNCHER_URL")
+    if control:
+        request = urllib.request.Request(control + "/restart", data=b"{}", headers={
+            "Authorization": "Bearer " + os.environ.get("XTR_LAUNCHER_TOKEN", ""),
+            "Content-Type": "application/json",
+        })
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=3) as response:
+            if response.status != 202:
+                raise OSError("总启动器没有接受重启请求")
+        return log_path()
+
     settings = get_settings()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     path = log_path()
+    targets = restart_targets()
     out = open(path, "a", encoding="utf-8")
-    argv = [sys.executable, "-m", "app.restart_helper", str(settings.port), settings.host]
+    argv = [sys.executable, "-m", "app.restart_helper", str(settings.port), settings.host,
+            json.dumps(targets)]
 
     failed: OSError | None = None
     for flags in _detach_flags():
@@ -114,6 +155,8 @@ def restart() -> Path:
 
 def exit_soon() -> None:
     """回完话之后退位 —— 中间人这会儿正在等 :8000。"""
+    if os.environ.get("XTR_LAUNCHER_URL"):
+        return  # The owner stops/replaces the backend, independent of this worker.
     log.info("一键重启：新进程已就位，老进程（pid %s）退位", PID)
     time.sleep(EXIT_DELAY)
     try:
@@ -123,5 +166,5 @@ def exit_soon() -> None:
         harvest.stop()
     except Exception:  # noqa: BLE001 —— 都要退位了，收尾失败不该拦着
         pass
-    # 这里必须硬退：走正常的关机流程会把新进程也可能需要的东西一起收拾掉。
+    # The detached helper retires the recorded ancestors too, even if this cleanup hangs.
     os._exit(0)

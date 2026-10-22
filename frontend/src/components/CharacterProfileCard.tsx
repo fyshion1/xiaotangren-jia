@@ -1,7 +1,12 @@
+import { profileSignature } from '../lib/profileDisplay'
 import { useEffect, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import { insertTavernCardGreeting } from '../api/cardImport'
 import { activeFormId, listForms, resolveForm } from '../lib/forms'
+import { pickHtml } from '../lib/richText'
+import RichText from './RichText'
+import CardHtmlPreview from './CardHtmlPreview'
+import { hasCardHtml } from '../lib/cardHtml'
 import { extractPalette, firstFrameOf, isGif, paletteGradient } from '../lib/portraitFx'
 import { live2dUrl, resolveLive2DAsset } from '../lib/live2dAssets'
 import { resolveVrmAsset, vrmUrl } from '../lib/vrmAssets'
@@ -90,14 +95,28 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
   }, [p.id])
 
   /** 「插入开场白」：档案里那份一直躺着，什么时候想用都行。成功后直接进她的私聊。
-   *  会话已经聊过时后端会 400（开场白该在最前面），把原话摆出来给用户看。 */
+   *  会话已经聊过时后端会 409（开场白插到最新消息后面会很怪），把原话摆出来问，
+   *  用户确认「还是要插」才带 `insert: true` 再调一次。 */
   const insertGreeting = async () => {
     setGreetingBusy(true)
     setGreetingNote('')
     try {
-      await insertTavernCardGreeting(p.id)
-      setGreetingNote('开场白已经写成她私聊的第一条了 —— 这就去她的私聊看看。')
-      onEnterChat?.()
+      try {
+        await insertTavernCardGreeting(p.id)
+        setGreetingNote('开场白已经写成她私聊的第一条了 —— 这就去她的私聊看看。')
+        onEnterChat?.()
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        // 只有「聊过了、要不要硬插」这一种情况值得多问一句；其余（网络 / 空场白）直接摊开
+        if (!msg.includes('已经有消息')) throw e
+        if (!window.confirm(`${msg}\n\n还是要插进去吗？（会排在最新消息后面）`)) {
+          setGreetingNote('没插 —— 开场白还在档案里，随时能再点。')
+          return
+        }
+        await insertTavernCardGreeting(p.id, true)
+        setGreetingNote('开场白已经插进她私聊了（排在最新消息后面）。')
+        onEnterChat?.()
+      }
     } catch (e) {
       setGreetingNote(e instanceof Error ? e.message : String(e))
     } finally {
@@ -105,7 +124,7 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
     }
   }
 
-  const portrait = view.portrait
+  const portrait = view.hiddenFields?.includes('portrait') ? '' : view.portrait
   const gif = Boolean(portrait && isGif(portrait))
 
   // 实机模型（§36）：档案里配了 `live2d.model` / `vrm.model` 才能切过去。
@@ -170,24 +189,8 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
       className="grid overflow-hidden rounded-[22px] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow)] md:grid-cols-[320px_1fr]"
       style={{ gridAutoRows: 'auto' }}
     >
-      {/* 左：立绘区。显示方式由左上角标签里的下拉控制（§19），不再点整张图切换 */}
-      <div
-        className="portrait relative flex min-h-[280px] items-center justify-center overflow-hidden md:min-h-0"
-        style={palette.length ? { background: paletteGradient(palette) } : undefined}
-      >
-        {/* 剩余占区用图自己填：放大 + 重模糊铺满 → 就是「取背景色做滤镜模糊」那层。
-            object-cover 保证铺满，blur-3xl 把内容糊成色雾，不会露出直角边。
-            GPU 只吃这一张底图；GIF 用首帧静态图，免得底下也在一直播。 */}
-        {portraitMode === 'image' && portrait && (
-          <img
-            src={gif && firstFrame ? firstFrame : portrait}
-            alt=""
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 z-0 h-full w-full scale-150 object-cover opacity-60 blur-3xl"
-          />
-        )}
-        {/* 左上角标签 = 下拉选择器（§19） */}
-        <div className="absolute left-3.5 top-3.5 z-[6]">
+      <div className="profile-media-controls md:col-span-2">        {/* 左上角标签 = 下拉选择器（§19） */}
+        <div className="relative z-[6]">
           <button
             type="button"
             onClick={() => setModeOpen((v) => !v)}
@@ -225,9 +228,23 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
             </>
           )}
         </div>
-        <span className="absolute bottom-2.5 right-3 z-[6] text-[11px] text-[var(--text-3)]">
-          {gif && portraitMode === 'image' ? '鼠标移上去播放 GIF' : '待替换实机模型'}
-        </span>
+</div>
+      {/* 左：立绘区。显示方式由左上角标签里的下拉控制（§19），不再点整张图切换 */}
+      <div
+        className="portrait relative flex min-h-[280px] items-center justify-center overflow-hidden md:min-h-0"
+        style={palette.length ? { background: paletteGradient(palette) } : undefined}
+      >
+        {/* 剩余占区用图自己填：放大 + 重模糊铺满 → 就是「取背景色做滤镜模糊」那层。
+            object-cover 保证铺满，blur-3xl 把内容糊成色雾，不会露出直角边。
+            GPU 只吃这一张底图；GIF 用首帧静态图，免得底下也在一直播。 */}
+        {portraitMode === 'image' && portrait && (
+          <img
+            src={gif && firstFrame ? firstFrame : portrait}
+            alt=""
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-0 h-full w-full scale-150 object-cover opacity-60 blur-3xl"
+          />
+        )}
         {/* 过渡（§8.6 / §19）：上面那层模糊色雾已经让边缘不硬了，
             这里只再压一层很淡的四周渐隐（左右一样深），避免图的四边留下刀切感。
             旧做法是「下沿一道 45% 的卡片底色渐变」—— 那道边本身就是硬边，所以换掉。 */}
@@ -303,9 +320,9 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
         <div className="mb-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span className="text-[28px] font-extrabold tracking-wide">
             {view.name}
-            <span className="ml-2 text-[15px] font-medium text-[var(--text-3)]">{view.jp}</span>
+            {!view.hiddenFields?.includes('signature') && profileSignature(view) && <span className="ml-2 text-[15px] font-medium text-[var(--text-3)]">{profileSignature(view)}</span>}
           </span>
-          <span className="text-[14px] font-semibold text-[var(--pink-deep)]">{view.alias}</span>
+          {!view.hiddenFields?.includes('alias') && <span className="text-[14px] font-semibold text-[var(--pink-deep)]">{view.alias}</span>}
           {/* 形态 chip（§17）：有多形态时显示在名字栏右侧 */}
           {hasForms && (
             <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
@@ -327,7 +344,7 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
         </div>
 
         {/* 关于 = 角色提示词；中文译文只给界面看，原文仍是实际喂给模型的正文 */}
-        <div className="mb-4 max-w-[620px]">
+        <div className="mb-4 max-w-[620px]" hidden={view.hiddenFields?.includes('about')}>
           {aboutZh && (
             <div className="mb-1.5 flex items-center gap-1.5">
               <span className="eyebrow">关于 · 中文译文</span>
@@ -341,35 +358,37 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
               </button>
             </div>
           )}
-          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-[var(--text-2)]">
-            {viewRaw || !aboutZh ? view.about : view.aboutZh}
-          </p>
+          <RichText
+            html={viewRaw || !aboutZh ? pickHtml(view.about, view.aboutHtml) : aboutZh}
+            className="text-[15px] leading-relaxed text-[var(--text-2)]"
+          />
+          {hasCardHtml(view.about) && <CardHtmlPreview key={view.id} html={view.about} characterName={view.name} />}
+          {(hasCardHtml(view.greetingSource || view.greetingHtml || '') || view.tavernRegexScripts?.length) && <CardHtmlPreview
+            key={`${view.id}:greeting`} html={view.greetingSource || view.greetingHtml || view.greeting || ''}
+            characterName={view.name} rules={view.tavernRegexScripts} title="开场白原始排版" />}
         </div>
 
-        {/* 基本词条 */}
-        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-          <Attr k="生日 · 年龄">{`${view.birthday} · ${view.age}`}</Attr>
-          <Attr k="身高 / 血型 / 星座">{`${view.height} · ${view.bloodType} · ${view.constellation}`}</Attr>
-          <Attr k="职业">{view.occupation}</Attr>
-          <Attr k="性格">
-            <Chips items={view.personality} />
-          </Attr>
-          <Attr k="喜好">
-            <Chips items={view.likes} />
-          </Attr>
-          <Attr k="讨厌">
-            <Chips items={view.dislikes} />
-          </Attr>
-          <Attr k="体型">{view.bodyType}</Attr>
-          <Attr k="瞳色">{view.eyeColor}</Attr>
-          <Attr k="发型">{view.hairstyle}</Attr>
-          <Attr k="发色">{view.hairColor}</Attr>
-          <Attr k="胸部">{view.bust}</Attr>
-          <Attr k="臀部">{view.hip}</Attr>
-          <Attr k="服装">{view.clothing}</Attr>
-          <Attr k="关系">{view.relationships}</Attr>
-          <Attr k="特殊特征">{view.specialFeatures}</Attr>
-          <Attr k="口头禅">{view.catchphrase}</Attr>
+        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3">
+          {!view.hiddenFields?.includes('birthday') && <Attr k="生日">{view.birthday}</Attr>}
+          {!view.hiddenFields?.includes('age') && <Attr k="年龄">{view.age}</Attr>}
+          {!view.hiddenFields?.includes('height') && <Attr k="身高">{view.height}</Attr>}
+          {!view.hiddenFields?.includes('bloodType') && <Attr k="血型">{view.bloodType}</Attr>}
+          {!view.hiddenFields?.includes('constellation') && <Attr k="星座">{view.constellation}</Attr>}
+          {!view.hiddenFields?.includes('occupation') && <Attr k="职业">{view.occupation}</Attr>}
+          {!view.hiddenFields?.includes('personality') && <Attr k="性格"><Chips items={view.personality} /></Attr>}
+          {!view.hiddenFields?.includes('likes') && <Attr k="喜好"><Chips items={view.likes} /></Attr>}
+          {!view.hiddenFields?.includes('dislikes') && <Attr k="讨厌"><Chips items={view.dislikes} /></Attr>}
+          {!view.hiddenFields?.includes('bodyType') && <Attr k="体型">{view.bodyType}</Attr>}
+          {!view.hiddenFields?.includes('eyeColor') && <Attr k="瞳色">{view.eyeColor}</Attr>}
+          {!view.hiddenFields?.includes('hairstyle') && <Attr k="发型">{view.hairstyle}</Attr>}
+          {!view.hiddenFields?.includes('hairColor') && <Attr k="发色">{view.hairColor}</Attr>}
+          {!view.hiddenFields?.includes('bust') && <Attr k="胸部">{view.bust}</Attr>}
+          {!view.hiddenFields?.includes('hip') && <Attr k="臀部">{view.hip}</Attr>}
+          {!view.hiddenFields?.includes('clothing') && <Attr k="服装">{view.clothing}</Attr>}
+          {!view.hiddenFields?.includes('relationships') && <Attr k="关系">{view.relationships}</Attr>}
+          {!view.hiddenFields?.includes('specialFeatures') && <Attr k="特殊特征">{view.specialFeatures}</Attr>}
+          {!view.hiddenFields?.includes('catchphrase') && <Attr k="口头禅">{view.catchphrase}</Attr>}
+          {(view.customFields || []).filter(f => f.label && !view.hiddenFields?.includes(`custom:${f.label}`)).map((f,i) => <Attr key={i} k={f.label}>{f.value}</Attr>)}
         </div>
 
         {/* 个人隐私词条 */}
@@ -380,9 +399,9 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
           </div>
           {showPriv ? (
             <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3">
-              {priv.map(([k, v]) => (
+              {priv.filter(([k]) => !view.hiddenFields?.includes(({体重:'weight',三围:'measurements',秘密:'secret',弱点:'weakPoint',私密小愿望:'privateWish'} as Record<string,string>)[k])).map(([k, v]) => (
                 <Attr key={k} k={k} priv>
-                  {v}
+                  {!view.hiddenFields?.includes(({体重:'weight',三围:'measurements',秘密:'secret',弱点:'weakPoint',私密小愿望:'privateWish'} as Record<string,string>)[k]) && v}
                 </Attr>
               ))}
             </div>

@@ -59,6 +59,25 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual([ev['type'] for ev in events], ['text', 'error'])
 
+    async def test_fixed_temperature_model_retries_without_temperature(self):
+        """grok 这类只认 temperature=1 的模型：400 之后去掉 temperature 重发一次，不空转。"""
+        calls = []
+
+        async def picky(*args, **kwargs):
+            calls.append(kwargs.get('temperature'))
+            if kwargs.get('temperature') is not None:
+                yield {'type': 'error', 'message': '上游 400: field Temperature invalid, only 1 is allowed for this model',
+                       'status': 400}
+            else:
+                yield {'type': 'text', 'text': 'ok'}
+                yield {'type': 'done', 'finish_reason': 'stop'}
+
+        with patch.object(openai, 'stream_chat', picky), patch.object(openai.asyncio, 'sleep'):
+            events = [ev async for ev in openai.stream_chat_retry(
+                [], 'grok', 'https://test.invalid', temperature=0.2)]
+        self.assertEqual(calls, [0.2, None])
+        self.assertEqual(events[-1]['type'], 'done')
+
     async def test_transient_error_before_text_retries(self):
         calls = []
 
@@ -74,6 +93,42 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             events = [ev async for ev in openai.stream_chat_retry([], 'test', 'https://test.invalid')]
         self.assertEqual(len(calls), 2)
         self.assertEqual(events[-1]['type'], 'done')
+
+
+class NonStreamRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_no_available_channel_is_retried_with_longer_backoff(self):
+        """渠道空了是 503 + 固定文案：要重试，而且退避要拉开（同一秒重发必撞）。"""
+        replies = iter([
+            RuntimeError('上游 503: No available channel for model gemini-3.8-flash under group *** (distributor)'),
+            'ok',
+        ])
+        delays = []
+
+        async def fake(*args, **kwargs):
+            out = next(replies)
+            if isinstance(out, Exception):
+                raise out
+            return out
+
+        async def fake_sleep(s):
+            delays.append(s)
+
+        with patch.object(openai, 'complete_chat', fake), patch.object(openai.asyncio, 'sleep', fake_sleep):
+            text = await openai.complete_chat_with_retry([], 'm', 'https://test.invalid', attempts=3)
+        self.assertEqual(text, 'ok')
+        self.assertEqual(delays, [3.0])
+
+    async def test_fatal_error_is_not_retried(self):
+        calls = []
+
+        async def fake(*args, **kwargs):
+            calls.append(True)
+            raise RuntimeError('上游 401: invalid token')
+
+        with patch.object(openai, 'complete_chat', fake):
+            with self.assertRaises(RuntimeError):
+                await openai.complete_chat_with_retry([], 'm', 'https://test.invalid')
+        self.assertEqual(len(calls), 1)
 
 
 class CleanupTests(unittest.TestCase):

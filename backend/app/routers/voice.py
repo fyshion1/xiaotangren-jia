@@ -18,7 +18,6 @@ import wave
 from functools import lru_cache
 from pathlib import Path
 
-import edge_tts
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -110,6 +109,7 @@ async def tts(req: TTSRequest) -> Response:
 
     try:
         if engine == "edge":
+            import edge_tts
             voice = voice or "zh-CN-XiaoxiaoNeural"
             # 暂停一下再合成（§19.18）：edge-tts 每次都要新开一条 WebSocket，
             # 连点朗读时前一条的 socket 还没关干净，新的一条就会卡住几秒 —— 用户感觉是「卡顿」。

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Literal
+from urllib.parse import urlsplit
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -11,6 +14,47 @@ from ..services import memory as mem
 from ..services import memory_extract as extractor
 
 router = APIRouter()
+
+
+class EmbeddingConfigIn(BaseModel):
+    engine: Literal["local", "cloud"]
+    base_url: str = ""
+    cloud_model: str = Field(min_length=1)
+    api_key: str | None = None
+    clear_api_key: bool = False
+
+
+@router.get("/memories/embedding-config")
+def embedding_config() -> dict:
+    from ..config import get_settings
+    settings = get_settings()
+    saved = db.get_feature_settings("memory_embedding").get("data") or {}
+    cfg = mem.embeddings_config()
+    return {"engine": cfg["engine"], "base_url": saved.get("base_url", settings.embed_base_url),
+            "cloud_model": cfg["cloud_model"], "has_api_key": bool(cfg["api_key"])}
+
+
+@router.put("/memories/embedding-config")
+def update_embedding_config(body: EmbeddingConfigIn) -> dict:
+    base = body.base_url.strip().rstrip('/')
+    try:
+        parsed = urlsplit(base)
+    except ValueError as exc:
+        raise HTTPException(400, "API 根地址格式无效") from exc
+    if base and (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise HTTPException(400, "请填写 HTTP(S) API 根地址，不包含账号密码、查询参数或片段")
+    model = body.cloud_model.strip()
+    if not model:
+        raise HTTPException(400, "请填写 embedding 模型名称")
+    saved = db.get_feature_settings("memory_embedding").get("data") or {}
+    saved.update(engine=body.engine, base_url=base, cloud_model=model)
+    if body.clear_api_key:
+        saved["api_key"] = ""
+    elif body.api_key and body.api_key.strip():
+        saved["api_key"] = body.api_key.strip()
+    db.set_feature_settings("memory_embedding", saved)
+    return embedding_config()
 
 
 class MemoryIn(BaseModel):
@@ -27,6 +71,10 @@ class MemoryIn(BaseModel):
 
 
 class Turn(BaseModel):
+    id: str = ""
+    created_at: str = ""
+    image: str = ""
+    frames: list[str] = Field(default_factory=list)
     role: str = "user"  # user / assistant
     content: str = ""
     character_id: str = ""  # assistant 发言者（群聊用于辨认是谁说的）
@@ -45,6 +93,9 @@ class ExtractIn(BaseModel):
     # 功能命名空间（§9.6）：普通聊天留空；游戏 / 小窝外设传自己的 id，
     # 提炼出的记忆只在同一功能内召回，不会漏进日常聊天。
     feature_id: str = ""
+    persona_id: str = ""
+    session_id: str = ""
+    day: str = Field(default="", pattern=r"^(?:\d{4}-\d{2}-\d{2})?$")
 
 
 class RecallIn(BaseModel):
@@ -104,17 +155,13 @@ async def create_memory(body: MemoryIn) -> dict:
 
 @router.post("/memories/extract")
 async def extract_memories(body: ExtractIn) -> dict:
-    """自动记忆提取（§9.3）：规则预筛 → LLM 提炼 → 按 §9.2.2 分桶落库。
-
-    前端在一条回复结束后调它；没触发或提炼为空都返回 triggered=false，不报错。
-    preview=true 时只返回提炼结果、不写库（用户点「提炼记忆」先看再决定用得上）。
-    """
+    """自动清洗并整理当天事件，提交 03 待审核；preview 不写正式记忆。"""
     from ..config import get_settings
 
     msgs = [
         {"role": t.role if t.role in ("user", "assistant") else "user",
          "content": t.content,
-         "character_id": t.character_id}
+         "character_id": t.character_id, "id": t.id, "created_at": t.created_at, "image": t.image, "frames": t.frames}
         for t in body.messages
     ]
     ids = [i for i in (body.character_ids or []) if i]
@@ -133,7 +180,14 @@ async def extract_memories(body: ExtractIn) -> dict:
             force=body.force,
             save=not body.preview,
             feature_id=body.feature_id,
+            persona_id=body.persona_id,
+            session_id=body.session_id,
+            day=body.day,
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         # 提炼失败不该打断聊天：如实回报，前端静默处理
         raise HTTPException(status_code=502, detail=f"记忆提炼失败：{exc}") from exc
@@ -184,7 +238,7 @@ async def recall(body: RecallIn) -> dict:
 
 
 @router.get("/memories/status")
-async def memory_status() -> dict:
+def memory_status() -> dict:
     """embedding 是否可用 + 当前向量口径，前端据此提示「模型没装好」。"""
     cfg = mem.embeddings_config()
     sig = mem.current_engine_signature(cfg)
@@ -200,6 +254,8 @@ async def memory_status() -> dict:
             api_key=cfg["api_key"],
         )
         dim = len(vec[0]) if vec else 0
+        if dim == 0:
+            ok, detail = False, "向量引擎未返回有效向量，已使用关键词降级"
     except emb.EmbeddingError as exc:
         ok, dim, detail = False, 0, str(exc)
     stale = _stale_count(sig)
@@ -217,38 +273,19 @@ async def memory_status() -> dict:
 
 
 def _stale_count(signature: str) -> int:
-    """统计与当前口径不一致、或压根没有向量的记忆条数。"""
-    total = 0
-    for m in db.list_memories(limit=1000):
-        if not m.get("vector") or m.get("engine") != signature:
-            total += 1
-    return total
+    from ..services import memory_retrieval
+    return memory_retrieval.stale_count(_index_documents(), signature)
+
+
+def _index_documents() -> list[dict]:
+    from ..services import memory_workflow as workflow, persona_memory as pm
+    items = [m for p in db.list_profiles() for m in workflow.approved(p["id"])]
+    items.extend({**m, "id": "db:" + m["ref_id"]} for m in pm.db_pool() if m.get("inject"))
+    return items
 
 
 @router.post("/memories/reindex")
-async def reindex() -> dict:
+def reindex() -> dict:
     """换 embedding 引擎后重建全部向量（§16.6）。无向量的条目一并补齐。"""
-    cfg = mem.embeddings_config()
-    sig = mem.current_engine_signature(cfg)
-    items = db.list_memories(limit=5000)
-    done = 0
-    failed = 0
-    for m in items:
-        try:
-            vec = emb.embed_texts(
-                [m["text"]],
-                engine=cfg["engine"],
-                local_model=cfg["local_model"],
-                cloud_model=cfg["cloud_model"],
-                base_url=cfg["base_url"],
-                api_key=cfg["api_key"],
-            )
-        except emb.EmbeddingError:
-            failed = len(items) - done
-            break
-        if not vec:
-            failed += 1
-            continue
-        db.update_memory_vector(m["id"], sig, emb.pack_vector(vec[0]), len(vec[0]))
-        done += 1
-    return {"total": len(items), "done": done, "failed": failed, "signature": sig}
+    from ..services import memory_retrieval
+    return {**memory_retrieval.rebuild(_index_documents()), "signature": mem.current_engine_signature()}

@@ -7,7 +7,13 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
+    "websockets>=15,<17",
+    "ormsgpack>=1.7,<2",
+    "async-timeout>=4,<6",
     "pydantic>=2.7",
+    # Installed into the runner's interpreter; features import the standalone SDK,
+    # never app.*. Executing tools remains the feature process's responsibility.
+    "xiaotangren-tool-runtime==0.1.0",
     "pydantic-settings>=2.3",
     "python-multipart>=0.0.9",
     "edge-tts>=7.2",
@@ -15,6 +21,7 @@ dependencies = [
     "pillow>=10.3",
     "python-docx>=1.1",
     "openpyxl>=3.1",
+    "xlrd>=2.0.1",
     # 功能循环进程的「查存活 / 停掉」靠它（Windows 没有 os.kill(pid, 15)，缺了 psutil
     # 停止功能会直接 WinError 87）。
     "psutil>=6.0",
@@ -30,6 +37,13 @@ memory = [
 dev = [
     "ruff>=0.6",
 ]
+local-voice = [
+    "sherpa-onnx>=1.13.8",
+    "pilk>=0.2.4",
+]
+
+[tool.uv.sources]
+xiaotangren-tool-runtime = { path = "../packages/tool-runtime", editable = true }
 
 [tool.ruff]
 line-length = 100

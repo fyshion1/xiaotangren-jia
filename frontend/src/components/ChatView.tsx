@@ -1,3 +1,8 @@
+import { useTavernMode } from '../lib/tavernMode'
+import KnowledgeText from './KnowledgeText'
+import {useDesignChoice} from '../visual/designChoices'
+import {useDismissableDetails} from '../visual/useDismissableDetails'
+import UiIcon from '../visual/UiIcon'
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import type { ChatMessage } from '../data/chats'
@@ -5,10 +10,10 @@ import { buildSessions, personaSessionId, personasAsCast, suggestionsFor, MAIN_P
 import { activeFormId, listForms } from '../lib/forms'
 import SessionList from './SessionList'
 import CardImportDialog from './CardImportDialog'
+import CardChatMessage from './CardChatMessage'
 import StatusSidebar from './StatusSidebar'
 import PortraitCarousel from './PortraitCarousel'
 import ImageGenOverlay from './ImageGenOverlay'
-import StoragePanel from './StoragePanel'
 import MemoryPanel from './MemoryPanel'
 import GalleryPanel from './GalleryPanel'
 import GroupRosterPanel from './GroupRosterPanel'
@@ -23,13 +28,19 @@ import {
   previewDeleteMessages,
   saveMessage,
   toChatMessage,
-  uploadAttachment,
+  uploadAttachmentsBatch,
   type StoredMessage,
 } from '../api/storage'
-import { extractMemories, rememberMemory } from '../api/memory'
+import { extractMemories } from '../api/memory'
+import { proposeMemory } from '../api/memoryWorkflow'
+import { mergeStoredMessages } from '../lib/messageMerge'
+import { streamSSE } from '../api/stream'
 import { starImage } from '../api/gallery'
 import { fetchSettings, saveSettings } from '../api/client'
 import { ownerOf } from '../lib/owner'
+import VoiceCallPanel from './VoiceCallPanel'
+import ToolCenter, { ToolActivity, ToolDialog, ToolEntry } from './ToolCenter'
+import type { AgentEvent } from '../api/tools'
 
 // 模型通道（§7）：常规 = 商业 API；无审查 = 另配的中转 / 本地无审查模型。
 export type Channel = 'normal' | 'uncensored'
@@ -42,6 +53,7 @@ export type ModelConfig = {
   imageModel: string
   imageBaseUrl: string
   maxTokens: number // 单条回复 token 上限，0 = 不限制
+  replyLengthVersion?: number
   // 随请求发给模型的最近消息条数（§27）：0 = 不限制（把已载入的全发过去）。
   // 只截断「发出去的副本」，界面上的聊天记录一条不少。
   historyLimit: number
@@ -66,7 +78,7 @@ const DEFAULT_CONFIG: ModelConfig = {
   visionModel: 'gemini-3.8-flash',
   imageModel: '',
   imageBaseUrl: '',
-  maxTokens: 800,
+  maxTokens: 6000,
   historyLimit: 20,
   visionPrompt: DEFAULT_VISION_PROMPT,
   channel: 'normal',
@@ -113,6 +125,10 @@ function loadConfig(): ModelConfig {
       // 已下线的模型，只把「命中陈旧」的那条通道清回默认，保留另一条通道已配好的值。
       const staleModel = (m?: string) => m === 'gemini-3.6-flash'
       const cleaned = { ...DEFAULT_CONFIG, ...prev } as ModelConfig
+      // 旧版默认 800 会截断多人回复；仅迁移一次，之后用户仍可自行设回。
+      if (!prev.replyLengthVersion && prev.maxTokens === 800) cleaned.maxTokens = DEFAULT_CONFIG.maxTokens
+      cleaned.replyLengthVersion = 1
+      if (!prev.replyLengthVersion) localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...cleaned, replyLengthVersion: 1 }))
       // 老配置里没有「注入条数」（§27）这个字段：补上默认值，别让旧用户吃到 undefined。
       if (typeof prev.historyLimit !== 'number' || !Number.isFinite(prev.historyLimit)) {
         cleaned.historyLimit = DEFAULT_CONFIG.historyLimit
@@ -138,65 +154,7 @@ function loadConfig(): ModelConfig {
   return DEFAULT_CONFIG
 }
 
-async function streamSSE(
-  url: string,
-  body: unknown,
-  onToken: (t: string) => void,
-  onDone: () => void,
-  onError: (msg: string) => void,
-) {
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`)
-    const reader = resp.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let finished = false
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const events = buffer.split('\n\n')
-      buffer = events.pop() ?? ''
-      for (const evt of events) {
-        const lines = evt.split('\n')
-        const dataLine = lines.find((l) => l.startsWith('data:'))
-        if (!dataLine) continue
-        let payload: { text?: string; message?: string }
-        try {
-          payload = JSON.parse(dataLine.slice(5).trim())
-        } catch {
-          continue
-        }
-        const type = lines.find((l) => l.startsWith('event:'))?.slice(6).trim()
-        if (type === 'token' && payload.text) onToken(payload.text)
-        else if (type === 'done') {
-          finished = true
-          onDone()
-        } else if (type === 'error') {
-          finished = true
-          onError(payload.message ?? '未知错误')
-        }
-      }
-    }
-    if (!finished) onDone()
-  } catch (e) {
-    onError(e instanceof Error ? e.message : String(e))
-  }
-}
 
-function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => resolve(r.result as string)
-    r.onerror = () => reject(new Error('读取文件失败'))
-    r.readAsDataURL(file)
-  })
-}
 
 // ---- 平滑流式：把后端按「块」吐字缓存下来，再按固定节拍逐字/双字渲染，做出「流水」打字机 ----
 function createSmartStream(onChunk: (t: string) => void, emitEveryMs = 24) {
@@ -239,12 +197,12 @@ function RememberButton({ done, onClick }: { done: boolean; onClick: () => void 
     <button
       onClick={onClick}
       disabled={done}
-      title={done ? '已经记住了' : '把这条存进长期记忆'}
+      title={done ? '已加入待审核' : '补充一条记忆到 03 待审核（聊天会自动归档整理）'}
       className={`text-[11px] transition ${
         done ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)] hover:text-[var(--pink-deep)]'
       }`}
     >
-      {done ? '🧠 已记住' : '🧠 记住'}
+      {done ? '🧠 待审核' : '🧠 收入候选'}
     </button>
   )
 }
@@ -430,19 +388,16 @@ type MobileTab = 'sessions' | 'chat' | 'settings' | 'status'
 // 手机端底部聊天栏的内联图标（§19.25）。
 // 参照图里 QQ 那排是细线图标；emoji 直接渲染在不同系统上胖瘦差太多、
 // 跟旁边的线性图标不是一套。所以表情这颗手写 SVG，其余继续用 emoji（本来就是彩色的）。
-function StickerIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M21 12a9 9 0 1 0-9 9h4l5-5v-4z" />
-      <path d="M16 21v-3a2 2 0 0 1 2-2h3" />
-      <path d="M9 10.2h.01M15 10.2h.01" />
-      <path d="M9.2 14.2c.9 1 1.8 1.5 2.8 1.5s1.9-.5 2.8-1.5" />
-    </svg>
-  )
-}
-
-export default function ChatView({ characters, personas = [], activePersona, initialSessionId, initialMobileTab, onOpenProfile, onOpenSelf, onOpenMemoryPicks, onOpenNest, onSwitchForm, onTitleChange, onRefreshCharacters, onDeleteImportedCard }: Props) {
-  const [storageOpen, setStorageOpen] = useState(false)
+export default function ChatView({ characters, personas = [], activePersona, initialSessionId, initialMobileTab, onOpenProfile, onOpenSelf, onOpenNest, onSwitchForm, onTitleChange, onRefreshCharacters, onDeleteImportedCard }: Props) {
+  const [tavernMode] = useTavernMode()
+  const [cardDisplayMode, setCardDisplayMode] = useState<'chat' | 'html'>(() => localStorage.getItem('xtr.card-display-mode') === 'html' ? 'html' : 'chat')
+  const changeCardDisplayMode = (mode: 'chat' | 'html') => {
+    setCardDisplayMode(mode)
+    localStorage.setItem('xtr.card-display-mode', mode)
+  }
+  const headerChoice=useDesignChoice('header')
+  const toolsChoice=useDesignChoice('tools')
+  const chatToolsRef=useDismissableDetails()
   const activePersonaId = activePersona?.id ?? MAIN_PERSONA_ID
   // 当前视角下能出场的全部角色（§22）：小糖人 + 「别的身份」（汐子视角下的大老大）。
   // 后者不进屋里的成员表，只在这个视角下临时现身，会话 id 照旧，隔离交给 personaSessionId。
@@ -474,7 +429,17 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       cancelled = true
     }
   }, [])
-  const sessions = useMemo(() => buildSessions(visibleCharacters, [], roster), [visibleCharacters, roster])
+  const [lifeSessions, setLifeSessions] = useState<import('../data/chats').ChatSession[]>([])
+  useEffect(() => {
+    let cancelled = false
+    setLifeSessions([])
+    const refresh = () => { void fetch('/api/exploration-projects/conversations?persona=' + encodeURIComponent(activePersonaId))
+      .then(r => r.ok ? r.json() : Promise.reject()).then(v => { if (!cancelled) setLifeSessions(v.items) }).catch(() => {}) }
+    refresh()
+    const timer = window.setInterval(refresh, 15000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [activePersonaId])
+  const sessions = useMemo(() => [...buildSessions(visibleCharacters, [], roster).filter(s => tavernMode || !visibleCharacters.find(c => s.kind === 'single' && c.id === s.characterIds[0])?.imported), ...lifeSessions], [visibleCharacters, roster, lifeSessions, tavernMode])
   const [activeId, setActiveId] = useState<string>(initialSessionId ?? sessions[0]?.id ?? 'group')
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0]
   // 本会话在场的角色（群聊 = 全部成员，私聊 = 一位）—— 立绘轮播与状态栏共用
@@ -484,6 +449,17 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 这一条聊天线的真实会话键（§22：「每个身份各自一条」，默认身份不加前缀，老历史一条不丢）。
   const sessionKey = active ? personaSessionId(activePersonaId, active.id) : ''
 
+  const pendingWrites = useRef<Record<string, number>>({})
+  const lifeAttempt = useRef<{ fingerprint: string; id: string } | null>(null)
+  const savedUserRecords = useRef(new WeakMap<ChatMessage, StoredMessage>())
+  const saveTracked = useCallback(async (sid: string, msg: ChatMessage) => {
+    pendingWrites.current[sid] = (pendingWrites.current[sid] || 0) + 1
+    try {
+      const saved = await saveMessage(sid, msg)
+      if (saved) savedUserRecords.current.set(msg, saved)
+      return saved
+    } finally { pendingWrites.current[sid]-- }
+  }, [])
   const [history, setHistory] = useState<Record<string, ChatMessage[]>>({})
   // 每条消息的错误态（流被掐断 / 上游报错），单独展示而不是塞进正文
   const [msgError, setMsgError] = useState<Record<string, string>>({})
@@ -497,6 +473,11 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [toolCenterOpen, setToolCenterOpen] = useState(false)
+  const [toolEvents, setToolEvents] = useState<Record<string, AgentEvent[]>>({})
+  const streamController = useRef<AbortController | null>(null)
+  useEffect(() => () => { streamController.current?.abort() }, [sessionKey])
+  const [voiceCallOpen, setVoiceCallOpen] = useState(false)
   const [config, setConfig] = useState<ModelConfig>(loadConfig)
   // 当前通道解析出的实际上游（留空字段回退常规通道）——渲染期算一次，各处复用
   const route = resolveRoute(config)
@@ -509,8 +490,14 @@ export default function ChatView({ characters, personas = [], activePersona, ini
    * 它认不出，不在场者的段落就洗不掉。
    */
   const buildOutbound = useCallback(
-    (list: ChatMessage[]): { role: string; content: string }[] =>
-      limitHistory(list, config.historyLimit).map((m) => ({ role: m.role, content: outboundText(m) })),
+    (list: ChatMessage[]): { role: string; content: string; images: string[] }[] => {
+      let remaining = 10
+      return limitHistory(list, config.historyLimit).map(m => ({ role: m.role, content: outboundText(m), images: m.role === 'user' ? (m.frames?.length ? m.frames : m.imageOrig || m.image ? [m.imageOrig || m.image!] : []) : [] })).reverse().map(m => {
+        const images = remaining ? m.images.slice(-remaining) : []
+        remaining -= images.length
+        return { ...m, images, content: m.content + (images.length < m.images.length ? '\n[较早附件未重复发送；需要查看细节请重新上传]' : '') }
+      }).reverse()
+    },
     [config.historyLimit],
   )
   const [showSettings, setShowSettings] = useState(false)
@@ -521,6 +508,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const [showKey, setShowKey] = useState(false)
   const [showUncensoredKey, setShowUncensoredKey] = useState(false)
   const [errorText, setErrorText] = useState('')
+  const [waitNotice, setWaitNotice] = useState('')
   // 轻提示（占位功能如实说明「规划中」，不弹假功能）
   const [notice, setNotice] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
@@ -583,7 +571,8 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const [speakVoice, setSpeakVoice] = useState(
     () => localStorage.getItem('xtr.speakVoice') || 'zh-CN-XiaoxiaoNeural',
   )
-  const [autoSpeak, setAutoSpeak] = useState(false)
+  const [autoSpeak] = useState(false)
+  const [suggestionsEnabled, setSuggestionsEnabled] = useState(() => {try {return localStorage.getItem('xtr.visual.suggestions-enabled') !== 'false'} catch {return true}})
   const [playingKey, setPlayingKey] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const playTokenRef = useRef(0)
@@ -593,6 +582,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
   // 记忆（§9.2/§9.3）：管理浮层 + 消息旁的「记住这条」快捷按钮
   const [memoryOpen, setMemoryOpen] = useState(false)
+  const [sentContexts, setSentContexts] = useState<Record<string, { model: string; messages: { role: string; text: string; image_count: number }[] }>>({})
   const [remembered, setRemembered] = useState<Record<string, true>>({})
   const [rememberMsg, setRememberMsg] = useState('')
   // 自动记忆（§9.3）：一条回复结束后规则预筛 + LLM 提炼；提炼到的条数做轻提示
@@ -748,8 +738,8 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       const loaded = page.items.map(toChatMessage)
       setHistory((prev) => {
         // 载入期间本地新发、尚未落库的消息（无 seq）保留，别被历史覆盖掉
-        const localOnly = (prev[sid] ?? []).filter((m) => m.seq == null)
-        return { ...prev, [sid]: [...loaded, ...localOnly] }
+        if (pendingWrites.current[sid]) return prev
+        return { ...prev, [sid]: mergeStoredMessages(prev[sid] ?? [], loaded) }
       })
       setPaging((prev) => ({ ...prev, [sid]: { cursor: page.next_cursor, hasMore: page.has_more } }))
     })
@@ -761,17 +751,14 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     let cancelled = false
     let pending = false
     const refresh = async () => {
-      if (pending) return
+      if (pending || pendingWrites.current[sessionKey]) return
       pending = true
       try {
         const page = await loadMessages(sessionKey, undefined, 200)
-        if (cancelled) return
+        if (cancelled || pendingWrites.current[sessionKey]) return
         setHistory(prev => {
           const previous = prev[sessionKey] || []
-          const localOnly = previous.filter(m => !m.dbId)
-          const merged = new Map(previous.filter(m => m.dbId).map(m => [m.dbId, m]))
-          for (const row of page.items) merged.set(row.id, toChatMessage(row))
-          const next = [...[...merged.values()].sort((a, b) => (a.seq || 0) - (b.seq || 0)), ...localOnly]
+          const next = mergeStoredMessages(previous, page.items.map(toChatMessage))
           return JSON.stringify(next) === JSON.stringify(prev[sessionKey] || []) ? prev : { ...prev, [sessionKey]: next }
         })
       } catch { /* 临时离线保留当前画面，下一轮再同步。 */ }
@@ -823,7 +810,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       const idx = list.findIndex((m) => m === target)
       if (idx < 0 || list[idx].dbId === stored.id) return prev
       const copy = [...list]
-      copy[idx] = { ...copy[idx], dbId: stored.id, seq: stored.seq, createdAt: stored.created_at }
+      copy[idx] = { ...copy[idx], dbId: stored.id, seq: stored.seq, createdAt: stored.created_at, frames: stored.frames?.length ? stored.frames : copy[idx].frames }
       return { ...prev, [sid]: copy }
     })
   }, [])
@@ -850,25 +837,17 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     const finalized: ChatMessage = {
       role: 'assistant',
       content: plain,
+      clientId: crypto.randomUUID(),
       kind: multi ? 'groups' : 'text',
       segments: multi ? segments : undefined,
     }
     // 「落库用的内容」与「写进 history 的那条」是**同一个对象**（content 已按兜底算好），
     // 所以调用方拿返回值落库、回填 dbId 时 === 一定能命中。
-    let written = finalized
     setHistory((prev) => {
       const list = prev[id] ?? []
-      if (!list.length) {
-        written = finalized
-        return { ...prev, [id]: [finalized] }
-      }
-      const copy = [...list]
-      const last = copy[copy.length - 1]
-      written = { ...finalized, content: plain || last.content }
-      copy[copy.length - 1] = written
-      return { ...prev, [id]: copy }
+      return { ...prev, [id]: list.length ? [...list.slice(0, -1), finalized] : [finalized] }
     })
-    return written
+    return finalized
   }, [])
 
   // 收尾后落库（§15）：一条 assistant 消息 = 一条记录，分段以 JSON 存 kind/segments。
@@ -884,20 +863,14 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const persistLast = useCallback(
     (id: string, msg: ChatMessage) => {
       if (!msg.content.trim() && !msg.segments?.length) return
-      void saveMessage(id, msg).then((stored) => {
+      return saveTracked(id, msg).then((stored) => {
         if (!stored) return
         setHistory((prev) => {
           const list = prev[id] ?? []
-          const idx = list.findIndex((m) => m === msg)
+          const idx = list.findIndex((m) => m === msg || Boolean(msg.clientId && m.clientId === msg.clientId))
           if (idx < 0) return prev
           const copy = [...list]
-          copy[idx] = { ...copy[idx], dbId: stored.id, seq: stored.seq, createdAt: stored.created_at }
-          // 旧回复最后一条也要拿到 dbId，否则「重新生成」删不掉旧行
-          const nextIdx = Math.max(copy.length - 1, 0)
-          if (nextIdx !== idx) {
-            const t = copy[nextIdx]
-            copy[nextIdx] = { ...t, dbId: t.dbId ?? stored.id, seq: t.seq ?? stored.seq, createdAt: t.createdAt ?? stored.created_at }
-          }
+          copy[idx] = { ...copy[idx], dbId: stored.id, seq: stored.seq, createdAt: stored.created_at, frames: stored.frames?.length ? stored.frames : copy[idx].frames }
           return { ...prev, [id]: copy }
         })
       })
@@ -1030,12 +1003,12 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     [playingKey, speakEngine, speakVoice, stopSpeak],
   )
 
-  // 自动记忆提炼（§9.3）：一条回复收尾后调一次。后端先做规则预筛（没命中触发词
-  // 就不叫 LLM），所以这里的开销大多数时候只是一次本地判断。
+  // 兼容入口：回复收尾后整理新增原文，会调用模型；统一入口在服务端短时间合批。
   const autoExtract = useCallback(
-    async (list: ChatMessage[]) => {
+    async (list: ChatMessage[], force = false) => {
       if (!active || active.memoryDisabled) return
-      const turns = list.slice(-12).map((m) => ({
+      const turns = list.map((m) => ({
+        id: m.dbId, created_at: m.createdAt, image: m.imageOrig || m.image, frames: m.frames,
         role: m.role,
         content: m.content,
         // 群聊分段时 character_id 留空，后端靠「**名字**：」前缀辨认发言人
@@ -1045,134 +1018,177 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         const route = resolveRoute(config)
         const res = await extractMemories({
           messages: turns,
+          force,
+          persona_id: activePersonaId,
+          session_id: sessionKey,
           character_ids: active.characterIds,
           session_kind: active.kind === 'single' ? 'single' : 'group',
           // 后台提炼跟随当前通道，但不带越狱标志（工具调用，不需要越狱）
-          base_url: route.chat.baseUrl,
-          api_key: route.chat.apiKey,
-          model: route.chat.model,
+          base_url: route.vision.baseUrl,
+          api_key: route.vision.apiKey,
+          model: localStorage.getItem('xtr.memoryModel') || route.vision.model,
         })
-        const saved = res.saved ?? []
-        if (saved.length) {
-          const names = saved
-            .map((s) => (s.bucket === 'home' ? '家记忆' : visibleCharacters.find((c) => c.id === s.char_id)?.name ?? '个人'))
-            .join('、')
-          setAutoMsg(`🧠 自动记住了 ${saved.length} 条（${names}）`)
+        if (res.status === 'blocked' || res.status === 'unconfigured') {
+          setAutoMsg(res.detail || '原文已保存，记忆整理等待处理')
+          return
+        }
+        const saved = res.candidates ?? []
+        if (saved.length || res.fact_candidates?.length) {
+          setAutoMsg(`🧠 今日事件已自动整理，${saved.length} 条记忆等待在 03 审核`)
           setTimeout(() => setAutoMsg(''), 6000)
         }
       } catch (e) {
         // 提炼失败不打扰聊天，只在控制台留痕
         console.warn('自动记忆提炼失败：', e)
+        if (force) throw e
       }
     },
-    [active, visibleCharacters, config],
+    [active, visibleCharacters, config, activePersonaId, sessionKey],
   )
 
-  const lastAssistantText = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'assistant' && messages[i].content.trim()) return messages[i].content
-    }
-    return ''
-  }, [messages])
-
   // 流式请求一段回复（§15.5）：sendText / onPickImage / onPickVideo / 重新生成 / 编辑重发 共用。
+  const pendingTurnIds = useRef<Record<string,string>>({})
   // 调用方负责**先把 history 准备好**（用户消息已在数组里），这里只负责：
   // 占位 → 打字机 → 收尾 → 落库（回填 dbId）→ 自动朗读 / 自动记忆。
   const streamAssistant = useCallback(
     async (sid: string, next: ChatMessage[], endpoint: '/api/chat' | '/api/images/chat' | '/api/media/video/chat', body: Record<string, unknown>, isGroup: boolean) => {
+      const controller = new AbortController()
+      streamController.current = controller
+      setToolEvents(prev => ({ ...prev, [sid]: [] }))
       setStreaming(true)
+      setWaitNotice('')
       push(sid, { role: 'assistant', content: '' })
       const acc = { value: '' }
       const q = createSmartStream((t) => {
         acc.value += t
         appendAssistantToken(sid)(t)
       })
+      const lastUser = [...next].reverse().find(m => m.role === 'user')
+      const savedUserId = lastUser?.dbId || (lastUser && savedUserRecords.current.get(lastUser)?.id)
+      const unified = !active?.memoryDisabled && Boolean(savedUserId)
+      const turnKey = `${sid}:${savedUserId}`
+      if (unified && !pendingTurnIds.current[turnKey]) pendingTurnIds.current[turnKey] = `web-${crypto.randomUUID()}`
+      const requestBody = unified ? {
+        feature_id: 'core', character_id: active?.characterIds[0], mode: isGroup ? 'group' : 'single',
+        session_id: sid, persona_id: body.persona_id, text: lastUser!.content,
+        saved_user_id: savedUserId, request_id: pendingTurnIds.current[turnKey],
+        base_url: body.base_url, api_key: body.api_key, model: body.model,
+        uncensored: body.uncensored, max_tokens: body.max_tokens, auto_memory: autoMemory,
+        card_display_mode: tavernMode ? cardDisplayMode : undefined,
+        memory_model: localStorage.getItem('xtr.memoryModel') || '',
+        history_end_id: body.history_end_id || '',
+      } : { ...body, card_display_mode: tavernMode ? cardDisplayMode : undefined }
       await streamSSE(
-        endpoint,
-        body,
+        unified ? '/api/chat/session/web-stream' : endpoint,
+        requestBody,
         (t) => q.push(t),
-        () => {
+        (_reason, stored) => {
+          delete pendingTurnIds.current[turnKey]
           q.finish()
           setStreaming(false)
           const plain = finalizeAssistant(sid, acc.value, isGroup)
-          persistLast(sid, plain)
+          const persisted = stored ? Promise.resolve(stored) : persistLast(sid, plain)
+          if (stored) setHistory(prev => ({ ...prev, [sid]: [...(prev[sid] || []).slice(0, -1), toChatMessage(stored)] }))
           if (autoSpeak && plain.content.trim()) speakText(plain.content, `${sid}:auto`)
-          if (autoMemory) void autoExtract([...next, plain])
+          if (autoMemory && !unified) void persisted?.then(() => autoExtract([...next, plain]))
         },
         (msg) => {
-          q.dispose()
+          q.finish()
+          setToolEvents(prev => ({ ...prev, [sid]: prev[sid]?.length ? [...prev[sid], { type: 'agent_end', status: controller.signal.aborted ? 'cancelled' : 'failed' }] : [] }))
           appendAssistantError(sid)(msg)
           setErrorText(msg)
           setStreaming(false)
         },
+        (context) => setSentContexts((prev) => ({ ...prev, [sid]: context })),
+        { signal: controller.signal, onEvent: (type, payload) => {
+          if (type === 'status' && typeof payload.text === 'string') setWaitNotice(payload.text)
+          if (type === 'token') setWaitNotice('正在接收回复…')
+          if (type.startsWith('tool_') || type.startsWith('agent_')) {
+            setToolEvents(prev => ({ ...prev, [sid]: [...(prev[sid] || []), { ...payload, type } as AgentEvent].slice(-64) }))
+          }
+        } },
       )
+      if (streamController.current === controller) streamController.current = null
     },
-    [push, appendAssistantToken, appendAssistantError, finalizeAssistant, persistLast, autoSpeak, autoMemory, autoExtract, speakText],
+    [push, appendAssistantToken, appendAssistantError, finalizeAssistant, persistLast, autoSpeak, autoMemory, autoExtract, speakText, active, tavernMode, cardDisplayMode],
   )
 
-  const [pendingAtt, setPendingAtt] = useState<{ file: File; url: string } | null>(null)
-  /** 暂存附件预览的 objectURL —— 换图 / 发送 / 关页面时释放，别漏内存。 */
-  const attUrlRef = useRef<string>('')
-
+  type PendingMedia = { file: File; url: string; frames: string[]; analyzing: boolean; error?: string }
+  const [pendingMedia, setPendingMedia] = useState<PendingMedia[]>([])
+  const mediaRef = useRef<PendingMedia[]>([])
+  const sendingMedia = useRef(false)
+  const updateMedia = useCallback((items: PendingMedia[]) => {
+    mediaRef.current = items
+    setPendingMedia(items)
+  }, [])
   const clearAtt = useCallback(() => {
-    if (attUrlRef.current) URL.revokeObjectURL(attUrlRef.current)
-    attUrlRef.current = ''
-    setPendingAtt(null)
-  }, [])
-
-  /** 选图（🖼 按钮 / Ctrl+V）：不再「选完即发」，先挂在输入框上方待确认（§19.17）。 */
-  const attachImage = useCallback((f: File) => {
-    if (!f.type.startsWith('image/')) return
-    if (attUrlRef.current) URL.revokeObjectURL(attUrlRef.current)
-    const url = URL.createObjectURL(f)
-    attUrlRef.current = url
-    setPendingAtt({ file: f, url })
-  }, [])
-
-  // ---- 视频（§19.17 +《项目要求》媒体-视频）：Ctrl+V / 🎞 先传后端抽帧，帧预览挂输入框上方 ----
-  // 抽帧失败 → 报错（用户可换视频）；成功 → 预览可选（「预览」/「直接发送」），帧不落库。
-  const [pendingVideo, setPendingVideo] = useState<{
-    file: File
-    taskId: string
-    frames: string[]
-    analyzing: boolean
-  } | null>(null)
-
-  /** 选视频（🎞 按钮 / Ctrl+V）：传后端抽帧（≤8 张，token 安全）。抽帧失败 → 报错，不挂预览。 */
-  const attachVideo = useCallback(
-    async (f: File) => {
-      if (!f.type.startsWith('video/')) return
-      setPendingVideo({ file: f, taskId: '', frames: [], analyzing: true })
-      setErrorText('')
+    mediaRef.current.forEach(item => URL.revokeObjectURL(item.url))
+    updateMedia([])
+  }, [updateMedia])
+  const attachFiles = useCallback(async (files: File[]) => {
+    if (active?.sandbox) { setNotice('沙盒生活目前接收文字；图片与语音请继续使用普通聊天。'); return }
+    if (sendingMedia.current || streaming) return
+    const valid = files.filter(f => /^(image|video)\//.test(f.type))
+    const current = mediaRef.current
+    if ([...current.map(x => x.file), ...valid].filter(f => f.type.startsWith('video/')).length > 1) {
+      setErrorText('每次最多上传 1 个视频，视频仅在本地抽帧后发送')
+      return
+    }
+    if (current.filter(x => x.file.type.startsWith('image/')).length + valid.filter(f => f.type.startsWith('image/')).length > 10 || current.length + valid.length > 10) {
+      setErrorText('每次最多选择 10 个附件，其中图片最多 10 张')
+      return
+    }
+    if (valid.some(f => f.size > (f.type.startsWith('video/') ? 50 : 20) * 1024 * 1024)) {
+      setErrorText('图片不能超过 20 MB，视频不能超过 50 MB（15 秒）')
+      return
+    }
+    const added = valid.map(file => ({ file, url: URL.createObjectURL(file), frames: [] as string[], analyzing: file.type.startsWith('video/') }))
+    updateMedia([...current, ...added])
+    setErrorText('')
+    for (const item of added) {
+      if (!item.analyzing) continue
       try {
-        const r = await analyzeVideo(f)
-        if (r.frames.length === 0) throw new Error('没抽出任何帧，请换个视频试试')
-        setPendingVideo({ file: f, taskId: r.task_id, frames: r.frames, analyzing: false })
+        const result = await analyzeVideo(item.file)
+        if (!result.frames.length) throw new Error('没有抽出视频帧')
+        if (mediaRef.current.includes(item)) updateMedia(mediaRef.current.map(x => x === item ? { ...x, frames: result.frames, analyzing: false } : x))
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
-        setPendingVideo(null)
-        setErrorText(`抽帧失败：${msg}`)
+        if (mediaRef.current.includes(item)) updateMedia(mediaRef.current.map(x => x === item ? { ...x, analyzing: false, error: String(e) } : x))
       }
-    },
-    [],
-  )
-
-  // 切会话就丢掉没发出去的附件预览
-  useEffect(() => () => clearAtt(), [activeId, clearAtt])
-  // 切会话也丢掉没发出去的视频帧
-  useEffect(() => () => setPendingVideo(null), [activeId])
+    }
+  }, [updateMedia, streaming])
+  useEffect(() => () => clearAtt(), [sessionKey, clearAtt])
 
   const sendText = useCallback(async () => {
     if (active?.readOnly) return
     const text = input.trim()
     if (!text || streaming || !active) return
+    if (active.sandbox) {
+      setStreaming(true); setErrorText('')
+      const fingerprint = JSON.stringify([activePersonaId, active.characterIds[0], text])
+      if (lifeAttempt.current?.fingerprint !== fingerprint) lifeAttempt.current = { fingerprint, id: crypto.randomUUID() }
+      try {
+        const response = await fetch('/api/exploration-projects/conversations/message', { method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Exploration-Dashboard': '1' },
+          body: JSON.stringify({ persona: activePersonaId, speaker: active.characterIds[0], text, request_id: lifeAttempt.current.id }) })
+        const value = await response.json()
+        if (!response.ok) throw new Error(value.detail || '消息未能送到沙盒')
+        lifeAttempt.current = null; setInput(''); setNotice(value.message)
+        const page = await loadMessages(sessionKey, undefined, 200)
+        setHistory(prev => ({ ...prev, [sessionKey]: mergeStoredMessages(prev[sessionKey] || [], page.items.map(toChatMessage)) }))
+      } catch (e) { setErrorText(e instanceof Error ? e.message : String(e)) }
+      finally { setStreaming(false) }
+      return
+    }
+    setStreaming(true)
     const id = sessionKey
     const userMsg: ChatMessage = { role: 'user', content: text }
     const next: ChatMessage[] = [...messages, userMsg]
     setHistory((prev) => ({ ...prev, [id]: next }))
     setMsgError((prev) => ({ ...prev, [id]: '' }))
     setInput('')
-    void saveMessage(id, userMsg).then((s) => stampDb(id, userMsg, s))
+    const saved = await saveTracked(id, userMsg)
+    if (!saved) { setErrorText('消息保存失败，请重试'); setStreaming(false); return }
+    stampDb(id, userMsg, saved)
 
     const r = resolveRoute(config)
     await streamAssistant(
@@ -1183,9 +1199,9 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         messages: buildOutbound(next),
         character_ids: active.characterIds,
         persona_id: activePersonaId,
-        base_url: r.chat.baseUrl,
-        api_key: r.chat.apiKey,
-        model: r.chat.model,
+        base_url: buildOutbound(next).some((m) => m.images.length) ? r.vision.baseUrl : r.chat.baseUrl,
+        api_key: buildOutbound(next).some((m) => m.images.length) ? r.vision.apiKey : r.chat.apiKey,
+        model: buildOutbound(next).some((m) => m.images.length) ? r.vision.model : r.chat.model,
         max_tokens: config.maxTokens || null,
         uncensored: config.channel === 'uncensored',
       },
@@ -1193,104 +1209,52 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     )
   }, [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant, buildOutbound])
 
-  const onPickImage = useCallback(
-    async (file: File) => {
-      if (active?.readOnly) return
-      if (streaming || !active) return
+  const sendMedia = useCallback(async () => {
+    if (active?.sandbox || active?.readOnly || streaming || !active || sendingMedia.current) return
+    const pending = mediaRef.current
+    if (!pending.length || pending.some(x => x.analyzing || x.error)) return
+    sendingMedia.current = true
+    setStreaming(true)
+    setErrorText('')
+    try {
       const id = sessionKey
-      const text = input.trim()
-      const dataUrl = await fileToDataUrl(file)
-      const base64 = dataUrl.split(',')[1]
-      const mime = file.type || 'image/png'
-      // 看图提示词可在「⚙ 模型设置」里改（§16.11）；留空回默认
-      const prompt = config.visionPrompt?.trim() || DEFAULT_VISION_PROMPT
-      // 配文（§19.17）：用户在输入框里打的字随图一起发；没打字就用看图提示词。
-      // 纯文字指令交回助手，让模型自己看图 —— 免得「看这张图」被当成正文念出来。
-      const caption = text || prompt
-      // 先落盘拿引用（§15.1），失败才降级用 dataURL 直接显示
-      const att = await uploadAttachment(id, dataUrl, 'upload')
-      const userMsg: ChatMessage = {
-        role: 'user',
-        content: caption,
-        image: att?.thumb ?? dataUrl,
-        imageOrig: att?.orig ?? dataUrl,
-        imageSource: 'upload',
+      const caption = input.trim() || config.visionPrompt?.trim() || DEFAULT_VISION_PROMPT
+      const batch: ChatMessage[] = []
+      const videoCount = pending.filter(x => x.frames.length).length
+      const framesPerVideo = videoCount ? Math.max(1, Math.floor((10 - pending.length + videoCount) / videoCount)) : 0
+      for (const item of pending) {
+        const uploaded = await uploadAttachmentsBatch(id, [item.file])
+        if (!uploaded.saved.length) throw new Error(uploaded.errors[0]?.error || '附件上传失败')
+        const att = uploaded.saved[0]
+        const frames = item.frames.filter((_, i) => i === 0 || Math.floor(i * framesPerVideo / item.frames.length) !== Math.floor((i - 1) * framesPerVideo / item.frames.length)).slice(0, framesPerVideo)
+        const message: ChatMessage = {
+          role: 'user', content: batch.length ? `附件：${item.file.name}` : caption,
+          image: frames[0] || att.thumb, imageOrig: att.orig,
+          imageSource: frames.length ? 'video' : 'upload', frames,
+        }
+        const saved = await saveTracked(id, message)
+        if (!saved) throw new Error('附件消息保存失败')
+        batch.push(toChatMessage(saved))
+        setHistory(prev => ({ ...prev, [id]: [...messages, ...batch] }))
+        URL.revokeObjectURL(item.url)
+        updateMedia(mediaRef.current.filter(x => x !== item))
       }
-      const next = [...messages, userMsg]
-      setHistory((prev) => ({ ...prev, [id]: next }))
-      setMsgError((prev) => ({ ...prev, [id]: '' }))
       setInput('')
-      clearAtt()
-      void saveMessage(id, userMsg).then((s) => stampDb(id, userMsg, s))
-
+      const next = [...messages, ...batch]
+      const outbound = [...buildOutbound(messages), ...batch.map(m => ({ role: m.role, content: outboundText(m), images: m.frames?.length ? m.frames : [m.imageOrig!] }))]
       const r = resolveRoute(config)
-      await streamAssistant(
-        id,
-        next,
-        '/api/images/chat',
-        {
-          image_base64: base64,
-          mime,
-          prompt: caption,
-          character_ids: active.characterIds,
-          persona_id: activePersonaId,
-          base_url: r.vision.baseUrl,
-          api_key: r.vision.apiKey,
-          model: r.vision.model,
-          uncensored: config.channel === 'uncensored',
-        },
-        active.kind === 'group',
-      )
-    },
-    [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant, clearAtt],
-  )
-
-  /** 发视频（帧已抽好）：抽帧那轮跟图片一样走视觉通道，消息里存第一帧 + 内存帧列表。 */
-  const onPickVideo = useCallback(async () => {
-    if (active?.readOnly) return
-    if (streaming || !active) return
-    const pv = pendingVideo
-    if (!pv || pv.analyzing || pv.frames.length === 0) return
-    const id = sessionKey
-    const text = input.trim()
-    const prompt = config.visionPrompt?.trim() || DEFAULT_VISION_PROMPT
-    const caption = text || prompt
-    const first = pv.frames[0]
-    const userMsg: ChatMessage = {
-      role: 'user',
-      content: caption,
-      image: first,
-      imageOrig: first,
-      imageSource: 'video',
-      frames: pv.frames,
+      await streamAssistant(id, next, '/api/chat', {
+        messages: outbound, character_ids: active.characterIds, persona_id: activePersonaId,
+        base_url: r.vision.baseUrl, api_key: r.vision.apiKey, model: r.vision.model,
+        max_tokens: config.maxTokens || null, uncensored: config.channel === 'uncensored',
+      }, active.kind === 'group')
+    } catch (e) {
+      setErrorText(e instanceof Error ? e.message : String(e))
+    } finally {
+      sendingMedia.current = false
+      setStreaming(false)
     }
-    const next = [...messages, userMsg]
-    setHistory((prev) => ({ ...prev, [id]: next }))
-    setMsgError((prev) => ({ ...prev, [id]: '' }))
-    setInput('')
-    setPendingVideo(null) // 发送即弃帧：消息体已持有 frames 副本，预览条可清
-    void saveMessage(id, userMsg).then((s) => stampDb(id, userMsg, s))
-
-    const r = resolveRoute(config)
-    await streamAssistant(
-      id,
-      next,
-      '/api/media/video/chat',
-      {
-        task_id: pv.taskId,
-        frames: pv.frames,
-        prompt: caption,
-        character_ids: active.characterIds,
-        persona_id: activePersonaId,
-        base_url: r.vision.baseUrl,
-        api_key: r.vision.apiKey,
-        model: r.vision.model,
-        max_tokens: config.maxTokens || null,
-        uncensored: config.channel === 'uncensored',
-      },
-      active.kind === 'group',
-    )
-  }, [input, messages, streaming, active, sessionKey, activePersonaId, config, stampDb, streamAssistant, pendingVideo])
+  }, [active, streaming, sessionKey, input, config, messages, stampDb, updateMedia, buildOutbound, streamAssistant, activePersonaId])
 
   // 「记住这条」（§9.3 手动记忆）：桶由会话类型决定 —— 私聊进 TA 的个人记忆，群聊进家记忆。
   const rememberThis = useCallback(
@@ -1300,11 +1264,13 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       if (!text || !active) return
       setRememberMsg('')
       try {
-        await rememberMemory({
-          text,
-          session_kind: active.kind === 'single' ? 'single' : 'group',
+        await proposeMemory({
+          text, persona_id: activePersonaId, session_id: sessionKey,
+          scope: active.kind === 'single' ? 'personal' : 'shared',
           character_ids: active.characterIds,
+          category: 'experience', messages: [{ role: 'assistant', content: text }],
         })
+        setRememberMsg('已补充到 03 待审核，批准后才允许注入')
         setRemembered((prev) => ({ ...prev, [key]: true }))
       } catch (e) {
         // 409 = 已经记过同样的内容；后端去重是按「同一桶 + 同一内容」，这里也照此标灰
@@ -1316,7 +1282,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         }
       }
     },
-    [active],
+    [active, activePersonaId, sessionKey],
   )
 
   // 「⭐ 存入画廊」（§9.4）：把图片收进画廊；描述留空，等用户或 vision 模型补，
@@ -1409,7 +1375,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 看图那一轮不支持：base64 没落库，重发不了（§15.5）。
   const regenerate = useCallback(
     async (i: number) => {
-      if (active?.readOnly) return
+      if (active?.sandbox || active?.readOnly) return
       if (!active || streaming || deleting) return
       const id = sessionKey
       const target = messages[i]
@@ -1438,11 +1404,12 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           '/api/chat',
           {
             messages: buildOutbound(truncated),
+            history_end_id: truncated[truncated.length - 1]?.dbId,
             character_ids: active.characterIds,
             persona_id: activePersonaId,
-            base_url: r.chat.baseUrl,
-            api_key: r.chat.apiKey,
-            model: r.chat.model,
+            base_url: buildOutbound(truncated).some((m) => m.images.length) ? r.vision.baseUrl : r.chat.baseUrl,
+            api_key: buildOutbound(truncated).some((m) => m.images.length) ? r.vision.apiKey : r.chat.apiKey,
+            model: buildOutbound(truncated).some((m) => m.images.length) ? r.vision.model : r.chat.model,
             max_tokens: config.maxTokens || null,
             uncensored: config.channel === 'uncensored',
           },
@@ -1458,7 +1425,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
   // 编辑并重发（§15.5，Gemini 式）：改这条 + 删掉它后面所有，再重新生成。
   const editResend = useCallback(async () => {
-    if (active?.readOnly) return
+    if (active?.sandbox || active?.readOnly) return
     if (!active || streaming || deleting || editingSeq === null) return
     const text = editDraft.trim()
     if (!text) return
@@ -1480,7 +1447,9 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       setEditingSeq(null)
       setEditDraft('')
       clearSessionMarks(id)
-      void saveMessage(id, userMsg).then((s) => stampDb(id, userMsg, s))
+      const saved = await saveTracked(id, userMsg)
+      if (!saved) { setErrorText('消息保存失败，请重试'); setDeleting(false); return }
+      stampDb(id, userMsg, saved)
       setDeleting(false)
       const r = resolveRoute(config)
       await streamAssistant(
@@ -1491,9 +1460,9 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           messages: buildOutbound(next),
           character_ids: active.characterIds,
           persona_id: activePersonaId,
-          base_url: r.chat.baseUrl,
-          api_key: r.chat.apiKey,
-          model: r.chat.model,
+          base_url: buildOutbound(next).some((m) => m.images.length) ? r.vision.baseUrl : r.chat.baseUrl,
+          api_key: buildOutbound(next).some((m) => m.images.length) ? r.vision.apiKey : r.chat.apiKey,
+          model: buildOutbound(next).some((m) => m.images.length) ? r.vision.model : r.chat.model,
           max_tokens: config.maxTokens || null,
           uncensored: config.channel === 'uncensored',
         },
@@ -1528,7 +1497,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   }, [])
   // 手机端底部聊天栏（§19.25）：跟 QQ 一样，输入框下面再挂一行小图标。
   // trio = 右半边那三颗；recording = 是否已经点了麦克风、露出「按住说话」。
-  const [micPanel, setMicPanel] = useState<'none' | 'trio' | 'recording'>('none')
+
 
   // 导入角色卡（酒馆）：选出文件后**不马上建角色** —— 先开浮层读卡、立绘落盘、抽词条，
   // 用户在预览里确认（改不改名字都行）才落库。建完刷新角色列表并跳到她的私聊。
@@ -1567,6 +1536,12 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 非当前 Tab 的栏用 max-md:hidden 藏起来，桌面端不受影响。
   const tabCls = (tab: MobileTab) => (mobileTab === tab ? '' : 'max-md:hidden')
 
+  const openVoiceCall = () => {
+    if (streaming) { setNotice('请等当前回复结束再拨打。'); return }
+    if (!active || active.sandbox || active.readOnly || active.kind !== 'single') { setNotice('请先打开一位角色的私聊，再开始通话。'); return }
+    stopSpeak(); asr.stop(); setVoiceCallOpen(true)
+  }
+
   return (
     // h-full 而不是 h-[100dvh]（§19.23）：ChatView 是 App 内容区里唯一需要「自带滚动」的视图，
     // 自己撑满这一层就好。写成 dvh 等于把顶栏那一截又算进来，整栏比可用高度高出 ~54px，
@@ -1588,6 +1563,8 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           onImport={onImport}
           onOpenNest={onOpenNest}
           onDeleteImported={onDeleteImportedCard ? onDeleteImported : undefined}
+          cardDisplayMode={cardDisplayMode}
+          onCardDisplayModeChange={changeCardDisplayMode}
         />
         {/* 拖动把手：窄窄一条贴在右缘，鼠标划过去放大到 4px 高亮。手机端（<md）藏掉 */}
         <div
@@ -1601,11 +1578,17 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
       {/* 中：对话框。min-h-0（§19.21）：列式 flex 子项默认 min-height:auto，
           里面的消息列表是 overflow-y-auto，缺了它会把这一节撑破外层、连输入栏一起滚出屏幕。 */}
-      <section className={`flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--bg-soft)] ${tabCls('chat')}`}>
+      <section className={`flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--bg-soft)] visual-chat-reading ${tabCls('chat')}`}>
         {/* 顶部：形态切换 + 右侧功能排（§28）。
             以前这里还有一排「点进角色介绍」的缩略头像 —— 群聊里几位并排、私聊里一位，
             占掉半行宽度。其实消息区里每位的头像/署名都能点进介绍，功能重复，去掉。 */}
-        <header className="hidden items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2 md:flex">
+        <header data-header={headerChoice} className="visual-chat-header hidden items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2 md:flex">
+          {active.characterIds.length === 0 && (
+            <span className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-2)] py-1 pl-1 pr-3 text-[12px] text-[var(--text-2)]">
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-[13px]"><UiIcon name="card"/></span>
+              {active.name}
+            </span>
+          )}
           {/* 形态切换（§17）：私聊时可直接在聊天头部换她的形态，切换即写回后端、全局生效 */}
           {active.characterIds.length === 1 &&
             (() => {
@@ -1630,50 +1613,33 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               )
             })()}
           {/* 群聊阵容（§25）：只改默认群聊的成员，存后端设置，刷新保持 */}
-          <span className="ml-auto hidden items-center gap-1.5 md:flex">
-          {active.kind === 'group' && (
-            <button
-              onClick={() => setRosterOpen(true)}
-              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-              title="改群聊成员：谁在「小糖人的家」里（§25）"
-            >
-              👥 成员 {active.characterIds.length}
-            </button>
-          )}
-          {/* 看提示词（§24）：把此刻组装出的 system / messages 摊开，零 token 消耗 */}
-            <button
-              onClick={() => setPromptOpen(true)}
-              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-              title="看提示词：此刻会发给模型的 system / 完整消息数组（不消耗 token）"
-            >
-              🔍 提示词
-            </button>
-            {/* 打电话（§18）：占位。实时语音通话还没做，点了只说明状态，不做假功能 */}
-            <button
-              onClick={() => setNotice('📞 实时通话规划中：先做「按住说话 → 回复自动朗读」的半自动版，方案见《项目要求》§18。')}
-              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-              title="规划中：和小糖人实时通话"
-            >
-              📞 通话
-            </button>
+          <span className="visual-chat-title">{active.name}</span>
+          {active.kind === 'single' && !active.sandbox && !active.readOnly && <button type="button" aria-label="语音通话" title="和她语音通话" disabled={streaming} onClick={openVoiceCall} className="shrink-0 rounded-full p-2 text-[var(--pink-deep)] disabled:opacity-40"><UiIcon name="phone" size={20}/></button>}
+          <div className="chat-primary-actions" aria-label="常用聊天功能">
+            <button type="button" title={active.kind==='group' ? '改群聊成员' : '查看当前成员'} aria-label="成员" onClick={() => active.kind==='group' ? setRosterOpen(true) : setNotice('当前成员：'+activeCharacters.map(c=>c.name).join('、'))}><UiIcon name="characters" size={17}/><span>成员</span>{active.kind==='group'&&<small>{active.characterIds.length}</small>}</button>
+            <button type="button" aria-label="模型设置" disabled={active.sandbox} title={active.sandbox ? "请到小窝设置中的自主活动与沙盒配置独立钱包" : undefined} aria-expanded={showSettings} onClick={() => setShowSettings(v=>!v)}><UiIcon name="settings" size={17}/><span>模型设置</span></button>
+            <button type="button" aria-label="提示词" disabled={active.sandbox} title="查看当前提示词，不消耗 token" onClick={() => setPromptOpen(true)}><UiIcon name="search" size={17}/><span>提示词</span></button>
+            <button type="button" aria-label="无审查" disabled={active.sandbox} title={config.channel==='uncensored'?'无审查通道已启用；点击切回常规':'点击切换到无审查通道'} aria-pressed={config.channel==='uncensored'} onClick={() => saveConfig({...config,channel:config.channel==='uncensored'?'normal':'uncensored'})}><UiIcon name={config.channel==='uncensored'?'unlock':'lock'} size={17}/><span>无审查</span></button>
+          </div>
+          <details ref={chatToolsRef} className="visual-chat-tools" data-tools={toolsChoice}><summary aria-label="工具与设置"><UiIcon name="tools" size={17}/><span>{toolsChoice==='t2'?'更多':'工具与设置'}</span><i aria-hidden="true">{toolsChoice==='t3'?'···':'⌄'}</i></summary><div className="visual-tools-content">
             <button
               onClick={() => setAutoMemory((v) => !v)}
-              disabled={active?.memoryDisabled}
+              disabled={active?.sandbox || active?.memoryDisabled}
               className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
                 autoMemory
                   ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
                   : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-3)]'
               }`}
-              title="自动记忆：聊到「记得/以后/约定」这类长期信息时自动提炼进记忆"
+              title="自动整理：按天整理事件到 03 待审核，原文与附件始终全量保存在本地"
             >
-              {active?.memoryDisabled ? '🪄 测试会话不进记忆' : autoMemory ? '🪄 自动记忆' : '🪄 自动记忆 关'}
+              {active?.memoryDisabled ? '🪄 测试会话不进记忆' : autoMemory ? '🪄 自动整理今日事件' : '🪄 自动整理 关'}
             </button>
             <button
               onClick={() => setGalleryOpen(true)}
               className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
               title="画廊：你主动收藏的重要图片（§9.4）"
             >
-              🖼 画廊
+              <UiIcon name="gallery"/> 画廊
             </button>
             <button
               onClick={() => setSelectMode((v) => !v)}
@@ -1685,47 +1651,17 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               }`}
               title="多选删除：勾选要删的消息（你自己的和小糖人的都行），真删（连带图片文件 / 画廊收藏 / 照片记忆）"
             >
-              🗑 删除
+              <UiIcon name="delete"/> 删除
             </button>
             <button
-              onClick={onOpenMemoryPicks}
+              onClick={() => setMemoryOpen(true)}
               className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-              title="记忆管理：「我的档案 → 记忆」，挑哪些长期记忆带进对话"
+              title="短期记忆：核对当前文字、图片上下文及实际发送记录"
             >
-              🧠 记忆
+              <UiIcon name="memory"/> 记忆
             </button>
-            <button
-              onClick={() => setGenOpen(true)}
-              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-              title="生成照片"
-            >
-              🎨 生成
-            </button>
-            <button
-              onClick={() => setShowSettings((v) => !v)}
-              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-            >
-              ⚙ 模型设置
-            </button>
-            {/* 通道切换（§7）：常规 = 商业 API；无审查 = 另配的无审查中转/本地模型 */}
-            <span className="flex items-center gap-1 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] p-0.5">
-              {(['normal', 'uncensored'] as Channel[]).map((ch) => (
-                <button
-                  key={ch}
-                  onClick={() => saveConfig({ ...config, channel: ch })}
-                  title={ch === 'normal' ? '常规通道（商业 API）' : '无审查通道（中转 / 本地无审查模型）'}
-                  className={
-                    'rounded-md px-2 py-0.5 text-[12px] ' +
-                    (config.channel === ch
-                      ? 'bg-[var(--pink)] text-white'
-                      : 'text-[var(--text-2)] hover:bg-[var(--surface)]')
-                  }
-                >
-                  {ch === 'normal' ? '常规' : '🔓 无审查'}
-                </button>
-              ))}
-            </span>
-          </span>
+
+          </div></details>
         </header>
 
         {showSettings && (
@@ -1843,7 +1779,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                     ↺ 恢复默认
                   </button>
                   <span className="text-[11px] text-[var(--text-3)]">
-                    留空 = 用默认那句。粘图（Ctrl+V）与 🖼 按钮都走这里。
+                    留空 = 用默认那句。粘图（Ctrl+V）与 <UiIcon name="gallery"/> 按钮都走这里。
                   </span>
                 </div>
               </div>
@@ -1852,7 +1788,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
             {/* 无审查通道（§7）：与常规通道各自独立；留空字段自动沿用常规通道 */}
             <div className="mt-3 border-t border-[var(--border)] pt-3">
               <div className="mb-1.5 flex items-center gap-2">
-                <span className="eyebrow">🔓 无审查通道</span>
+                <span className="eyebrow"><UiIcon name="unlock"/> 无审查通道</span>
                 <span className="text-[11px] text-[var(--text-3)]">留空 = 沿用上面常规通道的值</span>
               </div>
               <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -1900,7 +1836,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                   />
                 </Field>
                 <div className="text-[11px] leading-snug text-[var(--text-3)] md:col-span-2">
-                  顶部「常规 / 🔓 无审查」切换当前生效的通道。无审查通道可另配第三方无审查中转或本地模型；
+                  顶部「常规 / <UiIcon name="unlock"/> 无审查」切换当前生效的通道。无审查通道可另配第三方无审查中转或本地模型；
                   越狱提示词在右栏「越狱规则」里，无审查通道会额外追加专属预设。
                 </div>
               </div>
@@ -1999,7 +1935,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               <div className="rounded-full bg-[var(--pink-soft)] px-3 py-1 text-[var(--pink-deep)]">
                 {active.kind === 'group' ? '🏠' : active.characterIds[0] ? visibleCharacters.find((c) => c.id === active.characterIds[0])?.emoji : '🎴'}
               </div>
-              和 {active.kind === 'group' ? '大家' : active.name} 说点什么吧（先点 ⚙ 填好模型）
+              和 {active.kind === 'group' ? '大家' : active.name} 说点什么吧（先点 <UiIcon name="settings"/> 填好模型）
             </div>
           )}
           {messages.map((m, i) => {
@@ -2031,7 +1967,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                       className="text-[11px] text-[var(--text-3)] transition hover:text-[var(--pink-deep)] disabled:cursor-not-allowed disabled:opacity-40"
                       title="按当前在场的阵容重新生成一次"
                     >
-                      🔁 重新生成
+                      <UiIcon name="refresh"/> 重新生成
                     </button>
                   </div>
                 </div>
@@ -2177,7 +2113,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                             )
                           })()}
                         <div className="max-w-[85%] rounded-2xl bg-[var(--surface)] px-4 py-2 text-[15px] text-[var(--text)] sm:max-w-[72%]">
-                          <div className="whitespace-pre-wrap">{s.text}</div>
+                          <div className="whitespace-pre-wrap"><KnowledgeText text={s.text} /></div>
                           {m.role === 'assistant' && s.text.trim() && (
                             <div className="mt-1 flex items-center gap-2">
                               <button
@@ -2236,7 +2172,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                         e.preventDefault()
                         setMenu({ x: e.clientX, y: e.clientY, seq: i, dbId: m.dbId ?? '' })
                       }}
-                      className={`max-w-[85%] rounded-2xl px-4 py-2 text-[15px] sm:max-w-[72%] ${
+                      className={`${m.role === 'assistant' && tavernMode && cardDisplayMode === 'html' && activeCharacters[0]?.imported ? 'w-full' : ''} max-w-[85%] rounded-2xl px-4 py-2 text-[15px] sm:max-w-[72%] ${
                         m.role === 'user' ? 'bg-[var(--pink)] text-white' : 'bg-[var(--surface)] text-[var(--text)]'
                       }`}
                     >
@@ -2286,7 +2222,12 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                       // 群聊时上面叠一行在场者头像，一看就知道是「她们在回」。
                       <WaitingBubble cast={activeCharacters} />
                     ) : (
-                      <div className="whitespace-pre-wrap">{m.content}</div>
+                      <>
+                        {m.role === 'assistant' && activeCharacters.length === 1 && activeCharacters[0].imported
+                          ? <CardChatMessage text={m.content} character={activeCharacters[0]}
+                              mode={tavernMode ? cardDisplayMode : 'chat'} depth={messages.length - 1 - i} streaming={streaming && isLast} />
+                          : <div className="whitespace-pre-wrap"><KnowledgeText text={m.content} /></div>}
+                      </>
                     )}
                     {/* 编辑并重发（§15.5 / §19.15）：以前只能靠右键，太隐蔽 ——
                         自己的纯文字消息给一个明显的小按钮（看图轮不给，原图没落库改不了）。 */}
@@ -2297,7 +2238,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                             setEditingSeq(i)
                             setEditDraft(m.content)
                           }}
-                          disabled={streaming || deleting || active.readOnly}
+                          disabled={streaming || deleting || active.sandbox || active.readOnly}
                           className="text-[11px] text-white/75 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                           title={streaming ? '生成中，先等这一轮结束' : '改这句话，它之后的对话会被删掉并重新生成'}
                         >
@@ -2324,11 +2265,11 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                             看图轮没有原图 base64，不给入口。 */}
                         <button
                           onClick={() => void regenerate(i)}
-                          disabled={streaming || deleting || isImageTurn(i) || active.readOnly}
+                          disabled={streaming || deleting || isImageTurn(i) || active.sandbox || active.readOnly}
                           className="text-[11px] text-[var(--text-3)] transition hover:text-[var(--pink-deep)] disabled:cursor-not-allowed disabled:opacity-40"
                           title={isImageTurn(i) ? '看图那一轮暂不支持重新生成（原图没有落库）' : '重新生成这条回复（旧的会被替换掉）'}
                         >
-                          🔁 重新生成
+                          <UiIcon name="refresh"/> 重新生成
                         </button>
                       </div>
                     )}
@@ -2349,315 +2290,69 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           <div ref={endRef} />
         </div>
 
-        {/* 推荐回复 + 输入区 */}
-        {active?.readOnly ? <footer className="border-t border-[var(--border)] px-4 py-3 text-sm text-[var(--text-2)]">Gemini 网页同步测试：请在 Gemini 中继续对话。这里每 3 秒更新，不生成回复，不写入记忆。</footer> : <footer className="border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+        {/* 收起即停用候选；后续生成请求必须由 suggestionsEnabled 控制。 */}
+        {!active?.sandbox && !active?.readOnly && !active?.memoryDisabled && <ToolEntry personaId={activePersonaId} onOpen={() => setToolCenterOpen(true)} />}
+        <ToolActivity events={toolEvents[sessionKey] || []} />
+        {streaming && <div className="tool-entry-bar" role="status"><span>{waitNotice || '正在处理本轮消息…'}</span><button type="button" onClick={() => streamController.current?.abort()}>停止本轮</button></div>}
+        {!active?.sandbox && !active?.readOnly && <section className="reply-suggestions composer-suggestions" aria-label="候选回复" data-enabled={suggestionsEnabled}>
+          <div className="composer-media" aria-label="图片和视频附件">
+            <button type="button" title="发送视频" aria-label="发送视频" disabled={streaming} onClick={() => videoRef.current?.click()}><UiIcon name="video" size={18}/></button>
+            <button type="button" title="发送图片" aria-label="发送图片" disabled={streaming} onClick={() => fileRef.current?.click()}><UiIcon name="gallery" size={18}/></button>
+          </div>
+          <div className="composer-candidates"><div className="reply-suggestion-heading"><span>{suggestionsEnabled ? '候选回复' : '候选已停用'}</span></div>{suggestionsEnabled && <div id="visual-reply-candidates" className="reply-suggestion-chips">{suggestions.map(text => <button type="button" key={text} onClick={() => setInput(text)}>{text}</button>)}</div>}</div>
+          <button className="composer-candidate-toggle" type="button" aria-expanded={suggestionsEnabled} aria-controls="visual-reply-candidates" onClick={() => {const enabled = !suggestionsEnabled;setSuggestionsEnabled(enabled);try {localStorage.setItem('xtr.visual.suggestions-enabled',String(enabled))} catch {}}}>{suggestionsEnabled ? '收起候选' : '启用候选'}</button>
+        </section>}
+
+        {active?.readOnly ? <footer className="border-t border-[var(--border)] px-4 py-3 text-sm text-[var(--text-2)]">Gemini 网页同步测试：请在 Gemini 中继续对话。这里每 3 秒更新，不生成回复，不写入记忆。</footer> : <footer className="chat-composer-footer border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3">
           {/* 待发出去的图（§19.17）：选图 / Ctrl+V 后先挂在这里，
               配文可以接着打，按发送（或回车）才真的发出去。 */}
-          {pendingAtt && (
-            <div className="mb-2 flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-2">
-              <img src={pendingAtt.url} alt="待发送的图片" className="h-16 w-16 rounded-lg object-cover" />
-              <span className="min-w-0 flex-1 truncate text-[12px] text-[var(--text-3)]">
-                {pendingAtt.file.name || '已粘贴的图片'} · 在下面写配文，点「发送」一起发出去
-              </span>
-              <button
-                onClick={clearAtt}
-                title="不发这张了"
-                className="shrink-0 rounded-lg border border-[var(--border-strong)] px-2 py-1 text-[12px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
-              >
-                ✕ 移除
-              </button>
-            </div>
-          )}
-          {/* 待发出去的视频（项目要求 媒体-视频）：选视频 / Ctrl+V 先传后端抽帧，
-              抽帧失败 → 报错；抽好的帧预览可选（预览 / 直接发送）。 */}
-          {pendingVideo && (
-            <div className="mb-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-2">
-              {pendingVideo.analyzing ? (
-                <div className="flex items-center gap-2 text-[12px] text-[var(--text-3)]">
-                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[var(--pink)] border-t-transparent" />
-                  正在抽帧（≤8 张，token 安全）…
-                </div>
-              ) : (
-                <div className="flex items-center gap-3">
-                  {/* 第一帧缩略图 */}
-                  <img
-                    src={pendingVideo.frames[0]}
-                    alt="视频首帧"
-                    className="h-16 w-16 rounded-lg object-cover"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[12px] text-[var(--text-3)]">
-                      {pendingVideo.file.name || '已粘贴的视频'} · {pendingVideo.frames.length} 帧
-                    </div>
-                    <div className="mt-1 flex gap-2">
-                      <button
-                        onClick={() => {
-                          const first = pendingVideo.frames[0]
-                          if (first) setLightbox(first)
-                        }}
-                        className="rounded-lg border border-[var(--border-strong)] px-2 py-0.5 text-[11px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
-                      >
-                        👁 预览帧
-                      </button>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setPendingVideo(null)}
-                    title="不发这个视频了"
-                    className="shrink-0 rounded-lg border border-[var(--border-strong)] px-2 py-1 text-[12px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
-                  >
-                    ✕ 移除
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-          {/* 开场白建议（§19.24）：手机屏矮，这几颗 chip + 输入框上面那行东西一叠，
-              就把真正的输入区挤没了 —— 所以只在桌面显示（手机想开口直接打字即可）。 */}
-          <div className="mb-2 hidden flex-wrap gap-2 sm:flex">
-            {suggestions.map((s) => (
-              <button
-                key={s}
-                onClick={() => setInput(s)}
-                className="rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-1 text-[12px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-          {/* 手机端底部聊天栏（§19.25）：跟 QQ 一样分成两层 —— 上面一整行只有输入框和发送，
-              输入框才能真的占满宽度（以前跟五颗按钮挤在一行，手机上窄到看不见自己打了什么）；
-              下面一行才是小图标。桌面端维持原来的一行排布，一点不动。 */}
-          <div className="md:hidden">
-            <div className="flex items-end gap-2">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                rows={2}
-                onPaste={(e) => {
-                  const vf = [...e.clipboardData.files].find((x) => x.type.startsWith('video/'))
-                  if (vf) { e.preventDefault(); void attachVideo(vf); return }
-                  const f = [...e.clipboardData.files].find((x) => x.type.startsWith('image/'))
-                  if (!f) return
-                  e.preventDefault()
-                  attachImage(f)
-                }}
-                placeholder={pendingAtt ? '给这张图配句话，发出去' : pendingVideo ? (pendingVideo.analyzing ? '正在抽帧…' : '给这个视频配句话，发出去') : '和小糖人说点什么…'}
-                className="input min-w-0 flex-1 resize-none rounded-xl px-3 py-2 text-[15px] placeholder:text-[var(--text-3)]"
-              />
-              <button
-                onClick={() => {
-                  if (pendingVideo?.analyzing) return // 还在抽帧，等一下
-                  if (pendingAtt) void onPickImage(pendingAtt.file)
-                  else if (pendingVideo) void onPickVideo()
-                  else void sendText()
-                }}
-                disabled={streaming}
-                className="btn shrink-0 rounded-xl px-5 py-2 text-sm disabled:opacity-50"
-              >
-                发送
-              </button>
-            </div>
-
-            {/* 录音中：麦克风原地变成那颗大的圆形「按住说话」（§19.25） */}
-            {micPanel === 'recording' ? (
-              <div className="mt-2 flex flex-col items-center gap-2 rounded-2xl bg-[var(--surface-2)] py-3">
-                {micAvailable ? (
-                  <>
-                    <button
-                      // 按住说话（§19.19）：按下开始听，松手停 —— 说完整句再松手，
-                      // 识别结果留在输入框里，可以接着改，按发送才发出去。
-                      onPointerDown={(e) => {
-                        e.preventDefault()
-                        ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
-                        if (!asr.listening) startAsr()
-                      }}
-                      onPointerUp={() => {
-                        if (asr.listening) asr.stop()
-                        setMicPanel('trio')
-                      }}
-                      onPointerCancel={() => {
-                        if (asr.listening) asr.stop()
-                        setMicPanel('trio')
-                      }}
-                      className={`flex h-20 w-20 touch-none select-none items-center justify-center rounded-full text-[26px] transition ${
-                        asr.listening
-                          ? 'scale-105 bg-[var(--pink-deep)] text-white shadow-[0_0_0_10px_var(--pink-soft)]'
-                          : 'bg-[var(--pink)] text-white shadow-[0_8px_20px_rgba(242,126,158,0.35)]'
-                      }`}
-                    >
-                      🎤
-                    </button>
-                    <span className="text-[12px] text-[var(--text-3)]">
-                      {asr.listening ? '正在听…松手就停' : '按住说话'}
-                    </span>
-                  </>
-                ) : (
-                  // 不安全上下文（http://192.168.x.x）下浏览器压根不给麦克风 —— 与其让用户
-                  // 按下去只换来一句报错，不如在这里直接说清楚怎么才能用（§16.17）。
-                  <span className="px-4 text-center text-[12px] leading-relaxed text-[var(--text-3)]">
-                    手机上的麦克风需要 https 才能用。
-                    <br />
-                    局域网 IP 直连会被浏览器拒绝 —— 在电脑上跑 start-tunnel.bat，
-                    <br />
-                    用打印出来的 https 网址打开就能按住说话了。
-                  </span>
-                )}
-                <button
-                  onClick={() => setMicPanel('trio')}
-                  disabled={asr.listening}
-                  className="text-[12px] text-[var(--text-3)] disabled:opacity-40"
-                >
-                  收起
-                </button>
-              </div>
-            ) : (
-              <div className="mt-2 flex items-center justify-around">
-                {(
-                  [
-                    ['mic', '🎤', '按住说话'],
-                    ['image', '🖼', '发图片'],
-                    ['video', '🎞', '发视频'],
-                    ['sticker', '✎', '表情包'],
-                    ['plus', '＋', '更多'],
-                  ] as const
-                ).map(([key, icon, title]) => (
-                  <button
-                    key={key}
-                    disabled={streaming}
-                    title={title}
-                    onClick={() => {
-                      if (key === 'mic') setMicPanel('recording')
-                      else if (key === 'image') fileRef.current?.click()
-                      else if (key === 'video') videoRef.current?.click()
-                      else if (key === 'sticker') setInput((v) => v + '✎ ')
-                      else setNotice('更多功能规划中：语音 / 视频通话（§18）、表情包、小游戏。')
-                    }}
-                    className="px-3 py-1.5 text-[22px] text-[var(--text-2)] transition active:scale-90 disabled:opacity-40"
-                  >
-                    {key === 'sticker' ? <StickerIcon className="h-[22px] w-[22px]" /> : icon}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* 桌面端：保持原样的一行排布 */}
-          <div className="hidden items-end gap-2 md:flex">
-            <button
-              onClick={() => fileRef.current?.click()}
-              disabled={streaming}
-              title="选一张图给小糖人看（选完可以补配文再发）"
-              className="rounded-xl border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-2)] hover:border-[var(--pink)] disabled:opacity-50"
-            >
-              🖼
+          {pendingMedia.length > 0 && <div className="flex flex-wrap gap-2 p-2">
+            {pendingMedia.map((item, index) => <div key={item.url} className="flex items-center gap-2 rounded-lg border border-[var(--border)] p-2">
+              {item.file.type.startsWith('image/') ? <img src={item.url} alt={item.file.name} className="h-16 w-16 rounded object-cover" /> : <video src={item.url} className="h-16 w-16 rounded" muted />}
+              <span className="max-w-40 truncate text-xs">{item.file.name}{item.analyzing ? ' · 抽帧中…' : item.error ? ` · ${item.error}` : item.frames.length ? ` · ${item.frames.length} 帧` : ''}</span>
+              <button disabled={streaming} aria-label={`移除附件 ${index + 1}`} onClick={() => { URL.revokeObjectURL(item.url); updateMedia(mediaRef.current.filter(x => x !== item)) }}>✕</button>
+            </div>)}
+            <span className="text-xs">{pendingMedia.length}/10 个附件 · 本次最多发送 10 张图片/视频帧，图片最长边 1280px</span>
+          </div>}
+          <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={e => {void attachFiles(Array.from(e.target.files || []));e.target.value=''}}/>
+          <input ref={videoRef} type="file" accept="video/*" className="hidden" onChange={e => {void attachFiles(Array.from(e.target.files || []));e.target.value=''}}/>
+          <div className="composer-input-row">
+            <button type="button" className={'composer-hold '+(asr.listening ? 'is-listening' : '')} aria-label="按住说话" title="按住说话，松手停止；识别结果先填入输入框" disabled={streaming}
+              onPointerDown={e => {e.preventDefault();if(!micAvailable){setNotice('当前浏览器暂不支持语音输入，请使用支持语音识别的浏览器并允许麦克风权限。');return}e.currentTarget.setPointerCapture(e.pointerId);if(!asr.listening)startAsr()}}
+              onPointerUp={() => asr.stop()} onPointerCancel={() => asr.stop()} onLostPointerCapture={() => asr.stop()}
+              onKeyDown={e => {if((e.key===' '||e.key==='Enter')&&!e.repeat){e.preventDefault();if(micAvailable)startAsr();else setNotice('当前浏览器暂不支持语音输入。')}}}
+              onKeyUp={e => {if(e.key===' '||e.key==='Enter'){e.preventDefault();asr.stop()}}} onBlur={() => asr.stop()}>
+              <UiIcon name="mic" size={21}/><span>{asr.listening ? '松手停止' : '按住说'}</span>
             </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) attachImage(f)
-                e.target.value = ''
-              }}
-            />
-            <button
-              onClick={() => videoRef.current?.click()}
-              disabled={streaming}
-              title="选一段视频发给小糖人看（先抽帧，完整视频不发给模型）"
-              className="rounded-xl border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-2)] hover:border-[var(--pink)] disabled:opacity-50"
-            >
-              🎞
-            </button>
-            <input
-              ref={videoRef}
-              type="file"
-              accept="video/*"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) void attachVideo(f)
-                e.target.value = ''
-              }}
-            />
-            <button
-              onClick={() => setAutoSpeak((v) => !v)}
-              title="开启后：每条回复自动朗读（用右栏 🔊 切换音色）"
-              className={`rounded-xl border px-3 py-2 text-sm transition disabled:opacity-50 ${
-                autoSpeak ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]' : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-2)] hover:border-[var(--pink)]'
-              }`}
-            >
-              🎙
-            </button>
-            {asr.available && (
-              <button
-                // 按住说话（§19.19）：按下开始听，松开停 —— 说完整句再松手，识别结果留在输入框里，
-                // 可以接着改，按发送才发出去。以前是「点一下开始/点一下停」，一不小心就忘了它在听。
-                onPointerDown={(e) => {
-                  e.preventDefault()
-                  ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
-                  if (!asr.listening) startAsr()
-                }}
-                onPointerUp={() => {
-                  if (asr.listening) asr.stop()
-                }}
-                onPointerCancel={() => {
-                  if (asr.listening) asr.stop()
-                }}
-                title="按住说：松手停。识别结果先落进输入框，确认了再按发送"
-                className={`touch-none select-none rounded-xl border px-3 py-2 text-sm transition ${
-                  asr.listening
-                    ? 'scale-105 border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
-                    : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-2)] hover:border-[var(--pink)]'
-                }`}
-              >
-                {asr.listening ? '● 录音中…松手停' : '🎤 按住说'}
-              </button>
-            )}
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && window.innerWidth >= 768) {
                   e.preventDefault()
                   // 挂了图（§19.17）/ 挂了视频：回车 = 连帧带字一起发；纯文字还是走原来的 sendText
-                  if (pendingVideo?.analyzing) return // 还在抽帧，等一下
-                  if (pendingAtt) void onPickImage(pendingAtt.file)
-                  else if (pendingVideo) void onPickVideo()
+                  if (pendingMedia.some(x => x.analyzing || x.error)) return
+                  if (pendingMedia.length) void sendMedia()
                   else void sendText()
                 }
               }}
-              rows={2}
+              rows={4}
               // Ctrl+V 粘图 / 粘视频（§16.11 / §19.17 / 媒体-视频）：先挂到待发区，可以接着写配文再发。
               onPaste={(e) => {
-                const vf = [...e.clipboardData.files].find((x) => x.type.startsWith('video/'))
-                if (vf) { e.preventDefault(); void attachVideo(vf); return }
-                const f = [...e.clipboardData.files].find((x) => x.type.startsWith('image/'))
-                if (!f) return
-                e.preventDefault()
-                attachImage(f)
+                const files = Array.from(e.clipboardData.files).filter(f => /^(image|video)\//.test(f.type))
+                if (files.length) { e.preventDefault(); void attachFiles(files) }
               }}
-              placeholder={
-                pendingAtt
-                  ? '给这张图配句话，回车一起发出去（留空也可以直接发）'
-                  : pendingVideo
-                    ? (pendingVideo.analyzing ? '正在抽帧…' : '给这个视频配句话，发出去')
-                    : '和小糖人说点什么…（Enter 发送，Shift+Enter 换行，Ctrl+V 粘图/粘视频）'
-              }
-              className="input flex-1 resize-none rounded-xl px-3 py-2 text-[15px] placeholder:text-[var(--text-3)]"
+              placeholder={pendingMedia.length ? '给附件配句话，回车一起发送' : '和小糖人说点什么…'}
+              aria-label="聊天输入框" title="电脑端 Enter 发送，Shift+Enter 换行；支持粘贴图片与视频" className="input composer-textarea"
             />
             <button
               onClick={() => {
-                if (pendingVideo?.analyzing) return // 还在抽帧，等一下
-                if (pendingAtt) void onPickImage(pendingAtt.file)
-                else if (pendingVideo) void onPickVideo()
+                if (pendingMedia.some(x => x.analyzing || x.error)) return
+                if (pendingMedia.length) void sendMedia()
                 else void sendText()
               }}
-              disabled={streaming}
-              className="btn rounded-xl px-5 py-2 text-sm disabled:opacity-50"
+              disabled={streaming || pendingMedia.some(x => x.analyzing || x.error)}
+              className="btn composer-send disabled:opacity-50"
             >
               发送
             </button>
@@ -2675,6 +2370,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           <div className="mobile-settings-card">
             <span className="eyebrow">功能</span>
             <div className="mobile-settings-grid">
+              {active.kind === 'single' && !active.sandbox && !active.readOnly && <button className="status-action" onClick={openVoiceCall} disabled={streaming}><UiIcon name="phone"/>语音通话</button>}
               {active.kind === 'group' && (
                 <button
                   className="status-action"
@@ -2689,30 +2385,24 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 onClick={() => setPromptOpen(true)}
                 title="看提示词：此刻会发给模型的 system / 完整消息数组（不消耗 token）"
               >
-                <span className="text-[16px]">🔍</span>提示词
+                <span className="text-[16px]"><UiIcon name="search"/></span>提示词
               </button>
-              <button
-                className="status-action"
-                onClick={() => setNotice('📞 实时通话规划中：先做「按住说话 → 回复自动朗读」的半自动版，方案见《项目要求》§18。')}
-                title="规划中：和小糖人实时通话"
-              >
-                <span className="text-[16px]">📞</span>通话
-              </button>
+
               <button
                 className={`status-action disabled:opacity-40 ${autoMemory && !active?.memoryDisabled ? 'on' : ''}`}
                 onClick={() => setAutoMemory((v) => !v)}
-                disabled={active?.memoryDisabled}
-                title="自动记忆：聊到「记得/以后/约定」这类长期信息时自动提炼进记忆"
+                disabled={active?.sandbox || active?.memoryDisabled}
+                title="自动整理：按天整理事件到 03 待审核，原文与附件始终全量保存在本地"
               >
-                <span className="text-[16px]">🪄</span>
-                {active?.memoryDisabled ? '测试会话不进记忆' : autoMemory ? '自动记忆' : '自动记忆 关'}
+                <span className="text-[16px]"><UiIcon name="spark"/></span>
+                {active?.memoryDisabled ? '测试会话不进记忆' : autoMemory ? '自动整理今日事件' : '自动整理 关'}
               </button>
               <button
                 className="status-action"
                 onClick={() => setGalleryOpen(true)}
                 title="画廊：你主动收藏的重要图片（§9.4）"
               >
-                <span className="text-[16px]">🖼</span>画廊
+                <span className="text-[16px]"><UiIcon name="gallery"/></span>画廊
               </button>
               <button
                 className={`status-action disabled:opacity-40 ${selectMode ? 'on' : ''}`}
@@ -2720,28 +2410,22 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 disabled={streaming || messages.length === 0}
                 title="多选删除：勾选要删的消息（你自己的和小糖人的都行），真删（连带图片文件 / 画廊收藏 / 照片记忆）"
               >
-                <span className="text-[16px]">🗑</span>删除
+                <span className="text-[16px]"><UiIcon name="delete"/></span>删除
               </button>
               <button
                 className="status-action"
-                onClick={onOpenMemoryPicks}
-                title="记忆管理：「我的档案 → 记忆」，挑哪些长期记忆带进对话"
+                onClick={() => setMemoryOpen(true)}
+                title="短期记忆：核对当前文字、图片上下文及实际发送记录"
               >
-                <span className="text-[16px]">🧠</span>记忆
+                <span className="text-[16px]"><UiIcon name="memory"/></span>记忆
               </button>
-              <button
-                className="status-action"
-                onClick={() => setGenOpen(true)}
-                title="生成照片"
-              >
-                <span className="text-[16px]">🎨</span>生成
-              </button>
+
               <button
                 className={`status-action ${showSettings ? 'on' : ''}`}
-                onClick={() => { setShowSettings(true); setMobileTab('chat') }}
+                disabled={active.sandbox} onClick={() => { setShowSettings(true); setMobileTab('chat') }}
                 title="模型设置：Base URL / Key / 模型 / 单条回复上限 / 看图提示词"
               >
-                <span className="text-[16px]">⚙</span>模型设置
+                <span className="text-[16px]"><UiIcon name="settings"/></span>模型设置
               </button>
             </div>
           </div>
@@ -2783,18 +2467,11 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         <StatusSidebar
           session={active}
           characters={visibleCharacters}
-          autoSpeak={autoSpeak}
           voiceName={engines.find((e) => e.id === speakEngine)?.name ?? '晓晓'}
-          speaking={playingKey !== null}
-          onToggleAutoSpeak={() => setAutoSpeak((v) => !v)}
-          onSpeak={() => {
-            if (lastAssistantText) speakText(lastAssistantText, `${sessionKey}:last`)
-            else setErrorText('还没有可朗读的回复')
-          }}
-          onStop={() => stopSpeak()}
+          onVoiceCall={openVoiceCall}
+          onVideoCall={() => setNotice('视频通话尚未接入，功能仍在规划中。')}
           onPickVoice={openVoicePicker}
           onGeneratePhoto={() => setGenOpen(true)}
-          onManageStorage={() => setStorageOpen(true)}
         />
         <div
           {...sideResize.handleProps}
@@ -2806,6 +2483,21 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       </aside>
 
       {/* 音色选择浮层：先选引擎，后选音色 */}
+      {toolCenterOpen && <ToolDialog onClose={() => setToolCenterOpen(false)}><ToolCenter personaId={activePersonaId} sessionId={sessionKey} onExample={text => { setInput(text); setToolCenterOpen(false) }} /></ToolDialog>}
+      {voiceCallOpen && active?.kind === 'single' && <VoiceCallPanel
+        key={`${sessionKey}:voice`}
+        name={activeCharacters[0]?.name || '小糖人'}
+        setup={{ character_id: active.characterIds[0], persona_id: activePersonaId, session_id: sessionKey,
+          base_url: route.chat.baseUrl, api_key: route.chat.apiKey, model: route.chat.model,
+          max_tokens: config.maxTokens || null, uncensored: config.channel === 'uncensored', auto_memory: autoMemory && !active.memoryDisabled }}
+        onClose={() => setVoiceCallOpen(false)}
+        onHistory={() => {
+          const sid = sessionKey
+          void loadMessages(sid, undefined, 200).then(page => setHistory(previous => ({
+            ...previous, [sid]: mergeStoredMessages(previous[sid] || [], page.items.map(toChatMessage)),
+          }))).catch(() => {})
+        }}
+      />}
       {voicesOpen && (
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-6 backdrop-blur-sm" onClick={() => setVoicesOpen(false)}>
           <div
@@ -2879,12 +2571,13 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         setGalleryOpen={setGalleryOpen}
       />
 
-      {/* 记忆浮层（§9.2/§9.3）：家记忆 + 各人的个人记忆，可增可删可重建索引 */}
+      {/* 短期上下文浮层：与私人空间的正式长期记忆分开 */}
       {memoryOpen && (
         <MemoryPanel
-          characters={visibleCharacters}
-          sessionKind={active.kind === 'single' ? 'single' : 'group'}
-          characterIds={active.characterIds}
+          lastSent={sentContexts[sessionKey]}
+          context={buildOutbound(messages)}
+          historyLimit={config.historyLimit}
+          onInspect={() => { setMemoryOpen(false); setPromptOpen(true) }}
           onClose={() => setMemoryOpen(false)}
         />
       )}
@@ -2963,6 +2656,10 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           personaId={activePersonaId}
           // 走与外发同一条路（§27）：核对提示词时看到的条数与排版，
           // 就是真发出去的那份 —— 别让调试面板和实际请求差一截。
+          model={buildOutbound(messages).some((m) => m.images.length) ? route.vision.model : route.chat.model}
+          baseUrl={buildOutbound(messages).some((m) => m.images.length) ? route.vision.baseUrl : route.chat.baseUrl}
+          maxTokens={config.maxTokens || null}
+          cardDisplayMode={tavernMode ? cardDisplayMode : undefined}
           messages={buildOutbound(messages)}
           uncensored={config.channel === 'uncensored'}
         />
@@ -2984,7 +2681,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         </div>
       )}
 
-      {storageOpen && active && <StoragePanel sessionKey={sessionKey} sessionName={active.name} onClose={() => setStorageOpen(false)} />}
     </div>
   )
 }

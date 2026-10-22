@@ -124,6 +124,14 @@ class Feature(TypedDict):
 # 顺序 = 前端展示顺序。加新功能就往这里加一条，并在 features/<folder>/ 建独立仓库。
 FEATURES: list[Feature] = [
     {
+        "id": "project_costs", "name": "项目费用", "emoji": "🧾", "kind": "other",
+        "status": "available", "desc": "记录 API 充值、订阅和临时购买，导入微信/支付宝账单并确认对账。",
+        "needs_vision": False, "folder": "project-costs",
+        "runner": {"folder": "project-costs", "module": "costs", "commands": [
+            {"name": "serve", "label": "启动费用服务", "desc": "本地账本与账单对账服务，不调用付费模型。", "params": [], "background": True},
+        ]},
+    },
+    {
         "id": "desktop_pet", "name": "桌边的小糖人", "emoji": "🐾", "kind": "home",
         "status": "available", "desc": "摸摸她，在桌面直接聊天；与小窝共用群聊、私聊和记忆。",
         "needs_vision": False, "folder": "desktop-pet",
@@ -132,8 +140,8 @@ FEATURES: list[Feature] = [
             {"name": "doctor", "label": "检查准备情况", "desc": "检查 Electron、构建与本机素材", "params": []},
         ]},
         "settings": [
-            {"key": "auto_speak", "label": "自动朗读回复", "type": "bool", "group": "声音",
-             "default": True, "desc": "只朗读桌面新发送后收到的回复；气泡 ♪ 可重播或停止。"},
+            {"key": "auto_speak", "label": "自动播放 TTS", "type": "bool", "group": "声音",
+             "default": False, "desc": "主动开启后才自动朗读桌面新回复；气泡 ♪ 可单次朗读或停止。"},
             {"key": "voice_engine", "label": "语音引擎", "type": "select", "group": "声音",
              "default": "edge", "options": [{"value": "edge", "label": "Edge 在线"}, {"value": "piper", "label": "Piper 本地"}], "desc": "沿用小窝语音接口；本地音色需已安装。"},
             {"key": "voice", "label": "音色 ID", "type": "text", "group": "声音",
@@ -149,19 +157,21 @@ FEATURES: list[Feature] = [
             {"key": "bubble_height", "label": "聊天框高度", "type": "number", "group": "气泡",
              "default": 360, "min": 260, "max": 620, "desc": "单位为逻辑像素，小屏幕自动缩小。"},
             {"key": "theme", "label": "气泡配色", "type": "select", "group": "气泡",
-             "default": "lilac", "options": [{"value": "lilac", "label": "丁香紫"}, {"value": "rose", "label": "樱花粉"}, {"value": "mint", "label": "薄荷绿"}], "desc": "保存后约 5 秒更新。"},
+             "default": "lilac", "options": [{"value": "lilac", "label": "丁香紫"}, {"value": "rose", "label": "樱花粉"}, {"value": "mint", "label": "薄荷绿"}, {"value": "night", "label": "静夜"}, {"value": "paper", "label": "奶油纸笺"}], "desc": "桌面气泡底部也可直接切换。"},
             {"key": "character", "label": "陪在桌边的角色", "type": "character", "group": "陪伴",
              "default": "dashiyin", "desc": "使用小窝角色的人设与记忆；样例模型只作临时形象。"},
             {"key": "session", "label": "桌面消息发到哪里", "type": "select", "group": "陪伴",
              "default": "single", "options": [{"value": "single", "label": "她的私聊"}, {"value": "group", "label": "家庭群聊"}],
              "desc": "沿用当前用户身份与现有聊天记录。群聊沿用小窝成员名单。"},
-            {"key": "model", "label": "临时 Live2D 形象", "type": "select", "group": "外观",
-             "default": "hiyori", "options": [{"value": "haru", "label": "Haru"}, {"value": "hiyori", "label": "Hiyori · 米黄色开衫"}],
+            {"key": "model", "label": "桌宠模型（Live2D / 3D VRM）", "type": "select", "group": "外观",
+             "default": "hiyori", "options": [{"value": "haru", "label": "Live2D · Haru"}, {"value": "hiyori", "label": "Live2D · Hiyori · 米黄色开衫"}, {"value": "alicia", "label": "3D VRM · Alicia Solid"}, {"value": "vrm1", "label": "3D VRM · 1.0 技术样例"}],
              "desc": "从本机 assets 加载公开样例，不复制或打包模型。"},
             {"key": "scale", "label": "人物大小", "type": "number", "group": "外观",
-             "default": 1.0, "min": 0.65, "max": 1.3, "desc": "保存后桌面自动更新。"},
+             "default": 1.0, "min": 0.4, "max": 1.8, "desc": "保存后桌面自动更新。"},
             {"key": "always_on_top", "label": "保持在其他窗口上方", "type": "bool", "group": "窗口",
              "default": True, "desc": "关闭后桌宠作为普通窗口显示。"},
+            {"key": "dock_auto_hide", "label": "停靠后自动收起", "type": "bool", "group": "窗口",
+             "default": False, "desc": "默认保持常驻。开启后离开约 3 秒收起，保留边缘标签；靠近展开。桌面底部可切换。"},
             {"key": "auto_memory", "label": "自动提炼记忆", "type": "bool", "group": "陪伴",
              "default": True, "desc": "沿用普通聊天规则：私聊写入个人记忆，群聊写入相应记忆桶。"},
         ],
@@ -254,15 +264,15 @@ FEATURES: list[Feature] = [
         "settings": [
             # ---- 先定「哪个号演谁」（多账号）----
             {"key": "accounts", "label": "QQ 号 × 小糖人", "type": "accounts", "group": "谁在 QQ 上",
-             "desc": "一个 QQ 号 = 一个小糖人。填几个就跑几个，群聊里谁被 @ 谁开口。"
-                     "**正向 WS（连接方式选「我连网关」）时每个号要填自己的「网关地址」** —— "
-                     "SnowLuma 是一个 QQ 号一个 ws 服务端端口，第二个号就不一样了。"
+             "desc": "每个 QQ 号可演一位小糖人，或选择「群聊」按小窝当前群聊成员分饰多角。填几个就跑几个。"
+                     "推荐使用正向 WS：先读取已登录 QQ，再点「自动配置连接并读取名单」，连接信息自动填好，群和好友下拉勾选。"
                      "留空整张表 = 用下面「这个号」那一组（单账号）。",
              "default": [],
              "fields": [
                  {"key": "name", "label": "备注名", "type": "text", "desc": "随便写，方便你自己认"},
                  {"key": "self_id", "label": "QQ 号", "type": "text", "desc": "机器人的 QQ 号"},
-                 {"key": "persona", "label": "演谁", "type": "character", "desc": "留空 = 名册第一个人"},
+                 {"key": "persona", "label": "演谁", "type": "character", "desc": "群聊 = 小窝当前在场成员，使用群聊会话和记忆；留空 = 名册第一个人",
+                  "options": [{"value": "group", "label": "🏠 群聊（按当前在场成员）"}]},
                  {"key": "ws_url", "label": "网关地址", "type": "text", "desc": "正向 WS 用，如 ws://127.0.0.1:3001/；留空 = 用顶层那个"},
                  {"key": "listen_port", "label": "监听端口", "type": "number", "desc": "反向 WS 用；留空 = 3010 起依次排"},
                  {"key": "access_token", "label": "access_token", "type": "text", "secret": True},
@@ -273,7 +283,8 @@ FEATURES: list[Feature] = [
 
             # ---- 单账号（accounts 空的时候用这组）----
             {"key": "persona.character_id", "label": "这个号演谁", "type": "character", "group": "这个号",
-             "default": "", "desc": "留空 = 角色介绍里的第一个人（启动时会提醒你一次）。"},
+             "options": [{"value": "group", "label": "🏠 群聊（按当前在场成员）"}],
+             "default": "", "desc": "群聊 = 按小窝当前群聊成员分饰多角，QQ 私聊也进入群聊会话与记忆。留空 = 角色介绍里的第一个人。"},
             {"key": "onebot.self_id", "label": "机器人 QQ 号", "type": "text", "group": "这个号",
              "default": "", "desc": "留空也能用：连上网关后会自动问它（get_login_info）。"},
 
@@ -290,8 +301,6 @@ FEATURES: list[Feature] = [
              "default": "", "desc": "管理员。私聊不受白名单限制，可发 /reset /silent 这类桥直接执行的管理命令。"},
             {"key": "owner.admin_commands", "label": "允许管理命令", "type": "bool", "group": "白名单",
              "default": True, "desc": "/reset /silent /active /whoami —— **桥直接执行，不过模型**。"},
-            {"key": "owner.tools", "label": "允许大老大用本地小工具", "type": "bool", "group": "白名单",
-             "default": False, "desc": "让小糖人碰一下本地文件（只在「小工具」那组划定的目录里）。默认关。"},
 
             # ---- 网关接入 ----
             {"key": "onebot.mode", "label": "连接方式", "type": "select", "group": "接入方式",
@@ -347,10 +356,13 @@ FEATURES: list[Feature] = [
             {"key": "asr.engine", "label": "听不懂的语音怎么办", "type": "select", "group": "声音",
              "default": "qq",
              "options": [{"value": "qq", "label": "用 QQ 自己的转写（推荐）"},
+                         {"value": "local", "label": "本地识别（Paraformer，不走云端）"},
                          {"value": "openai", "label": "再用中转的 whisper 兜一层"},
                          {"value": "none", "label": "不识别，记成 [语音]"}],
-             "desc": "本体没有语音识别。QQ 网关一般自带转写（就是手机上「转文字」那个），"
-                     "拿得到就用；拿不到时选 whisper 会多花一点钱、音频也会经过上游。"},
+             "desc": "本地识别复用桌宠的 Paraformer 模型，不上传音频。QQ 模式可配置兜底；云端识别可能计费。"},
+            {"key": "asr.fallback", "label": "QQ 转写失败后", "type": "select", "group": "声音",
+             "default": "local", "options": [{"value": "local", "label": "本地 Paraformer"},
+             {"value": "none", "label": "不识别"}, {"value": "openai", "label": "已配置的云端 ASR"}]},
             {"key": "asr.base_url", "label": "识别用哪家中转", "type": "text", "group": "声音",
              "default": "", "desc": "留空 = 用大脑给这个功能配的那份。只在上面选了 whisper 时用。"},
             {"key": "asr.api_key", "label": "识别用的 key", "type": "text", "secret": True, "group": "声音",
@@ -358,13 +370,56 @@ FEATURES: list[Feature] = [
             {"key": "asr.model", "label": "识别模型", "type": "text", "group": "声音",
              "default": "whisper-1", "desc": "如 whisper-1 / whisper-large-v3。"},
 
+            # ---- 连续输入与多气泡 ----
+            {"key": "proactive.enabled", "label": "偶尔主动来找大老大", "type": "bool", "group": "主动联系",
+             "default": False, "desc": "可以闲聊、感叹、轻轻吐槽或去 B 站找发现；没人回复就不追发。所有活动共用累计 token 预算，开启后会后台调用模型。"},
+            {"key": "proactive.account_index", "label": "主动联系使用的 QQ 账号", "type": "number", "group": "主动联系",
+             "default": 0, "min": 0, "max": 20},
+            {"key": "proactive.persona_id", "label": "绑定的用户身份 ID", "type": "text", "group": "主动联系",
+             "default": "", "desc": "留空首次绑定当前身份。身份或 QQ 变更会停止发送；关闭主动联系、等待设置同步后再开启可重新绑定。"},
+            {"key": "proactive.min_minutes", "label": "随机机会最短间隔（分钟）", "type": "number", "group": "主动联系",
+             "default": 90, "min": 30, "max": 1440},
+            {"key": "proactive.max_minutes", "label": "随机机会最长间隔（分钟）", "type": "number", "group": "主动联系",
+             "default": 180, "min": 30, "max": 1440},
+            {"key": "proactive.daily_limit", "label": "每天最多主动几轮", "type": "number", "group": "主动联系",
+             "default": 3, "min": 0, "max": 10, "desc": "所有在场角色共用。发送超时也占额度，避免反复打扰。"},
+            {"key": "proactive.start_hour", "label": "北京时间几点后可以来", "type": "number", "group": "主动联系",
+             "default": 10, "min": 0, "max": 23},
+            {"key": "proactive.end_hour", "label": "北京时间几点后不打扰", "type": "number", "group": "主动联系",
+             "default": 23, "min": 0, "max": 23},
+            {"key": "proactive.bilibili", "label": "允许找 B 站链接分享", "type": "bool", "group": "主动联系",
+             "default": True, "desc": "只读公开标题和简介，复用逛 B 站的口味与排除项。每天最多分享一次官方链接，不下载或发送视频。"},
+            {"key": "proactive.run_tokens", "label": "每次活动 token 总预算", "type": "number", "group": "自主活动",
+             "default": 12000, "min": 0, "max": 50000, "desc": "累计输入＋输出；顾问请教也算。0 = 不调用。缺失用量或预留不足会停下。"},
+            {"key": "proactive.day_tokens", "label": "每天 token 总预算", "type": "number", "group": "自主活动",
+             "default": 24000, "min": 0, "max": 200000, "desc": "所有角色共用，北京时间每天重置；重启不重置用量。"},
+            {"key": "proactive.group_id", "label": "允许主动 @ 大老大的群号", "type": "text", "group": "自主活动",
+             "default": "", "desc": "留空关闭。还必须在群白名单内，并能确认大老大是群成员；公共分享不读取私聊与私密记忆。"},
+            {"key": "proactive.qzone", "label": "允许发 QQ 空间感想", "type": "bool", "group": "自主活动",
+             "default": False, "desc": "需要 SnowLuma 支持；每周最多 2 条，只发文字与链接。所有渠道共用每日主动轮数，不跨渠道重复发。"},
+            {"key": "proactive.qzone_right", "label": "空间感想给谁看", "type": "select", "group": "自主活动",
+             "default": "64", "options": [{"value": "64", "label": "仅自己可见（先试用）"},
+                                            {"value": "16", "label": "仅大老大可见"},
+                                            {"value": "4", "label": "好友可见"}],
+             "desc": "每次发送显式设置，绝不沿用网关默认的所有人可见；失败不降低可见限制。"},
+            {"key": "reply.debounce_seconds", "label": "等我把话说完（秒）", "type": "number", "group": "聊天节奏",
+             "default": 2, "min": 0, "max": 10, "desc": "短暂停顿后再一起理解连续发送的文字与表情；0 = 不等待。"},
+            {"key": "reply.max_wait_seconds", "label": "一轮最长收集（秒）", "type": "number", "group": "聊天节奏",
+             "default": 10, "min": 1, "max": 30, "desc": "持续续发也不会一直等下去。"},
+            {"key": "reply.max_bubbles", "label": "一轮最多几个气泡", "type": "number", "group": "聊天节奏",
+             "default": 4, "min": 1, "max": 8, "desc": "文字和表情合计；当前先生成整轮，再按语义分段发送。"},
+            {"key": "reply.interval_seconds", "label": "气泡间隔（秒）", "type": "number", "group": "聊天节奏",
+             "default": 1.2, "min": 0, "max": 5},
+
             # ---- 表情包 ----
             {"key": "sticker.enabled", "label": "会发表情包", "type": "bool", "group": "表情包",
              "default": True, "desc": "大老大很喜欢小糖人的表情包 —— 想让它偶尔来一张就把下面的概率调上。"},
             {"key": "sticker.reply_chance", "label": "每轮回话时来的概率", "type": "number", "group": "表情包",
-             "default": 0, "desc": "0 = 只在被点名要的时候发；0.1 差不多十次里来一张。", "min": 0, "max": 1},
+             "default": 0, "desc": "0 = 只在用户要表情时提供候选；0.1 = 约十分之一的普通回复可选表情，最终仍由语义决定是否发送。", "min": 0, "max": 1},
             {"key": "sticker.auto_collect", "label": "学到别人的表情包", "type": "bool", "group": "表情包",
-             "default": True, "desc": "群里别人发的表情会收进库（只是存下来，不外传）。"},
+             "default": True, "desc": "将收到的表情原图保存到本体附件库；情绪识别由下一个开关控制。"},
+            {"key": "sticker.auto_describe", "label": "识别新表情的情绪和动作", "type": "bool", "group": "表情包",
+             "default": True, "desc": "将少量关键帧交给配置的视觉模型，每张新原图标注一次。后续选图不另调模型、不用向量检索；可手动修订。失败不会反复自动重试。"},
             {"key": "sticker.treat_small_image_as_sticker", "label": "小图也当表情包收", "type": "bool",
              "group": "表情包", "default": False, "desc": "有些网关把表情包当普通图发，打开这个能兜住。"},
             {"key": "sticker.library", "label": "表情包库", "type": "media_list", "group": "表情包",
@@ -373,38 +428,13 @@ FEATURES: list[Feature] = [
              "default": "single-dalaoda", "desc": "上传表情包时落到哪个附件目录（一般不用改）。"},
 
             # ---- 小工具（大老大说「可以碰，只要别搞坏东西」）----
-            {"key": "tools.enabled", "label": "允许碰本地文件", "type": "bool", "group": "小工具",
-             "default": False,
-             "desc": "默认关。开了之后小糖人能**在划定的目录里**列目录 / 读文本 / 找文件；"
-                     "沙箱外的路径一律拒绝，删除 / 关机 / 格式化这类动作写死在代码里，永远拒绝。"},
-            {"key": "tools.root", "label": "只许碰这个目录", "type": "text", "group": "小工具",
-             "default": "", "desc": "留空 = 用 features/qq-bridge/data/sandbox/。**越界一律拒绝**，想让它管更大的地方就填绝对路径。"},
-            {"key": "tools.allow", "label": "允许它做哪些事", "type": "list", "group": "小工具",
-             "default": ["dir", "read", "find", "info"],
-             "desc": "只能填 dir（列目录）/ read（读文本）/ find（找文件）/ info（看边界）。"
-                     "**加不进别的名字** —— 这份名单是代码里的登记表，配置只能从里面挑。"},
-            {"key": "tools.max_bytes", "label": "单次最多读多少字", "type": "number", "group": "小工具",
-             "default": 8000, "desc": "读大文件时截断，免得把 token 烧光。", "min": 100, "max": 60000},
-            {"key": "tools.require_owner", "label": "只有大老大能用", "type": "bool", "group": "小工具",
-             "default": True, "desc": "关掉 = 群里任何人说「让小糖人跑个命令」都能触发。**建议一直开着**。"},
-
             # ---- 同步与记忆 ----
-            {"key": "sync.to_frontend", "label": "QQ 里聊的同步进小窝", "type": "bool", "group": "同步",
-             "default": True, "desc": "群聊 → 小窝群聊，私聊 → 对应小糖人的私聊。关掉就只在 QQ 里聊。"},
-            {"key": "sync.persona_id", "label": "放进谁的私聊", "type": "character", "group": "同步",
-             "default": "", "desc": "留空 = 大老大的身份。填了就写进那位小糖人的私聊会话。"},
-            # ⚠ 这条**是反着写的**：底层 key 是 `memory.isolate`（true = 隔离），
-            # 但大老大要看的是正面那句「共享」，所以标 `invert: true` —— 前端显示成
-            # 勾选框「和群聊 / 私聊共享记忆」，勾上时存进去的是 isolate=False。
-            # `default` 仍是**存储语义**（False = 不隔开 = 共享，也就是默认开着）；
-            # 大老大原话：「默认开，不然有点割裂」。
-            {"key": "memory.isolate", "label": "和群聊 / 私聊共享记忆", "type": "bool", "group": "同步",
-             "default": False, "invert": True,
-             "desc": "开着 = QQ 里聊的也进日常记忆，小糖人平时就记得（**推荐**，不然 QQ 里聊完切回私聊就像没聊过）。"
-                     "关掉 = 只在 QQ 场景里记得，QQ 和群聊 / 私聊的记忆就分家了。"},
-            {"key": "memory.idle_seconds", "label": "不说话了就记下来（秒）", "type": "int", "group": "同步",
-             "default": 300,
-             "desc": "多久没人说话就把这段提炼成记忆，不用等攒够。默认 300 秒。别指望点「停止」时才记 —— 那条路在 Windows 上根本不生效。"},
+            {"key": "sync.to_qq", "label": "网页消息同步到 QQ", "type": "bool", "default": True, "group": "同步",
+             "desc": "网页用户消息、角色回复与附件发往本账号最近使用的对应 QQ 会话；首次关联不补发历史。"},
+            {"key": "sync.persona_id", "label": "用户身份 ID", "type": "text", "group": "同步",
+             "default": "", "desc": "留空跟随小窝当前用户身份；填写已有身份 ID 可固定归属。原始聊天与附件始终保存到对应会话，群聊模式跟随当前成员。"},
+            {"key": "memory.enabled", "label": "整理每日记忆草稿", "type": "bool", "group": "同步",
+             "default": True, "desc": "复用现行记忆库：原文归档 → 清洗 → 每日事件草稿 → 人工审核启用。关闭仅停止自动整理，仍保存聊天原文；表情标签独立存放。"},
 
             # ---- 高级：事件与媒体 ----
             {"key": "events.poke", "label": "被戳一戳有反应", "type": "bool", "group": "高级",
@@ -463,7 +493,7 @@ FEATURES: list[Feature] = [
             {"key": "import.source_dir", "label": "还去哪个目录找单词表", "type": "text", "group": "导入",
              "default": "", "desc": "留空 = 只看「个人数据库」里的日语资料。填绝对路径的话会加进去一起扫。"},
             {"key": "memory.enabled", "label": "把学日语的事记成记忆", "type": "bool", "group": "导入",
-             "default": False, "desc": "隔离在 japanese_lab 里，不会漏进日常闲聊。也按轮花钱，默认关。"},
+             "default": False, "desc": "将实际答疑、复习自评和成绩同步到本体当天经历，可在 QQ/桌宠回忆。不开启时保留原有本地学习方式；同步本身不调用模型。来源总开关在个人记忆库。"},
         ],
     },
     {

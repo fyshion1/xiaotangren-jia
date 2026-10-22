@@ -14,6 +14,8 @@ from app.routers import game
 class GameRouterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        memory_store = patch.dict('os.environ', {'PERSONAL_MEMORY_ROOT': str(Path(self.tmp.name) / 'memory')})
+        memory_store.start(); self.addCleanup(memory_store.stop)
         self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
         self.path.start()
         self.addCleanup(self.path.stop)
@@ -138,12 +140,14 @@ class GameRouterTests(unittest.TestCase):
                 base_url="https://x/v1", api_key="k", model="m", feature_id="dont_starve_together",
             ))
             self.assertTrue(result["triggered"])
-            self.assertEqual(result["saved"][0]["game_id"], "dont_starve_together")
+            self.assertEqual(result["saved"], [])
+            self.assertEqual(result["candidates"][0]["feature_id"], "dont_starve_together")
 
             chat = asyncio.run(memory_extract.extract(
                 messages=[{"role": "user", "content": "以后我们就在河边建基地吧，记得哦"}],
                 character_ids=["dashiyin"], session_kind="single", name_of={"dashiyin": "大诗音"},
                 base_url="https://x/v1", api_key="k", model="m",
             ))
-            self.assertEqual(chat["saved"][0]["game_id"], "")
+            self.assertEqual(chat["saved"], [])
+            self.assertEqual(chat["candidates"][0]["feature_id"], "")
 

@@ -1,12 +1,17 @@
+import ListInput from './ListInput'
+import AvatarCropper from '../visual/AvatarCropper'
 import { useRef, useState } from 'react'
 import type { CharacterForm, CharacterProfile } from '../data/characters'
 import { LABEL_OF, PROFILE_FIELD_LABELS, parseProfileText, type FieldKey, type ParseResult } from '../lib/parseProfile'
 import { BASE_FORM_ID, activeFormId, listForms, resolveForm } from '../lib/forms'
-import { uploadAttachment } from '../api/storage'
+import { fetchGallery, type GalleryItem } from '../api/gallery'
+import { profileSignature } from '../lib/profileDisplay'
+import { visionRoute } from '../lib/visionRoute'
+
 
 type Props = {
   initial: CharacterProfile
-  onSave: (next: CharacterProfile) => void
+  onSave: (next: CharacterProfile) => void | Promise<void>
   onClose: () => void
 }
 
@@ -36,6 +41,10 @@ function ImageField({
   const fileRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [cropSource, setCropSource] = useState('')
+  const [original, setOriginal] = useState('')
+  const [gallery, setGallery] = useState<GalleryItem[] | null>(null)
+  const isAvatar = label === '头像'
 
   async function pick(file: File) {
     setBusy(true)
@@ -47,9 +56,8 @@ function ImageField({
         r.onerror = () => reject(new Error('读取文件失败'))
         r.readAsDataURL(file)
       })
-      const up = await uploadAttachment('characters', dataUrl)
-      if (!up) throw new Error('上传失败：后端没响应')
-      onChange(up.orig)
+      if (isAvatar) { setOriginal(dataUrl); setCropSource(dataUrl) }
+      else onChange(dataUrl)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -59,7 +67,7 @@ function ImageField({
   }
 
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3">
+    <div style={{gridColumn: cropSource ? "1 / -1" : undefined}} className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-3">
       <div className="mb-2 flex items-center gap-2">
         <span className="eyebrow">{label}</span>
         {value && (
@@ -90,14 +98,22 @@ function ImageField({
             placeholder="图片 URL（留空用 emoji 占位）"
           />
           <div className="flex items-center gap-2">
+            <button className="btn ghost sm" onClick={() => { setErr(''); void fetchGallery().then(items => setGallery(items.filter(i => i.kind === 'image'))).catch(e => setErr(String(e))) }}>从画廊选择</button>
             <button className="btn sm" disabled={busy} onClick={() => fileRef.current?.click()}>
-              {busy ? '上传中…' : '🖼 选择本地图片'}
+              {busy ? '读取中…' : '选择本地图片'}
             </button>
             <span className="text-[11px] text-[var(--text-3)]">{hint}</span>
           </div>
+          {isAvatar && value && <button className="btn ghost sm" onClick={() => setCropSource(original || value)}>调整头像构图</button>}
           {err && <div className="text-[11px] text-[var(--pink-deep)]">⚠ {err}</div>}
         </div>
       </div>
+      {cropSource && <AvatarCropper key={cropSource} src={cropSource} onCancel={() => setCropSource('')} onApply={src => {onChange(src); setCropSource('')}}/>}
+      {gallery && <div role="dialog" aria-label="选择画廊图片" className="mt-3 rounded-xl border p-3">
+        <button className="btn ghost sm" onClick={() => setGallery(null)}>关闭画廊选择</button>
+        {!gallery.length && <p>画廊里还没有图片。</p>}
+        <div className="mt-2 grid max-h-64 grid-cols-4 gap-2 overflow-y-auto">{gallery.map(item => <button key={item.id} title={item.description || '选择此图'} onClick={() => { onChange(item.orig); setGallery(null) }}><img src={item.thumb || item.orig} alt={item.description || '画廊图片'} className="h-24 w-full rounded-lg object-cover" /></button>)}</div>
+      </div>}
       <input
         ref={fileRef}
         type="file"
@@ -115,7 +131,7 @@ function ImageField({
 // 单行文本字段：路径 -> 标签（立绘 / 头像走 ImageField，已从这里移出）
 const TEXT_FIELDS: { label: string; key: keyof CharacterProfile }[] = [
   ['名字', 'name'],
-  ['日文假名', 'jp'],
+  ['手写签名（英文 / 罗马音）', 'signature'],
   ['别名 / 称号', 'alias'],
   ['生日', 'birthday'],
   ['年龄', 'age'],
@@ -313,13 +329,7 @@ function FormManager({
                 return (
                   <Row key={key} label={f.label}>
                     {isList ? (
-                      <input
-                        className="input"
-                        value={(val as string[] | undefined)?.join('，') ?? ''}
-                        onChange={(e) =>
-                          updateProp(key, e.target.value.split(/[,，、]/).map((s) => s.trim()).filter(Boolean))
-                        }
-                      />
+                      <ListInput key={`${curId}:${key}`} value={(val as string[]) || []} onChange={value => updateProp(key, value)} />
                     ) : (
                       <input
                         className="input"
@@ -339,7 +349,13 @@ function FormManager({
 }
 
 export default function CharacterEditor({ initial, onSave, onClose }: Props) {
-  const [form, setForm] = useState<CharacterProfile>({ ...initial })
+  const [form, setForm] = useState<CharacterProfile>({ ...initial, signature: profileSignature(initial) })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [draftKey, setDraftKey] = useState('about')
+  const [direction, setDirection] = useState('')
+  const [draft, setDraft] = useState('')
+  const [generating, setGenerating] = useState(false)
   // 粘贴模板填充（纯前端）：解析 → 预览勾选 → 写进表单（仍需点「保存」才落库）
   const [fillerOpen, setFillerOpen] = useState(false)
   const [pasteText, setPasteText] = useState('')
@@ -385,7 +401,7 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-[18px] font-bold">
             编辑资料 · {initial.name}
-            <span className="ml-2 text-[12px] font-normal text-[var(--text-3)]">所有词条可随时改，保存后立即生效</span>
+            <span className="ml-2 text-[12px] font-normal text-[var(--text-3)]">保存后更新共享角色资料</span>
           </h2>
           <div className="flex items-center gap-2">
             <button
@@ -490,25 +506,64 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
         )}
 
         <div className="max-h-[62vh] space-y-3.5 overflow-y-auto pr-1">
+          <details className="rounded-xl border p-3"><summary>生成词条草稿</summary>
+            <select aria-label="生成哪个词条" disabled={generating} className="input my-2" value={draftKey} onChange={e => { setDraftKey(e.target.value); setDraft('') }}>{[...TEXT_FIELDS, ...TAG_FIELDS, ...LONG_FIELDS].map(f => <option key={f.key} value={f.key}>{f.label}</option>)}{(form.customFields || []).map((f,i) => <option key={`custom:${i}`} value={`custom:${i}`}>{f.label || '自定义词条'}</option>)}</select>
+            <input className="input" placeholder="补充创作方向（可留空）" value={direction} onChange={e => setDirection(e.target.value)} />
+            <button className="btn ghost sm my-2" disabled={generating} onClick={async () => {
+              setGenerating(true); setError(''); setDraft('')
+              try {
+                const index = draftKey.startsWith('custom:') ? Number(draftKey.slice(7)) : -1
+                const label = index >= 0 ? form.customFields?.[index]?.label : [...TEXT_FIELDS,...TAG_FIELDS,...LONG_FIELDS].find(f => f.key === draftKey)?.label
+                const route = visionRoute('chat')
+                const response = await fetch('/api/characters/field-draft', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({profile:form,label:label || draftKey,direction,base_url:route.baseUrl,api_key:route.apiKey,model:route.model})})
+                const result = await response.json(); if (!response.ok) throw new Error(result.detail || '生成失败')
+                setDraft(result.value)
+              } catch(e) { setError(String(e)) } finally { setGenerating(false) }
+            }}>{generating ? '生成中…' : '生成草稿'}</button>
+            {draft && <><textarea aria-label="生成的词条草稿" className="textarea" value={draft} onChange={e => setDraft(e.target.value)} /><button className="btn sm" onClick={() => {
+              if (draftKey.startsWith('custom:')) setForm(f => ({...f,customFields:f.customFields?.map((x,i) => i === Number(draftKey.slice(7)) ? {...x,value:draft} : x)}))
+              else {
+                const target = draftKey === 'jp' ? 'signature' : draftKey
+                set(target as keyof CharacterProfile, ['personality','likes','dislikes'].includes(target) ? draft.split(/[,，、]/).map(s=>s.trim()).filter(Boolean) : draft)
+              }
+              setDraft('')
+            }}>应用到表单</button></>}
+            <p className="text-xs">生成会使用已配置模型；草稿可编辑，应用后仍需保存才会更新角色。</p>
+          </details>
+          <details className="rounded-xl border p-3"><summary>展示与词条设置</summary>
+            <label className="my-3 flex gap-2"><input type="checkbox" checked={!!form.hiddenInProfiles} onChange={e => setForm(f => ({ ...f, hiddenInProfiles: e.target.checked }))} />在角色介绍中隐藏此角色（可恢复）</label>
+            <p className="text-xs">勾选要隐藏的词条，仅影响介绍展示，模型仍可读取资料。</p>
+            <div className="mt-2 flex flex-wrap gap-3">{[
+              ...TEXT_FIELDS.filter(f => f.key !== 'name'), ...TAG_FIELDS, ...LONG_FIELDS,
+              {label:'别名 / 称号',key:'alias' as keyof CharacterProfile}, {label:'头像',key:'avatar' as keyof CharacterProfile},
+              {label:'立绘',key:'portrait' as keyof CharacterProfile}, {label:'生日',key:'birthday' as keyof CharacterProfile},
+              {label:'年龄',key:'age' as keyof CharacterProfile}, {label:'英文 / 罗马音签名',key:'signature' as keyof CharacterProfile},
+              {label:'体重',key:'weight' as keyof CharacterProfile}, {label:'三围',key:'measurements' as keyof CharacterProfile},
+              {label:'秘密',key:'secret' as keyof CharacterProfile}, {label:'弱点',key:'weakPoint' as keyof CharacterProfile},
+              {label:'私密小愿望',key:'privateWish' as keyof CharacterProfile},
+            ].filter((f,i,all) => f.key !== 'name' && all.findIndex(x => x.key === f.key) === i).map(f => <label key={f.key} className="text-sm"><input type="checkbox" checked={form.hiddenFields?.includes(f.key) || false} onChange={e => setForm(p => ({...p, hiddenFields: e.target.checked ? [...(p.hiddenFields || []), f.key] : p.hiddenFields?.filter(k => k !== f.key)}))} />隐藏{f.label}</label>)}
+              {(form.customFields || []).map(f => <label key={`custom:${f.label}`} className="text-sm"><input type="checkbox" checked={form.hiddenFields?.includes(`custom:${f.label}`) || false} onChange={e => setForm(p => ({...p,hiddenFields:e.target.checked?[...(p.hiddenFields||[]),`custom:${f.label}`]:p.hiddenFields?.filter(k=>k!==`custom:${f.label}`)}))}/>隐藏{f.label || '自定义词条'}</label>)}
+            </div>
+          </details>
           {/* 立绘 / 头像（item 4、5）：静态图或 GIF 都行，浏览器选图上传即落盘 */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <ImageField
+            {!form.hiddenFields?.includes('portrait') && <ImageField
               label="立绘（静态 / GIF）"
               hint="介绍页大图 · 支持 GIF"
               value={form.portrait ?? ''}
               onChange={(v) => set('portrait', v)}
-            />
-            <ImageField
+            />}
+            {!form.hiddenFields?.includes('avatar') && <ImageField
               label="头像"
-              hint="聊天气泡用 · 正方图最佳"
+              hint="选图后可拖动与缩放，对准头部"
               value={form.avatar ?? ''}
               onChange={(v) => set('avatar', v)}
               aspect="aspect-square"
-            />
+            />}
           </div>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {TEXT_FIELDS.map((f) => (
+            {TEXT_FIELDS.filter(f => f.key !== 'about' && !form.hiddenFields?.includes(f.key)).map((f) => (
               <Row key={f.key} label={f.label}>
                 <input
                   className="input"
@@ -519,17 +574,13 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
             ))}
           </div>
 
-          {TAG_FIELDS.map((f) => (
+          {TAG_FIELDS.filter(f => !form.hiddenFields?.includes(f.key)).map((f) => (
             <Row key={f.key} label={f.label}>
-              <input
-                className="input"
-                value={(form[f.key] as string[]).join('，')}
-                onChange={(e) => set(f.key, e.target.value.split(/[,，、]/).map((s) => s.trim()).filter(Boolean))}
-              />
+              <ListInput value={form[f.key] || []} onChange={value => set(f.key, value)} />
             </Row>
           ))}
 
-          {LONG_FIELDS.map((f) => (
+          {LONG_FIELDS.filter(f => !form.hiddenFields?.includes(f.key)).map((f) => (
             <Row key={f.key} label={f.label}>
               <textarea
                 className="textarea"
@@ -538,6 +589,14 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
               />
             </Row>
           ))}
+          <section className="rounded-xl border p-3"><h3>自定义词条</h3>
+            {(form.customFields || []).map((field, index) => <div key={index} className="my-2 flex gap-2">
+              <input aria-label="词条名称" className="input" value={field.label} placeholder="词条名称" onChange={e => setForm(f => ({...f, customFields: f.customFields?.map((x,i) => i === index ? {...x,label:e.target.value} : x)}))} />
+              <textarea aria-label="词条内容" className="textarea" value={field.value} placeholder="自己填写词条内容" onChange={e => setForm(f => ({...f, customFields: f.customFields?.map((x,i) => i === index ? {...x,value:e.target.value} : x)}))} />
+              <button className="btn ghost sm" onClick={() => setForm(f => ({...f, customFields:f.customFields?.filter((_,i) => i !== index)}))}>删除</button>
+            </div>)}
+            <button className="btn ghost sm" onClick={() => setForm(f => ({...f,customFields:[...(f.customFields || []),{label:'',value:''}]}))}>＋ 新增词条</button>
+          </section>
 
           {/* 形态管理（§17）：基础形态在此编辑顶层词条，其余形态在上方切 chip 后逐条覆盖 */}
           <FormManager form={form} setForm={setForm} />
@@ -547,8 +606,9 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
           <button className="btn ghost sm" onClick={onClose}>
             取消
           </button>
-          <button className="btn sm" onClick={() => onSave(form)}>
-            保存
+          {error && <p role="alert">{error}</p>}
+          <button className="btn sm" disabled={saving} onClick={async () => { setSaving(true); setError(''); try { await onSave(form) } catch (e) { setError(String(e)) } finally { setSaving(false) } }}>
+            {saving ? '保存中…' : '保存'}
           </button>
         </div>
       </div>

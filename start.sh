@@ -7,7 +7,12 @@ echo "  小糖人之家 - 启动中..."
 echo "========================================"
 
 echo "[1/2] 启动后端 :8000 ..."
-(cd backend && .venv/Scripts/python.exe -m uvicorn app.main:app --port 8000) &
+if [ -x backend/.venv/bin/python ]; then
+  BACKEND_PYTHON=.venv/bin/python
+else
+  BACKEND_PYTHON=.venv/Scripts/python.exe
+fi
+(cd backend && "$BACKEND_PYTHON" -m uvicorn app.main:app --port 8000) &
 BACK_PID=$!
 
 echo "[2/2] 启动前端 :5173（已开启局域网访问）..."

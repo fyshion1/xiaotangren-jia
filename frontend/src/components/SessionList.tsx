@@ -1,3 +1,5 @@
+import { useTavernMode } from '../lib/tavernMode'
+import UiIcon from '../visual/UiIcon'
 import { useRef } from 'react'
 import type { ChatSession } from '../data/chats'
 import type { CharacterProfile } from '../data/characters'
@@ -15,9 +17,12 @@ type Props = {
   onOpenNest?: () => void
   /** 删掉导入的角色卡（只有她能删）。会话列表里给一个 🗑，鼠标划过去才露出来。 */
   onDeleteImported?: (c: CharacterProfile) => void
+  cardDisplayMode: 'chat' | 'html'
+  onCardDisplayModeChange: (mode: 'chat' | 'html') => void
 }
 
-export default function SessionList({ sessions, activeId, onSelect, onImport, characters = [], onOpenNest, onDeleteImported }: Props) {
+export default function SessionList({ sessions, activeId, onSelect, onImport, characters = [], onOpenNest, onDeleteImported, cardDisplayMode, onCardDisplayModeChange }: Props) {
+  const [tavernMode] = useTavernMode()
   const fileRef = useRef<HTMLInputElement>(null)
 
   // 单聊用对方头像（QQ 式）；群聊没有单一角色，保留 emoji 图标。
@@ -38,9 +43,16 @@ export default function SessionList({ sessions, activeId, onSelect, onImport, ch
   return (
     <div className="flex h-full flex-col">
       <div className="px-4 pb-2 pt-3 text-[12px] font-semibold tracking-wide text-[var(--text-3)]">最近聊天</div>
+      {tavernMode && <label className="mx-4 mb-3 flex items-center gap-2 text-xs text-[var(--text-2)]">
+        角色卡显示
+        <select className="input min-w-0 flex-1" aria-label="角色卡显示方式" value={cardDisplayMode}
+          onChange={e => onCardDisplayModeChange(e.target.value as 'chat' | 'html')}>
+          <option value="chat">仅聊天</option><option value="html">HTML 渲染</option>
+        </select>
+      </label>}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        {sessions.map((s) => {
+        {sessions.filter(s => tavernMode || !characters.find(c => s.kind === 'single' && c.id === s.characterIds[0])?.imported).map((s) => {
           const doomed = importedOf(s)
           return (
             // 外层是 div（分组）：会话行本身是按钮，导入角色的 🗑 是它旁边另一个按钮 ——
@@ -82,19 +94,19 @@ export default function SessionList({ sessions, activeId, onSelect, onImport, ch
             onClick={onOpenNest}
             title="糖人小窝：全家的共同回忆（共用画廊）+ 以后的小游戏 / 互动小家"
           >
-            <span className="session-emoji">🏠</span>
+            <span className="session-emoji"><UiIcon name="home"/></span>
             <span className="text-[13px] text-[var(--text-2)]">糖人小窝</span>
           </button>
         )}
-        <button
+        {tavernMode && <button
           className="session-item w-full"
           onClick={() => fileRef.current?.click()}
           title="导入酒馆（SillyTavern）角色卡：PNG 卡或 JSON 卡都认，读出来的人设原文照搬，不洗不改"
         >
-          <span className="session-emoji">🎴</span>
+          <span className="session-emoji"><UiIcon name="card"/></span>
           <span className="text-[13px] text-[var(--text-2)]">导入角色卡（酒馆）</span>
-        </button>
-        <input
+        </button>}
+        {tavernMode && <input
           ref={fileRef}
           type="file"
           accept=".json,.png,image/png,application/json"
@@ -104,7 +116,7 @@ export default function SessionList({ sessions, activeId, onSelect, onImport, ch
             if (f) onImport(f)
             e.target.value = '' // 同一个文件连选两次也要能触发
           }}
-        />
+        />}
       </div>
     </div>
   )

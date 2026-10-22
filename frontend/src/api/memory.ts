@@ -91,14 +91,18 @@ export async function reindexMemories(): Promise<{ total: number; done: number; 
 // ---- 自动记忆提取（§9.3）----
 // 规则预筛在后端做（命中「记得/以后/约定」等词才叫 LLM），前端只管把最近几轮递过去。
 
-export type ExtractTurn = { role: 'user' | 'assistant'; content: string; character_id?: string }
+export type ExtractTurn = { id?: string; created_at?: string; image?: string; frames?: string[]; role: 'user' | 'assistant'; content: string; character_id?: string }
 
 export type ExtractedMemory = { text: string; private: boolean; who: string }
 
 export type ExtractResult = {
   triggered: boolean
+  status?: string
+  detail?: string
   memories: ExtractedMemory[]
   saved: MemoryItem[]
+  candidates?: import('./memoryWorkflow').MemoryDocument[]
+  fact_candidates?: { path: string; text: string }[]
 }
 
 export async function extractMemories(payload: {
@@ -112,6 +116,9 @@ export async function extractMemories(payload: {
   model?: string
   /** 功能命名空间（§9.6）：普通聊天留空；游戏 / 小窝外设传自己的 id，记忆互不串门。 */
   feature_id?: string
+  persona_id?: string
+  session_id?: string
+  day?: string
 }): Promise<ExtractResult> {
   return asJson<ExtractResult>('/api/memories/extract', {
     method: 'POST',

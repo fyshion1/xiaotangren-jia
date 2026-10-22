@@ -19,6 +19,7 @@
 features/
 ├── README.md                 # 本文件（本体仓库收录的唯一文件）
 ├── desktop-pet/             # Electron 桌面聊天（独立 git 仓库）
+├── project-costs/           # 项目实付费用、账单导入与人工确认对账（独立 git 仓库）
 ├── dont-starve-together/     # 饥荒联机（独立 git 仓库）
 ├── bilibili-scout/           # 小糖人逛 B站（独立 git 仓库）
 └── qq-bridge/                # QQ 桥（独立 git 仓库）
@@ -36,9 +37,11 @@ git init dont-starve-together   # 或 git clone <远端> 进来
 
 ## 功能怎么接大脑
 
+2026-10-19 已接入 [共享活动契约](../docs/integrations/feature-memory-api.md)：来源与可见范围分离，新功能通过事件入口加入统一当天经历；统一来源管理在个人记忆库。实现与边界见 [总体方案施工结果](../docs/plans/shared-memory-features-plan.md#六施工结果2026-10-19)。下文带 `feature_id` 隔离的说明描述旧协议，不能作为新 features 必须隔离的要求。
+
 每个功能只依赖大脑的 HTTP 契约，不 import 本体任何代码。契约见
-[`docs/nest-integration.md`](../docs/nest-integration.md)（通用外设接入层）与
-[`docs/game-integration.md`](../docs/game-integration.md)（旧的游戏专用协议，仍兼容）。
+[`docs/integrations/nest-integration.md`](../docs/integrations/nest-integration.md)（通用外设接入层）与
+[`docs/integrations/game-integration.md`](../docs/integrations/game-integration.md)（旧的游戏专用协议，仍兼容）。
 
 要点：
 
@@ -50,7 +53,7 @@ git init dont-starve-together   # 或 git clone <远端> 进来
 
 桌宠属于普通聊天的另一个呈现端，按用户要求与私聊/群聊共享记录与记忆，使用
 `/api/chat/session`，不单独建立外设记忆桶，也不把模型凭证交给渲染进程。
-具体契约与本机启动方式见 [`docs/desktop-pet-mvp.md`](../docs/desktop-pet-mvp.md)。
+具体契约与本机启动方式见 [`docs/plans/desktop-pet-mvp.md`](../docs/plans/desktop-pet-mvp.md)。
 
 ## 给第三方留的口子
 

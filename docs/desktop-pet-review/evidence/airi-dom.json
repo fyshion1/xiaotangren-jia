@@ -1,0 +1,33 @@
+{
+  "url": "https://airi.moeru.ai/",
+  "text": "AIRI\nReLU\n新建对话\n尚未正确配置聊天 Provider\n请先前往设置页面选择并验证一个 Provider，再发送消息。\n打开 Provider 设置\n回复\n消息\nOnboarding\n欢迎来到 AIRI！\n\n让我们设置您的第一个服务来源来开始使用。\n\n登录\n配置您自己的 AI 服务来源\n价格\n服务条款",
+  "links": [
+    {
+      "text": "AIRI",
+      "url": "https://airi.moeru.ai/"
+    },
+    {
+      "text": "价格",
+      "url": "https://airi.moeru.ai/settings/flux"
+    },
+    {
+      "text": "服务条款",
+      "url": "https://airi.moeru.ai/docs/en/about/terms"
+    }
+  ],
+  "images": [
+    {
+      "alt": "",
+      "src": "https://airi.moeru.ai/assets/logo-B2aCU-bH.svg"
+    },
+    {
+      "alt": "",
+      "src": "https://airi.moeru.ai/favicon.svg"
+    },
+    {
+      "alt": "",
+      "src": "https://airi.moeru.ai/assets/onboarding-S2C4LIWw.avif"
+    }
+  ],
+  "videos": []
+}

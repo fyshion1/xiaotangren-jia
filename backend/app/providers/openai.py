@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 
 import httpx
@@ -33,7 +34,22 @@ _RETRY_HINTS = (
     "too many",
     "temporarily",
     "upstream_error",
+    # 推理模型（grok-4.x 等）拒绝非默认温度：「field Temperature invalid, only 1 is allowed」
+    "temperature invalid",
+    # 中转的分组 / 渠道临时空了：「No available channel for model X under group ...」
+    # 这条 503 是 New API 在**轮询之前**就挡掉的 —— 同一时刻重发没意义，只能错开等一等。
+    "no available channel",
 )
+# 这些模型**只接受** temperature=1：带着 0.2 去请求会被 400 挡回来（不是上游抖动，重发也一样）。
+_FIXED_TEMPERATURE_HINTS = ("temperature invalid", "only 1 is allowed")
+# 「没有可用渠道」是渠道池空了，不是限流：退避要拉开，否则三次重试都撞在同一秒。
+_CHANNEL_HINT = "no available channel"
+
+
+def _backoff_seconds(attempt: int, message: str) -> float:
+    if _CHANNEL_HINT in message:
+        return 3.0 * attempt
+    return 0.6 * attempt
 
 
 def _headers(api_key: str) -> dict[str, str]:
@@ -72,6 +88,10 @@ async def stream_chat(
     api_key: str = "",
     max_tokens: int | None = None,
     timeout: float = 600.0,
+    temperature: float | None = None,
+    response_format: dict | None = None,
+    include_usage: bool = False,
+    tools: list[dict] | None = None,
 ) -> AsyncIterator[dict]:
     """流式聊天，逐块产出事件（见模块 docstring）。
 
@@ -79,8 +99,16 @@ async def stream_chat(
     """
     base = base_url.rstrip("/")
     payload = {"model": model, "messages": messages, "stream": True}
+    if include_usage:
+        payload['stream_options'] = {'include_usage': True}
+    if tools:
+        payload.update(tools=tools, tool_choice='auto')
+    if response_format is not None:
+        payload["response_format"] = response_format
     if max_tokens:
         payload["max_tokens"] = max_tokens
+    if temperature is not None:
+        payload["temperature"] = temperature
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=30.0)) as client:
         async with client.stream(
             "POST", f"{base}/chat/completions", headers=_headers(api_key), json=payload
@@ -111,10 +139,14 @@ async def stream_chat(
                     msg = _extract_error(obj["error"]) or json.dumps(obj["error"], ensure_ascii=False)
                     yield {"type": "error", "message": f"上游: {msg}", "status": 200}
                     return
+                if include_usage and isinstance(obj.get('usage'), dict):
+                    yield {'type': 'usage', 'usage': obj['usage']}
                 choices = obj.get("choices") or []
                 if not choices:
                     continue
                 delta = choices[0].get("delta") or {}
+                if tools and delta.get('tool_calls'):
+                    yield {'type': 'tool_calls', 'tool_calls': delta['tool_calls']}
                 text = delta.get("content")
                 if text:
                     yield {"type": "text", "text": text}
@@ -146,6 +178,53 @@ async def complete_chat(
     return full["content"]
 
 
+async def complete_chat_with_retry(
+    messages: list[dict],
+    model: str,
+    base_url: str,
+    api_key: str = "",
+    *,
+    attempts: int = 2,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    on_retry=None,
+) -> str:
+    """非流式的 `stream_chat_retry`：瞬时错误 / 渠道空了 / 温度被拒不重发一样白等。
+
+    失败抛 RuntimeError，和 `complete_chat` 同一口径 —— 调用方已有的 except 不用改。
+    """
+    last: Exception | None = None
+    dropped_temperature = temperature is None
+    for i in range(attempts):
+        try:
+            return await complete_chat(messages, model, base_url, api_key,
+                                       max_tokens=max_tokens, temperature=temperature)
+        except RuntimeError as exc:
+            last = exc
+            message = str(exc).lower()
+            retryable = (
+                _status_of(str(exc)) in _RETRY_STATUS
+                or any(h in message for h in _RETRY_HINTS)
+                or any(h in message for h in _FIXED_TEMPERATURE_HINTS)
+            )
+            if not dropped_temperature and any(h in message for h in _FIXED_TEMPERATURE_HINTS):
+                dropped_temperature = True
+                temperature = None
+                retryable = True
+            if not retryable or i == attempts - 1:
+                break
+            if on_retry is not None:
+                on_retry(i + 1, exc)
+            await asyncio.sleep(_backoff_seconds(i + 1, message))
+    raise last if last else RuntimeError("上游没回话")
+
+
+def _status_of(message: str) -> int:
+    """从 RuntimeError 文案里认回状态码（`上游 503: ...`）；认不出返回 0。"""
+    found = re.search(r"上游 (\d{3})", message)
+    return int(found.group(1)) if found else 0
+
+
 async def complete_chat_full(
     messages: list[dict],
     model: str,
@@ -154,14 +233,20 @@ async def complete_chat_full(
     max_tokens: int | None = None,
     temperature: float | None = None,
     tools: list[dict] | None = None,
+    response_format: dict | None = None,
+    timeout: float = 180.0,
+    stream: bool = False,
 ) -> dict:
-    """非流式补全，返回 `{content, tool_calls, finish_reason}`（工具调用的原始形态）。
+    """完整补全，返回 content/tool_calls/finish_reason/usage；stream=True复用SSE收集。
 
     **工具只是「转发 + 原样带回」，这一层不执行任何动作**：功能项目声明它有哪些工具
     （OpenAI function calling 的 schema），模型决定调哪个，功能自己判断能不能执行。
     大脑在这里只当一个「会说工具话」的模型客户端 —— 动作白名单永远是功能的责任
     （见 docs/nest-integration.md「功能自己提供动作白名单与执行」）。
     """
+    if stream:
+        return await collect_chat_stream(messages, model, base_url, api_key, max_tokens=max_tokens,
+            temperature=temperature, tools=tools, response_format=response_format, timeout=timeout)
     base = base_url.rstrip("/")
     payload: dict = {"model": model, "messages": messages, "stream": False}
     if max_tokens:
@@ -171,7 +256,9 @@ async def complete_chat_full(
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=30.0)) as client:
+    if response_format is not None:
+        payload["response_format"] = response_format
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=30.0)) as client:
         resp = await client.post(
             f"{base}/chat/completions", headers=_headers(api_key), json=payload
         )
@@ -182,13 +269,58 @@ async def complete_chat_full(
         raise RuntimeError(f"上游: {_extract_error(obj['error'])}")
     choices = obj.get("choices") or []
     if not choices:
-        return {"content": "", "tool_calls": [], "finish_reason": ""}
+        return {"content": "", "tool_calls": [], "finish_reason": "", "usage": obj.get("usage")}
     message = choices[0].get("message") or {}
     return {
         "content": message.get("content") or "",
         "tool_calls": message.get("tool_calls") or [],
         "finish_reason": choices[0].get("finish_reason") or "",
+        "usage": obj.get("usage"),
     }
+
+
+async def collect_chat_stream(messages, model, base_url, api_key='', **options):
+    """Reuse the SSE transport, retaining final usage and tool argument deltas.
+
+    Collection never executes tools or retries a failed/partial request.
+    """
+    chunks, calls, usage, finish, size = [], {}, None, None, 0
+    events = stream_chat(messages, model, base_url, api_key, include_usage=True, **options)
+    try:
+        async for event in events:
+            kind = event['type']
+            if kind == 'error':
+                raise RuntimeError(event.get('message') or '上游流式请求失败')
+            if kind == 'text':
+                chunks.append(event['text'])
+                size += len(event['text'])
+            elif kind == 'usage':
+                usage = event['usage']
+            elif kind == 'tool_calls':
+                for delta in event['tool_calls']:
+                    index = delta.get('index')
+                    if type(index) is not int or not 0 <= index < 64:
+                        raise ValueError('流式工具序号无效')
+                    call = calls.setdefault(index, {'id': '', 'type': 'function',
+                                                   'function': {'name': '', 'arguments': ''}})
+                    for key in ('id',):
+                        if delta.get(key):
+                            call[key] += delta[key]
+                            size += len(delta[key])
+                    for key in ('name', 'arguments'):
+                        value = (delta.get('function') or {}).get(key) or ''
+                        call['function'][key] += value
+                        size += len(value)
+            elif kind == 'done':
+                finish = event.get('finish_reason')
+            if size > 200000:
+                raise ValueError('流式回复过长')
+        if not finish:
+            raise RuntimeError('上游流式回复未完整结束')
+        return {'content': ''.join(chunks), 'tool_calls': [calls[i] for i in sorted(calls)],
+                'usage': usage, 'finish_reason': finish}
+    finally:
+        await events.aclose()
 
 
 async def stream_chat_retry(
@@ -199,12 +331,22 @@ async def stream_chat_retry(
     attempts: int = 3,
     max_tokens: int | None = None,
     timeout: float = 600.0,
+    temperature: float | None = None,
+    on_retry=None,
 ) -> AsyncIterator[dict]:
-    """带瞬时错误重试的流式聊天；致命错误（模型名错 / key 错）直接透出，不空转。"""
+    """带瞬时错误重试的流式聊天；致命错误（模型名错 / key 错）直接透出，不空转。
+
+    `on_retry(下一次是第几次, 错误事件)`：可选的同步回调，调用方拿它给前端报「正在重试」。
+
+    「这个模型不接受这个温度」的 400 不算抖动，但**值得救一次**：去掉 temperature 原样重发，
+    否则换到 grok 这类模型时整个流一开头就死（2026-10-18 实测）。
+    """
+    dropped_temperature = False
     for i in range(attempts):
         error: dict | None = None
         emitted_text = False
-        async for ev in stream_chat(messages, model, base_url, api_key, max_tokens=max_tokens, timeout=timeout):
+        async for ev in stream_chat(messages, model, base_url, api_key, max_tokens=max_tokens,
+                                    timeout=timeout, temperature=temperature):
             if ev["type"] == "error":
                 error = ev
                 break
@@ -212,14 +354,24 @@ async def stream_chat_retry(
             yield ev
         if error is None:
             return
-        retryable = error.get("status") in _RETRY_STATUS or any(
-            h in str(error.get("message", "")).lower() for h in _RETRY_HINTS
-        )
+        message = str(error.get("message", "")).lower()
+        retryable = error.get("status") in _RETRY_STATUS or any(h in message for h in _RETRY_HINTS)
+        if (
+            temperature is not None
+            and not dropped_temperature
+            and not emitted_text
+            and any(h in message for h in _FIXED_TEMPERATURE_HINTS)
+        ):
+            dropped_temperature = True
+            temperature = None
+            retryable = True
         # 已经输出过正文时重试会将第二次回复拼在半句话后面。
         if emitted_text or not retryable or i == attempts - 1:
             yield error
             return
-        await asyncio.sleep(0.6 * (i + 1))
+        if on_retry is not None:
+            on_retry(i + 1, error)
+        await asyncio.sleep(_backoff_seconds(i + 1, message))
 
 
 def _parse_generation_result(payload: dict) -> list[dict]:

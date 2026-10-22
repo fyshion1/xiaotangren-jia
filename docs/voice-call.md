@@ -1,0 +1,66 @@
+# 持续语音通话
+
+2026-10-19 接入首版；2026-10-20 增加本地 Paraformer ASR 与 Piper PCM 分块通话，并预留 CosyVoice 独立服务适配。单角色私聊，持续收音、自动发起回合、流式合成与播放、插话打断、静音、挂断、通话内打字。聊天仍用当前选中的模型、角色、身份和原会话历史。群聊电话和动画表情尚未接入。
+
+## 怎么开始
+
+1. 打开一位角色的私聊，点聊天页上方电话图标或右栏“语音通话”。手机上也可在聊天的“设置”页找到“语音通话”。
+2. 本机已装模型时，默认选择“本地 Paraformer（中英）”和“Piper 本地”，选择音色即可，不需要语音 API Key。聊天模型仍需按原聊天配置。
+3. 也可分别改用百炼、Soniox 或 Fish Audio；云端选项才需要相应密钥。CosyVoice 仅在独立本机服务实际启动后显示，音色从服务读取。本机已实测生成音频，但短句首包约 7～9 秒，目前仅建议试听，默认仍用 Piper。
+4. 点“开始通话”，允许麦克风权限。接通后说话，说完自动发送；开口插话会停止旧回复。“停一下”也能手动停止。
+5. 挂断后，回到原聊天继续。输入的语音密钥只保留在这个面板的内存中，关闭面板后需要重填；Fish 音色 ID 按角色保存在浏览器，其他服务配置可以写入服务端环境变量以免每次填写。
+
+浏览器需要 HTTPS 或 localhost；局域网裸 HTTP 通常不能开麦克风。外放时启用了浏览器回声消除、降噪和自动增益，实际效果还需设备测试。手机熄屏/切后台可能暂停收音或播放，本版不承诺后台通话。
+
+## 服务端配置（可选）
+
+在 `backend/.env` 中填写，重启后端后生效。不要提交真实密钥：
+
+```dotenv
+VOICE_ASR_PROVIDER=bailian
+VOICE_ASR_MODEL=qwen-audio-3.1-asr-flash-streaming
+VOICE_ASR_REGION=beijing
+DASHSCOPE_API_KEY=你的百炼密钥
+# SONIOX_API_KEY=你的Soniox密钥
+FISH_AUDIO_API_KEY=你的Fish密钥
+FISH_AUDIO_MODEL=s2.1-pro-free
+VOICE_FISH_ID=默认音色ID
+# 需要代理时才填；与浏览器访问项目的地址无关
+# VOICE_PROXY=http://127.0.0.1:7897
+```
+
+面板填入的密钥优先于服务端环境配置；密钥不写入通用设置、消息库或音频 URL。识别与合成都由后端连接服务商，所以服务商不可达时需要配置后端网络。麦克风音频送给所选 ASR，助手文本送给 Fish，按所用服务和账户规则计费。模型免费档是否可用、音色权限和多语言准确率，均须用实际账号验证。
+
+依赖已加入 `backend/pyproject.toml` 和 `uv.lock`，新环境用 `cd backend; uv sync` 安装。实现直接使用 WebSocket 协议，没有要求安装 Pipecat、aiortc、GPU 或启动 TURN 服务。
+
+## 实现与边界
+
+2026-10-20 本地 ASR 体验调整：有文字时的静音断句阈值由 0.8 秒改为 2 秒，短暂停顿继续同一句；单独的“嗯、呃、啊”等语气词不触发聊天，保留“好、不、继续”等短答。音频队列由约 1.2 秒放宽为最多约 5 秒，仍会在持续积压时明确报错，不自动重试生成。首次挂断的原始原因未能从现有日志确认；新增阶段与异常类型日志，不记录语音正文、异常详情或密钥。
+
+- 浏览器 AudioWorklet 把麦克风转为 16 kHz PCM16，100 ms 一包，经同源 `/api/voice/call/ws` 持续上传。百炼使用任务 WebSocket，Soniox 使用实时识别 WebSocket，partial 只展示、final 才发起回合。
+- 后端调用现有 `_session_turn`，复用 Prompt、人设、身份、记忆归档、模型来源和跨端回合协调。通话增加短句口语化指令，不另建一套聊天历史。
+- 回复按句子分段，Fish 以 MessagePack WebSocket 合成 24 kHz PCM；浏览器 Web Audio 排队播放。连接预热与有限预合成减少分段等待，短尾包不会因长度小而被丢掉。
+- 回复与分段带编号，浏览器播完分段后确认。正常回复等播放确认再落库；插话、挂断或失败只保留已确认播完的连续分段，并标注“语音被打断”。正在播放的一段如果半途停止，首版不会逐字推断其中已听到多少。
+- 开口打断依赖 ASR 首个有效候选，尚未识别出文字前不会仅因音量突然升高就打断。因此打断时延也取决于 ASR；长停顿被分成多句时，后一句会按新输入处理，尚未实现 Eidolon-SC 的“开口前补充合并”规则。
+- 本版采用同源 WebSocket PCM 传输，复用现有 Vite / HTTPS 隧道；没有采用调研中的 Pipecat/WebRTC。PCM 上行约 32 KB/s、下行约 48 KB/s（有声音时），没有 WebRTC 的 Opus 压缩和媒体拥塞控制。弱网应实测，上传积压会显式终止而不无限排队。
+- 本地 Paraformer 在线解码运行于 CPU；Piper 在接通时预热，通话时按块输出 22050 Hz PCM，不经过完整 WAV 接口。CosyVoice 试验独立环境及方案见 [本地连续语音评估](research/local-streaming-voice-options.md)。
+- 通话面板为前台模态窗口；关闭即挂断。没有自动重拨、跨页面持续通话、设备切换或角色表情同步。Edge/Piper 原朗读和 Web Speech 按住说话保持可用。
+
+## 验证
+
+本地收音积压恢复：队列满时清除积压及未提交识别状态，提示用户重说，保持通话；恢复前的识别结果不会提交。仅恢复本地音频处理，不重试聊天生成。原生识别 RuntimeError 显示安全错误码 `local-asr-decode`；其他流内异常进一步区分识别接收、保活与浏览器音频读取阶段。此前 `audio-stream` 挂断的具体来源仍未确认，不能仅凭阶段认定 CPU 不足。
+
+```powershell
+# backend/
+.venv/Scripts/python.exe -m unittest discover -s tests -p test_voice_call.py -v
+.venv/Scripts/python.exe -m unittest discover -s tests -p test_session_chat.py -v
+# frontend/
+npm run test:voice
+npm run build
+# 需 Vite 在 :5173 运行，使用本机 Chrome 和虚拟麦克风
+node tests/voice-call-browser.mjs
+```
+
+测试覆盖分段/尾句、极小尾音频包与奇数字节边界、乱序确认、合成失败解除背压、取消后历史与 lease 清理、同源限制、密钥不回显，以及模拟整条 socket 回合。浏览器测试实际运行 AudioWorklet 和 AudioContext，服务端用模拟回复拦截，不连接真实 ASR/Fish。
+
+本机检查时 ASR 与 Fish 服务端密钥均未配置，因此真实三语识别、音色质量、端到端延迟、外放误打断、手机及外网效果仍待用户账号联调，不能将模拟测试等同于已达到参考站体验。

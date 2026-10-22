@@ -261,6 +261,9 @@ def _tx() -> Iterator[sqlite3.Connection]:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """老库补列（幂等）。新库走 _SCHEMA 已有这些列，这里只兜底。"""
+    message_cols = {r['name'] for r in conn.execute('PRAGMA table_info(messages)')}
+    if 'frames' not in message_cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN frames TEXT NOT NULL DEFAULT '[]'")
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(gallery)")}
     if "owner" not in cols:
         # SQLite 的 ADD COLUMN 不接受「NOT NULL 且无默认值」，必须带 DEFAULT。
@@ -672,6 +675,7 @@ def _row_to_message(row: sqlite3.Row) -> dict:
         "kind": row["kind"],
         "segments": segments,
         "created_at": row["created_at"],
+        "frames": json.loads(row["frames"] or "[]"),
     }
 
 
@@ -683,28 +687,23 @@ def append_message(
     image_source: str = "",
     kind: str = "text",
     segments: list[dict] | None = None,
+    frames: list[str] | None = None,
+    web_sync: bool = False,
 ) -> dict:
     """追加一条消息，返回落库后的完整记录（含 seq）。"""
     msg_id = f"m-{uuid.uuid4().hex[:12]}"
     seg_json = json.dumps(segments, ensure_ascii=False) if segments else ""
     with _tx() as conn:
         cur = conn.execute(
-            "INSERT INTO messages (id, session_id, role, content, image, image_source, kind, segments) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (msg_id, session_id, role, content, image, image_source, kind, seg_json),
+            "INSERT INTO messages (id, session_id, role, content, image, image_source, kind, segments, frames) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, session_id, role, content, image, image_source, kind, seg_json, json.dumps(frames or [])),
         )
         rowid = cur.lastrowid
-    return {
-        "id": msg_id,
-        "seq": rowid,
-        "session_id": session_id,
-        "role": role,
-        "content": content,
-        "image": image,
-        "image_source": image_source,
-        "kind": kind,
-        "segments": segments or [],
-    }
+        if web_sync:
+            from .services.qq_web_sync import enqueue
+            enqueue(conn, msg_id, session_id)
+    return get_message(msg_id)
 
 
 def list_messages(session_id: str, before: int | None = None, limit: int = 30) -> list[dict]:
@@ -796,8 +795,8 @@ def list_messages_by_image(orig: str, exclude_ids: list[str] | None = None) -> l
     """这张图片 URL 还被哪些**幸存**消息引用（用于决定文件能否真删）。"""
     if not (orig or "").strip():
         return []
-    sql = "SELECT id FROM messages WHERE image = ?"
-    args: list = [orig]
+    sql = "SELECT id FROM messages WHERE (image = ? OR EXISTS (SELECT 1 FROM json_each(messages.frames) WHERE value=?))"
+    args: list = [orig, orig]
     clean = [i for i in (exclude_ids or []) if i]
     if clean:
         sql += f" AND id NOT IN ({','.join('?' * len(clean))})"
@@ -956,6 +955,7 @@ def clear_memories(bucket: str | None = None, char_id: str | None = None) -> int
         # 清空后身份那边挑中的行也要跟着清，否则会留下指向已消失记忆的孤儿
         conn.execute(
             "DELETE FROM persona_memory_picks WHERE kind = 'memory' "
+            "AND ref_id NOT LIKE 'file:%' "
             "AND ref_id NOT IN (SELECT id FROM memories)"
         )
         return int(cur.rowcount or 0)

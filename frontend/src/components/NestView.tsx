@@ -1,3 +1,9 @@
+import { useTavernMode } from '../lib/tavernMode'
+import UiIcon from '../visual/UiIcon'
+import NestHero from '../visual/NestHero'
+import NestWelcomeSettings from '../visual/NestWelcomeSettings'
+import NestStickerEditor from '../visual/NestStickerEditor'
+import '../visual/nest-layout.css'
 // 糖人小窝（《项目要求》§9.6）：全家共同的回忆 + 一起玩的功能入口。
 // 功能清单来自后端注册表（`/api/nest/features`，代码级真相源），前端不写死 ——
 // 加功能只要在 backend/app/features_registry.py 加一条，并给它建一个独立项目 `features/<folder>/`。
@@ -23,18 +29,25 @@ import EnglishStudyPanel from './EnglishStudyPanel'
 import GeminiSyncPanel from './GeminiSyncPanel'
 import JapaneseLabPanel from './JapaneseLabPanel'
 import NestApiPanel from './NestApiPanel'
+import ComputeSettings from './ComputeSettings'
+import ProcessPanel from './ProcessPanel'
+import AutonomousActivityPanel from './AutonomousActivityPanel'
+import StoragePanel from './StoragePanel'
 import NestDrawer from './NestDrawer'
 import NestFeedPanel from './NestFeedPanel'
 import NestRunnerPanel from './NestRunnerPanel'
 import NestSettingsPanel from './NestSettingsPanel'
 import QqBridgePanel from './QqBridgePanel'
 import DesktopPetPanel from './DesktopPetPanel'
+import ToolCenter from './ToolCenter'
+import ProjectCostsPanel from './ProjectCostsPanel'
 import { fetchAgentInbox, sendAgentMessage, type AgentMessage } from '../api/agents'
 import { fetchNestFeatures, launchInteractiveHome, type NestFeature } from '../api/client'
 
 // 只有后端注册表里 status='available' 的功能才有可点的入口；planned 的点了给一句规划中提示。
 // 小窝本地的动作（Unity 启动 / 弹面板）在这里挂钩，不塞进后端注册表。
 const AVAILABLE_ACTION: Record<string, 'unity' | 'panel' | 'runner'> = {
+  project_costs: 'panel',
   desktop_pet: 'panel',
   interactive_home: 'unity',
   gemini_sync: 'panel',
@@ -47,6 +60,7 @@ const AVAILABLE_ACTION: Record<string, 'unity' | 'panel' | 'runner'> = {
 // 能进「项目工作台」的面板（本体内的 / 独立项目的都在这）。键 = 功能 id。
 // 加一个可开的面板功能，就在这加一行 + 注册表里加一条 —— 别处不用动。
 const WORKBENCH_PANELS: Record<string, { title: string; render: () => ReactNode }> = {
+  project_costs: { title: '🧾 项目费用', render: () => <ProjectCostsPanel /> },
   desktop_pet: { title: '🐾 桌边的小糖人', render: () => <DesktopPetPanel /> },
   japanese_lab: {
     title: '🌸 小糖人日语实验室',
@@ -87,6 +101,20 @@ const STATUS_FILTERS: { id: '' | 'available' | 'planned'; label: string }[] = [
 ]
 
 export default function NestView() {
+  const [tavernMode, setTavernMode] = useTavernMode()
+  const [modeError, setModeError] = useState('')
+  const nestChoice='n3'
+  const [area,setArea]=useState(() => window.location.hash === '#project-costs' ? 'play' : ['#tool-center', '#autonomous-activity'].includes(window.location.hash) ? 'settings' : 'memories')
+  const [setting,setSetting]=useState(() => window.location.hash === '#autonomous-activity' ? 'autonomy' : window.location.hash === '#tool-center' ? 'tools' : 'appearance')
+  useEffect(() => {
+    const openTools = () => {
+      if (window.location.hash === '#tool-center') { setArea('settings'); setSetting('tools') }
+      if (window.location.hash === '#autonomous-activity') { setArea('settings'); setSetting('autonomy') }
+      if (window.location.hash === '#project-costs') { setArea('play'); setOpenIds(ids => ids.includes('project_costs') ? ids : [...ids.slice(-(MAX_WORKBENCH - 1)), 'project_costs']); setActivePanel('project_costs') }
+    }
+    window.addEventListener('hashchange', openTools)
+    return () => window.removeEventListener('hashchange', openTools)
+  }, [])
   const [features, setFeatures] = useState<NestFeature[]>([])
   const [toast, setToast] = useState('')
   const [agentText, setAgentText] = useState('')
@@ -98,26 +126,23 @@ export default function NestView() {
   // 「让功能跑起来」面板当前选中的功能 id（点卡片时滚过去并选中它）。
   const [runnerId, setRunnerId] = useState('')
   // 抽屉的开关 —— 全默认收起，进小窝看到的就是一屏。
-  const [catalogOpen, setCatalogOpen] = useState(false)
-  const [toolsOpen, setToolsOpen] = useState(false)
-  const [feedOpen, setFeedOpen] = useState(false)
-  const [galleryOpen, setGalleryOpen] = useState(false)
-  const [worldbookOpen, setWorldbookOpen] = useState(false)
+  const [catalogOpen, setCatalogOpen] = useState(true)
   // 抽屉里的搜索 / 筛选。
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'' | 'available' | 'planned'>('')
   // 工作台：开着哪几个面板 + 当前看的是哪个（存 localStorage，下次进来还在）。
-  const [openIds, setOpenIds] = useState<string[]>(() => readStored(OPEN_KEY).filter((id) => id in WORKBENCH_PANELS))
-  const [activePanel, setActivePanel] = useState<string>(() => localStorage.getItem(ACTIVE_KEY) || '')
+  const [openIds, setOpenIds] = useState<string[]>(() => window.location.hash === '#project-costs' ? ['project_costs'] : readStored(OPEN_KEY).filter((id) => id in WORKBENCH_PANELS))
+  const [activePanel, setActivePanel] = useState<string>(() => window.location.hash === '#project-costs' ? 'project_costs' : localStorage.getItem(ACTIVE_KEY) || '')
 
   // 拉不到就当空清单 —— 清单那块自己会说「功能清单没拉到（后端没连上？）」，
   // 不会假装「本来就一个功能都没有」。
   useEffect(() => { void fetchNestFeatures().then(setFeatures).catch(() => setFeatures([])) }, [])
   useEffect(() => {
+    if(area!=='settings'||setting!=='agents')return
     void fetchAgentInbox('xiaotangren-ui')
       .then((list) => { setAgentMessages(list); setAgentErr('') })
       .catch((e) => setAgentErr(e instanceof Error ? e.message : String(e)))
-  }, [])
+  }, [area,setting])
 
   useEffect(() => { localStorage.setItem(OPEN_KEY, JSON.stringify(openIds)) }, [openIds])
   useEffect(() => {
@@ -156,6 +181,7 @@ export default function NestView() {
 
   // 把一个项目送进工作台：已经在就切过去；满了就把最旧的那个挤掉（大老大只要 1~2 个）。
   const openPanel = (id: string) => {
+    setArea('play')
     setOpenIds((ids) => (ids.includes(id) ? ids : [...ids, id].slice(-MAX_WORKBENCH)))
     setActivePanel(id)
     setCatalogOpen(false)
@@ -172,7 +198,7 @@ export default function NestView() {
   }
 
   const openTools = () => {
-    setToolsOpen(true)
+    setArea('settings');setSetting('runner')
     window.setTimeout(() => {
       document.getElementById('nest-tools')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }, 0)
@@ -202,7 +228,7 @@ export default function NestView() {
     if (f.runner && f.runner.commands.length > 0) {
       setRunnerId(f.id)
       openTools()
-      flash(`「${f.name}」在「🛠 设置与工具 → 🚀 让功能跑起来」里已选中 —— 选谁去看、怎么跑、日志都在那儿。`)
+      flash(`「${f.name}」在「小窝设置 → 运行与日志」里已选中 —— 选谁去看、怎么跑、日志都在那儿。`)
       return
     }
     // 其余都是独立项目：本体只提供大脑 API，不实现它的逻辑。
@@ -214,13 +240,8 @@ export default function NestView() {
   const panel = WORKBENCH_PANELS[activePanel]
 
   return (
-    <main className="mx-auto max-w-6xl overflow-y-auto px-4 pb-16 pt-5">
-      <header className="mb-6">
-        <h1 className="text-[26px] font-extrabold tracking-wide">🏠 糖人小窝</h1>
-        <p className="mt-1 text-[13px] text-[var(--text-2)]">
-          全家的共同回忆，和以后要接的一起玩。每个人的专属画廊在各自介绍页里；这里只放「家 · 共用」的那部分。
-        </p>
-      </header>
+    <main className="visual-nest mx-auto max-w-6xl overflow-y-auto px-4 pb-16 pt-5">
+      <NestHero variant={nestChoice}/>
 
       {toast && (
         <div className="mb-4 rounded-xl border border-[color-mix(in_srgb,var(--pink)_35%,var(--border))] bg-[var(--pink-soft)] px-3 py-2 text-[13px] text-[var(--pink-deep)]">
@@ -228,10 +249,16 @@ export default function NestView() {
         </div>
       )}
 
+      <nav className="nest-room-nav" aria-label="小窝分区">{([
+        ['memories','gallery','共同回忆','相片与收藏'],['play','game','一起玩','学习与陪伴'],['feed','inbox','小窝动态','她们的新发现'],['settings','settings','小窝设置','偏好与连接']
+      ] as const).map(([id,icon,label,note])=><button key={id} aria-current={area===id?'page':undefined} onClick={()=>setArea(id)}><UiIcon name={icon} size={25}/><span><strong>{label}</strong><small>{note}</small></span></button>)}</nav>
+      <div className="tool-entry-bar"><button type="button" onClick={() => { setArea('settings'); setSetting('tools') }}>✦ 工具中心</button><span>查看能力、允许目录与最近执行记录</span></div>
+      {area==='play'&&<div className="nest-play-room">
+      <div className="nest-room-heading"><div><span className="nest-section-note">留一点时间，一起做点喜欢的事</span><h2>一起玩</h2></div></div>
       {/* ---- 一起玩：抽屉。收起时只露一行「最近用的」，点开才列全部 + 能搜 ---- */}
       <NestDrawer
         title="🎮 一起玩"
-        hint="Fun · 每个功能一个独立项目"
+        hint="选一件想和她们一起做的事"
         badge={features.length > 0 ? `${features.length} 个项目` : ''}
         open={catalogOpen}
         onToggle={() => setCatalogOpen((v) => !v)}
@@ -311,7 +338,7 @@ export default function NestView() {
       <section id="nest-workbench" className="mb-4 scroll-mt-4">
         {openIds.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-[var(--border-strong)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] px-4 py-6 text-center text-[13px] text-[var(--text-3)]">
-            工作台空着 —— 上面「🎮 一起玩」里点一个项目，它就在这儿打开。
+            工作台空着 —— 上面「<UiIcon name="game"/> 一起玩」里点一个项目，它就在这儿打开。
             <br />
             一次只开 1~2 个（一般是这个数）：<b>×</b> 关掉就等于卸下来，页面不会越用越长。
           </div>
@@ -350,86 +377,47 @@ export default function NestView() {
               </>
             ) : (
               <p className="text-[13px] text-[var(--text-3)]">
-                「{activePanel}」没有可开的面板 —— 它的入口在下面「🛠 设置与工具」里。
+                「{activePanel}」没有可开的面板 —— 它的入口在下面「<UiIcon name="tools"/> 设置与工具」里。
               </p>
             )}
           </>
         )}
       </section>
 
-      {/* ---- 设置与工具：偶尔才碰的东西都收在这一个抽屉里 ---- */}
-      <div id="nest-tools" className="scroll-mt-4">
-        <NestDrawer
-          title="🛠 设置与工具"
-          hint="大脑 API / 还没搬家的功能开关 / 让功能跑起来 / Agent 协作"
-          badge={toolsOpen ? '' : '收起'}
-          open={toolsOpen}
-          onToggle={() => setToolsOpen((v) => !v)}
-        >
-          <div className="space-y-4">
-            {/* 通用外设接入层：Agent 协作（跨项目消息中转，不暴露内部上下文） */}
-            <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+      </div>}
+
+      {area==='memories'&&<section className="nest-room" aria-label="共同回忆">
+        <div className="nest-room-heading"><div><span className="nest-section-note">我们的相册</span><h2>共同回忆</h2><p>全家的合照、喜欢的画，还有值得留下的片刻。</p></div><button className="nest-text-action" onClick={()=>{setArea('settings');setSetting('appearance')}}><UiIcon name="paint"/>页头与入场设置 →</button></div>
+        <NestStickerEditor/><GalleryGrid owner="" variant="home" bare />
+      </section>}
+      {area==='feed'&&<section className="nest-room" aria-label="小窝动态"><div className="nest-room-heading"><div><span className="nest-section-note">带回来与你分享</span><h2>小糖人找到了什么</h2><p>功能带回来的发现，收藏或留下你的反馈。</p></div></div><NestFeedPanel features={features} bare /></section>}
+      {area==='settings'&&<div id="nest-tools" className="nest-settings-layout">
+        <nav className="nest-setting-nav" aria-label="小窝设置分类">{([
+          ['tavern','card','酒馆模式'],['appearance','paint','外观与入场'],['autonomy','rocket','自主活动与沙盒'],['tools','tools','工具中心'],['brain','memory','小窝大脑'],['features','settings','功能偏好'],['runner','rocket','运行与日志'],['processes','settings','进程管理'],['storage','settings','存储管理'],['worldbook','book','共用世界书'],['agents','link','Agent 协作']
+        ] as const).map(([id,icon,label])=><button key={id} aria-current={setting===id?'page':undefined} onClick={()=>setSetting(id)}><UiIcon name={icon}/>{label}</button>)}</nav>
+        <section className="nest-setting-content" aria-label="设置内容">
+          {setting==='tavern'&&<section><h2>酒馆模式</h2><label className="mt-4 flex items-center gap-2"><input type="checkbox" checked={tavernMode} onChange={e => { setModeError(''); void setTavernMode(e.target.checked).catch(err => setModeError(String(err))) }}/>启用酒馆模式</label><p className="mt-2 text-sm">开启后显示角色世界书、导入角色卡会话和导入入口；关闭后保留已有数据。</p>{modeError&&<p role="alert">{modeError}</p>}</section>}
+          {setting==='appearance' &&<NestWelcomeSettings/>}
+          {setting==='autonomy'&&<AutonomousActivityPanel/>}
+          {setting==='tools'&&<ToolCenter/>}
+          {setting==='processes'&&<ProcessPanel/>}
+          {setting==='storage'&&<StoragePanel embedded/>}
+          {setting==='brain'&&<><div className="nest-room-heading"><div><h2>小窝大脑</h2><p>供小窝功能使用，与聊天模型设置分开。</p></div></div><NestApiPanel bare/><ComputeSettings/></>}
+          {setting==='features'&&<NestSettingsPanel features={features} bare hideIds={['desktop_pet','qq_bridge','japanese_lab','english_study']}/>}
+          {setting==='runner'&&<NestRunnerPanel features={features} activeId={runnerId} onActiveChange={setRunnerId} bare/>}
+          {setting==='worldbook'&&<WorldbookPanel owner="" ownerLabel="家 · 共用世界书" bare/>}
+          {setting==='agents'&&<>            <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
               <div className="mb-1 flex items-center justify-between gap-2"><h2 className="font-bold">🤝 Agent 协作</h2><span className="text-[11px] text-[var(--text-3)]">通用消息中转</span></div>
               <p className="mb-3 text-[12px] text-[var(--text-2)]">给其他项目的 Agent 留言、交换协议或请求状态；具体功能和逻辑由独立项目处理。</p>
               <div className="flex gap-2">
                 <input className="input min-w-0 flex-1" value={agentText} onChange={(e) => setAgentText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void sendToAgent() }} placeholder="写一条协作消息…" />
                 <button className="btn sm" disabled={agentBusy || !agentText.trim()} onClick={() => void sendToAgent()}>发送</button>
               </div>
-              {agentErr && (
-                <p role="alert" className="mb-3 rounded-xl border border-[color-mix(in_srgb,var(--pink)_35%,var(--border))] bg-[var(--pink-soft)] px-3 py-2 text-[12px] text-[var(--pink-deep)]">
-                  ⚠ 协作消息没读到：{agentErr} —— 下面空着是没读到，不是「没人留言」。
-                </p>
-              )}
+              {agentErr&&<p role="alert" className="text-sm text-[var(--pink-deep)]">协作消息未读取：{agentErr}</p>}
               {agentMessages.length > 0 && <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">{agentMessages.slice(0, 12).map((m) => <div key={m.id} className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[12px]"><b>{m.sender}</b><span className="mx-1 text-[var(--text-3)]">→</span>{String(m.payload.text ?? JSON.stringify(m.payload))}</div>)}</div>}
-            </section>
-
-            {/* 小窝大脑 API：全局默认 + 每功能覆盖 */}
-            <NestApiPanel bare />
-
-            {/* 功能的开关搬进前端（§9.6.5）：白名单 / 演谁 / 音色 / 表情包…改完立刻生效。
-                Block 二 ② 之后，已经在自己面板里出设置的（hideIds）不在这一份里重复列 ——
-                这里只剩「还没搬家的」那几个（比如 B 站侦察，它没有工作台面板）。 */}
-            <NestSettingsPanel features={features} bare
-              hideIds={['desktop_pet', 'qq_bridge', 'japanese_lab', 'english_study']} />
-
-            {/* 让独立功能跑起来：选谁去看 + 启动 + 看日志（不用去终端敲命令） */}
-            <NestRunnerPanel features={features} activeId={runnerId} onActiveChange={setRunnerId} bare />
-          </div>
-        </NestDrawer>
-      </div>
-
-      {/* ---- 功能动态流：独立功能推回来的产出（§9.6）---- */}
-      <NestDrawer
-        title="📬 小糖人找到了什么"
-        hint="功能推回来的东西都在这 · 收藏/不感兴趣会写回给功能"
-        badge={feedOpen ? '' : '收起'}
-        open={feedOpen}
-        onToggle={() => setFeedOpen((v) => !v)}
-      >
-        <NestFeedPanel features={features} bare />
-      </NestDrawer>
-
-      {/* ---- 共同回忆 · 画廊：只看 owner='' 的那些（全家共用）---- */}
-      <NestDrawer
-        title="🖼 共同回忆 · 画廊"
-        hint="全家的合照都放这儿"
-        badge={galleryOpen ? '' : '收起'}
-        open={galleryOpen}
-        onToggle={() => setGalleryOpen((v) => !v)}
-      >
-        <GalleryGrid owner="" variant="home" bare />
-      </NestDrawer>
-
-      {/* ---- 家 · 共用世界书（§19）：群聊里生效的就是这一档 ---- */}
-      <NestDrawer
-        title="📖 家 · 共用世界书"
-        hint="World Info · 关键词触发的设定集"
-        badge={worldbookOpen ? '' : '收起'}
-        open={worldbookOpen}
-        onToggle={() => setWorldbookOpen((v) => !v)}
-      >
-        <WorldbookPanel owner="" ownerLabel="家 · 共用世界书" bare />
-      </NestDrawer>
+            </section></>}
+        </section>
+      </div>}
     </main>
   )
 }

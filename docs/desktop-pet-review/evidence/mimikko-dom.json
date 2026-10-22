@@ -1,0 +1,29 @@
+{
+  "url": "https://www.mimikko.cn/#/intro",
+  "text": "首页\nHome\n兽耳助手介绍\nIntroduction\n兽耳电脑版\nWindows&Mac\n联动合作\nLinkage\n兽耳Project\nProject\n兽耳生活\nLife\n留言板\nMessage\n兽耳招聘\nHiring\n下载中心\nDownload\n阁下，欢迎登录\n应用介绍\n助手介绍\n助手总览\n使用前必读兽耳助手隐私政策© 2016-2026 兽耳科技. All rights reserved. (沪ICP备16035174号 - 1)",
+  "links": [
+    {
+      "text": "使用前必读",
+      "url": "https://www.mimikko.cn/#/duty"
+    },
+    {
+      "text": "兽耳助手隐私政策",
+      "url": "https://www.mimikko.cn/#/privacy"
+    },
+    {
+      "text": "沪ICP备16035174号 - 1",
+      "url": "https://beian.miit.gov.cn/"
+    }
+  ],
+  "images": [
+    {
+      "alt": "",
+      "src": "https://www.mimikko.cn/images/nav/logo.png"
+    },
+    {
+      "alt": "",
+      "src": "https://www.mimikko.cn/images/nav/mimikko_mall.png"
+    }
+  ],
+  "videos": []
+}

@@ -10,9 +10,8 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import db
 from ..providers import openai
-from ..services.prompt import build_system_prompt
+from .chat import ChatMessage, _to_openai_messages, _resolve_persona, context_debug
 
 router = APIRouter()
 
@@ -20,6 +19,8 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20MB
 
 
 class VisionRequest(BaseModel):
+    messages: list[ChatMessage] = Field(default_factory=list)
+    max_tokens: int | None = None
     image_base64: str
     mime: str = "image/png"
     prompt: str = "看看这张图，说说你的感受。"
@@ -46,40 +47,17 @@ async def images_chat(req: VisionRequest) -> StreamingResponse:
     api_key = req.api_key or settings.model_api_key
     model = req.model or settings.model_vision
 
-    # 看图轮也要知道「在和谁说话」（§22），否则切到汐子后她的反应仍是大老大视角。
-    persona = db.get_profile((req.persona_id or "").strip() or db.get_active_persona_id())
-    system = build_system_prompt(
-        character_ids=req.character_ids,
-        messages=[{"role": "user", "content": req.prompt}],
-        uncensored=req.uncensored,
-        persona=persona,
-    )
-    messages: list[dict] = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    # 图片必须用 data URL（data:image/...;base64,xxx）。裸 base64 会被部分中转
-    # （vsllm 等）打成 400「API key not valid」/ 上游拒绝。
     data_url = f"data:{req.mime or 'image/png'};base64,{req.image_base64}"
-    messages.append(
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": req.prompt},
-                {"type": "image_url", "image_url": {"url": data_url}},
-            ],
-        }
+    history = [*req.messages, ChatMessage(role="user", content=req.prompt, images=[data_url])]
+    messages = _to_openai_messages(
+        history, req.character_ids, req.uncensored, _resolve_persona(req.persona_id)
     )
 
     async def gen() -> AsyncIterator[str]:
-        try:
-            async for ev in openai.stream_chat_retry(messages, model, base_url, api_key):
-                if ev["type"] == "text":
-                    yield _sse("token", {"text": ev["text"]})
-                elif ev["type"] == "done":
-                    yield _sse("done", {"finish_reason": ev.get("finish_reason")})
-                else:
-                    yield _sse("error", {"message": ev["message"]})
-        except Exception as exc:  # noqa: BLE001
-            yield _sse("error", {"message": str(exc)})
+        from ..services.conversation_runtime import transient_stream
+        yield _sse("context", context_debug(messages, model))
+        async for event in transient_stream(messages, model, base_url, api_key, max_tokens=req.max_tokens, source="images"):
+            kind = event.pop('type')
+            yield _sse(kind, event)
 
     return StreamingResponse(gen(), media_type="text/event-stream")

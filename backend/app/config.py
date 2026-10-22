@@ -1,6 +1,7 @@
 """应用配置：从环境变量 / .env 读取。API Key 只存在服务端，不暴露给前端。"""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,6 +12,19 @@ class Settings(BaseSettings):
     # 服务端
     host: str = "127.0.0.1"
     port: int = 8000
+
+    # 原生默认不变；轻量主机只保留聊天、记忆、搜索与 QQ。
+    runtime_profile: Literal["full", "lightweight"] = "full"
+    compute_mode: Literal["native", "delegated"] = "native"
+    compute_worker_url: str = ""
+    compute_worker_token: str = ""
+    compute_connect_timeout: float = 2.0
+    compute_task_timeout: float = 120.0
+    # 独立算力服务 app.worker:app，不启动主库、QQ 或后台活动。
+    worker_token: str = ""
+    worker_embedding_enabled: bool = True
+    worker_images_enabled: bool = False
+    serve_frontend: bool = False
 
     # 模型来源（OpenAI 兼容，多路切换）。几个中转都保留、随时可换：
     #   vsllm（当前主力）便宜，但模型掺水、没有生图通道；
@@ -45,6 +59,7 @@ class Settings(BaseSettings):
     embed_local_dir: str = ""  # 本地模型落地目录，留空 = backend/data/models/embedding（§16.7）
     embed_cloud_model: str = "text-embedding-3-small"
     embed_base_url: str = ""  # 留空 = 同 model_base_url
+    embed_api_key: str = ""  # 独立 embedding 密钥；仅复用聊天地址时允许回退聊天密钥
     memory_topk_home: int = 4  # 家记忆每次注入条数上限
     memory_topk_personal: int = 4  # 每位在场角色个人记忆注入条数上限
 
@@ -55,6 +70,17 @@ class Settings(BaseSettings):
 
     # 跨域（本地留空即可；部署时填前端域名，逗号分隔）
     cors_origins: str = ""
+
+    # 持续语音通话。密钥可以只在通话面板填写，不写入通用设置接口。
+    voice_asr_provider: str = "bailian"
+    voice_asr_model: str = "qwen-audio-3.1-asr-flash-streaming"
+    voice_asr_region: str = "beijing"
+    dashscope_api_key: str = ""
+    soniox_api_key: str = ""
+    fish_audio_api_key: str = ""
+    fish_audio_model: str = "s2.1-pro-free"
+    voice_fish_id: str = ""
+    voice_proxy: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:

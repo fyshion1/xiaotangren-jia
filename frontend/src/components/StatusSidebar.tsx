@@ -1,3 +1,4 @@
+import UiIcon from '../visual/UiIcon'
 import type { CharacterProfile } from '../data/characters'
 import type { ChatSession, CharacterStatus } from '../data/chats'
 import { DEFAULT_STATUS } from '../data/chats'
@@ -17,15 +18,11 @@ export type SidebarAction = {
 type Props = {
   session: ChatSession
   characters: CharacterProfile[]
-  autoSpeak: boolean
+  onVoiceCall: () => void
+  onVideoCall: () => void
   voiceName: string
-  speaking: boolean
-  onToggleAutoSpeak: () => void
-  onSpeak: () => void
-  onStop: () => void
   onPickVoice: () => void
   onGeneratePhoto: () => void
-  onManageStorage: () => void
   /**
    * 手机端专属的「快捷」按钮组（§27.5）。
    *
@@ -42,15 +39,11 @@ type Props = {
 export default function StatusSidebar({
   session,
   characters,
-  autoSpeak,
+  onVoiceCall,
+  onVideoCall,
   voiceName,
-  speaking,
-  onToggleAutoSpeak,
-  onSpeak,
-  onStop,
   onPickVoice,
   onGeneratePhoto,
-  onManageStorage,
   actions = [],
 }: Props) {
   const members = session.characterIds
@@ -67,33 +60,23 @@ export default function StatusSidebar({
       <div className="px-4 pb-2 pt-3 text-[12px] font-semibold tracking-wide text-[var(--text-3)]">状态</div>
 
       {/* 操作：生成照片 / 朗读·停止 / 自动朗读 */}
-      <div className="grid grid-cols-3 gap-2 px-4">
+      {!session.sandbox && <div className="grid grid-cols-3 gap-2 px-4">
         <button className="status-action" onClick={onGeneratePhoto} title="生成照片">
           <span className="text-[16px]">🎨</span>生成照片
         </button>
-        <button
-          className={`status-action ${speaking ? 'on' : ''}`}
-          onClick={speaking ? onStop : onSpeak}
-          title={speaking ? '停止当前朗读' : '朗读最近一条回复'}
-        >
-          <span className="text-[16px]">{speaking ? '⏹' : '🔊'}</span>
-          {speaking ? '停止' : '朗读'}
-        </button>
-        <button className={`status-action ${autoSpeak ? 'on' : ''}`} onClick={onToggleAutoSpeak} title="自动朗读每条回复">
-          <span className="text-[16px]">🎙</span>{autoSpeak ? '自动中' : '自动朗读'}
-        </button>
-      </div>
+        <button className="status-action" onClick={onVoiceCall} title="语音通话"><UiIcon name="phone"/>语音通话</button>
+        <button className="status-action" onClick={onVideoCall} title="视频通话"><UiIcon name="video"/>视频通话</button>
+      </div>}
 
       {/* 引擎+音色切换 */}
-      <div className="mt-2 px-4">
+      {!session.sandbox && <div className="mt-2 px-4">
         <button
           onClick={onPickVoice}
           className="w-full rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
         >
           🗣 语音：{voiceName}
         </button>
-        <button className="btn ghost sm mt-2 w-full" onClick={onManageStorage}>存储管理</button>
-      </div>
+      </div>}
 
       {/* 手机端快捷入口（§27.5）：桌面顶栏那一排在这儿的等价物 */}
       {actions.length > 0 && (

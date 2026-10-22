@@ -40,12 +40,15 @@ def embeddings_config() -> dict:
     from ..config import get_settings
 
     s = get_settings()
+    saved = db.get_feature_settings("memory_embedding").get("data") or {}
+    base_url = str(saved.get("base_url", s.embed_base_url) or "").strip()
+    api_key = str(saved.get("api_key", s.embed_api_key) or "").strip()
     return {
-        "engine": s.embed_engine or "local",
+        "engine": saved.get("engine", s.embed_engine) or "local",
         "local_model": s.embed_local_model,
-        "cloud_model": s.embed_cloud_model,
-        "base_url": s.embed_base_url or s.model_base_url,
-        "api_key": s.model_api_key,
+        "cloud_model": saved.get("cloud_model", s.embed_cloud_model),
+        "base_url": base_url or s.model_base_url,
+        "api_key": api_key or (s.model_api_key if not base_url or base_url.rstrip('/') == s.model_base_url.rstrip('/') else ""),
         "topk_home": max(0, int(s.memory_topk_home)),
         "topk_personal": max(0, int(s.memory_topk_personal)),
     }
@@ -53,7 +56,11 @@ def embeddings_config() -> dict:
 
 def current_engine_signature(cfg: dict | None = None) -> str:
     cfg = cfg or embeddings_config()
-    return emb.engine_signature(cfg["engine"], cfg["local_model"], cfg["cloud_model"])
+    signature = emb.engine_signature(cfg["engine"], cfg["local_model"], cfg["cloud_model"])
+    if cfg["engine"] == "cloud":
+        import hashlib
+        signature += ":" + hashlib.sha256(cfg.get("base_url", "").rstrip('/').encode()).hexdigest()[:16]
+    return signature
 
 
 def remember(
@@ -182,18 +189,19 @@ def search(
         except emb.EmbeddingError:
             qvec = []
 
-    terms = [] if qvec else _query_terms(query)
+    terms = _query_terms(query)
+    signature = current_engine_signature(cfg)
     scored: list[tuple[float, dict]] = []
     for mem in candidates:
         vec_blob = mem.get("vector")
-        if qvec and vec_blob:
-            score = emb.cosine(qvec, emb.unpack_vector(vec_blob))
-        elif qvec:
-            # query 有向量但这条记忆没向量（模型刚装上、还没重建索引）：不参与语义排序
-            score = 0.0
-        else:
-            score = _fallback_score(terms, mem["text"])
-        scored.append((score, mem))
+        score = _fallback_score(terms, mem["text"])
+        if qvec and vec_blob and mem.get("engine") == signature:
+            try:
+                score = max(score, emb.cosine(qvec, emb.unpack_vector(vec_blob)))
+            except (ValueError, TypeError):
+                pass
+        if score > 0:
+            scored.append((score, mem))
 
     scored.sort(key=lambda t: -t[0])
     out: list[dict] = []
@@ -268,10 +276,14 @@ def format_memory_block(
     lines: list[str] = ["【你记得的事 · 长期记忆】"]
     has_facts = bool(pinned_mem or pinned_facts)
     if pinned_mem:
-        lines.append("· 大老大特意叮嘱过要记住的：")
-        lines.extend(f"  - {m['text']}" for m in pinned_mem)
+        lines.append("· 当前用户已审核的关系记忆（不把旧约定误当新事实）：")
+        for m in pinned_mem:
+            scope = "共同" if m.get("scope") == "shared" else "仅「" + "、".join(name_of.get(cid, cid) for cid in m.get("character_ids", [])) + "」知道"
+            lines.append(f"  - [{scope}；{m.get('category', '')}；状态={m.get('state', 'active')}] {m['text']}")
+            if m.get("path"):
+                lines.append(f"    来源：个人记忆库/{m['path']}；注入原因：{m.get('injection_reason', 'selected')}")
     if pinned_facts:
-        lines.append("· 大老大档案里确定的真实信息（当作事实，别质疑、别猜别的）：")
+        lines.append("· 当前用户档案中已批准的真实信息（当作事实，保留原文中的日期和不确定性）：")
         lines.extend(f"  - {(p.get('title') or '').strip()}：{(p.get('content') or '').strip()}"
                      for p in pinned_facts if (p.get("content") or "").strip())
     if home:

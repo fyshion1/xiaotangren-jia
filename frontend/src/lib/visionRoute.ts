@@ -16,7 +16,7 @@ const FALLBACK: VisionRoute = {
 }
 
 /** 读取当前配置里的 vision 上游（无审查通道生效时优先用它的字段）。 */
-export function visionRoute(): VisionRoute {
+export function visionRoute(kind: 'vision' | 'chat' = 'vision'): VisionRoute {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return FALLBACK
@@ -25,7 +25,7 @@ export function visionRoute(): VisionRoute {
     return {
       baseUrl: (on && c.uncensoredBaseUrl) || c.baseUrl || FALLBACK.baseUrl,
       apiKey: (on && c.uncensoredApiKey) || c.apiKey || '',
-      model: (on && c.uncensoredVisionModel) || c.visionModel || FALLBACK.model,
+      model: (on && c[kind === 'chat' ? 'uncensoredChatModel' : 'uncensoredVisionModel']) || c[kind === 'chat' ? 'chatModel' : 'visionModel'] || FALLBACK.model,
     }
   } catch {
     return FALLBACK

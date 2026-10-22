@@ -56,6 +56,7 @@ async def game_chat(body: GameChatIn):
     ids = body.character_ids or [body.character_id]
     if len(set(ids)) != len(ids) or body.character_id not in ids:
         raise HTTPException(422, "角色列表必须唯一并包含主角色")
+    from ..services.prompt.assembler import _persona_block
     characters = []
     for character_id in ids:
         character = db.get_character(character_id)
@@ -73,7 +74,7 @@ async def game_chat(body: GameChatIn):
     )
     if len(ids) > 1:
         personas = [{"character_id": character_id, "name": character.get("name", character_id),
-                     "about": character.get("about", "")} for character_id, character in zip(ids, characters, strict=True)]
+                     "about": _persona_block(character)} for character_id, character in zip(ids, characters, strict=True)]
         system = (
             "在一次回复中扮演以下所有角色，保持各自人格，他们能听到彼此的台词。\n"
             + json.dumps(personas, ensure_ascii=False) + "\n" + rules
@@ -82,7 +83,7 @@ async def game_chat(body: GameChatIn):
         )
     else:
         character = characters[0]
-        system = f"你是{character.get('name', ids[0])}。\n{character.get('about', '')}\n" + rules + "只返回对话文字。"
+        system = f"你是{character.get('name', ids[0])}。\n{_persona_block(character)}\n" + rules + "只返回对话文字。"
     # 不调用普通聊天组装器，避免把家庭记忆和私人聊天上下文带入游戏。
     messages = [{"role": "system", "content": system}, {"role": "user", "content": json.dumps({
         "game_id": body.game_id, "world_id": body.world_id,

@@ -19,6 +19,13 @@ from ..services import gallery as gal
 router = APIRouter()
 
 
+@router.get('/storage/sessions')
+def storage_sessions() -> dict:
+    with db._tx() as conn:
+        rows = conn.execute('SELECT session_id,COUNT(*) AS count,MAX(created_at) AS latest FROM messages GROUP BY session_id ORDER BY latest DESC').fetchall()
+    return {'items': [dict(r) for r in rows]}
+
+
 def _ext_of(name: str) -> str:
     name = (name or "").lower()
     dot = name.rfind(".")
@@ -53,6 +60,7 @@ class MessageIn(BaseModel):
     image_source: str = ""  # upload / generated
     kind: str = "text"
     segments: list[dict] = Field(default_factory=list)
+    frames: list[str] = Field(default_factory=list)
 
 
 class AttachmentIn(BaseModel):
@@ -91,7 +99,17 @@ def _has_earlier(session: str, items: list[dict]) -> bool:
 async def create_message(body: MessageIn) -> dict:
     if body.role not in ("user", "assistant"):
         raise HTTPException(status_code=400, detail="role 必须是 user / assistant")
-    return db.append_message(
+    frames = []
+    for url in body.frames[:8]:
+        if url.startswith('/api/media-files/'):
+            from .media import _load_frame
+            raw, mime = _load_frame(url)
+            frames.append(attachments.save_image(body.session_id, raw, mime, source='video-frame')['orig'])
+        elif url.startswith('/api/files/'):
+            frames.append(url)
+        else:
+            raise HTTPException(422, '视频帧必须是本地附件引用')
+    saved = db.append_message(
         session_id=body.session_id,
         role=body.role,
         content=body.content,
@@ -99,12 +117,28 @@ async def create_message(body: MessageIn) -> dict:
         image_source=body.image_source,
         kind=body.kind,
         segments=body.segments,
+        frames=frames,
+        web_sync=True,
     )
+    from ..services import memory_workflow as workflow
+    # 测试同步会话明确不进入记忆；原始消息库始终是聊天的首要持久化来源。
+    if body.session_id != "gemini-test":
+        pid = body.session_id.split("@", 1)[0] if "@" in body.session_id else "dalaoda"
+        try:
+            workflow.archive_source([saved], pid, body.session_id, [])
+        except OSError:
+            import logging
+            logging.getLogger(__name__).exception("01 对话归档失败，原始消息仍保存在 SQLite")
+    return saved
 
 
 @router.delete("/messages")
 async def clear_messages(session: str = Query(..., min_length=1)) -> dict:
+    from ..services import memory_sources
+    with db._tx() as conn:
+        ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id=?", (session,))]
     removed = db.delete_messages(session)
+    memory_sources.remove(ids)
     return {"removed": removed}
 
 
@@ -169,6 +203,47 @@ async def upload_attachments_batch(
     return {"saved": saved, "errors": errors, "count": len(saved)}
 
 
+@router.post('/attachments/prepare')
+async def prepare_chat_attachment(session_id: str = Form(...), file: UploadFile = File(...)) -> dict:
+    """Local-only preprocessing shared by clients; never invokes a model."""
+    import asyncio
+    name, mime = file.filename or '附件', file.content_type or ''
+    is_pdf = mime == 'application/pdf' or name.lower().endswith('.pdf')
+    is_video = mime.startswith('video/') or _ext_of(name) in attachments.VIDEO_EXT
+    limit = (50 if is_video else 20) * 1024 * 1024
+    raw = await file.read(limit + 1)
+    if len(raw) > limit:
+        raise HTTPException(413, f'附件超过 {limit // 1024 // 1024}MB')
+    if is_pdf:
+        raise HTTPException(422, 'PDF 暂不支持发送，请改发图片')
+    if is_video:
+        from .media import analyze_video, _load_frame, _cleanup, _resolve_task
+        file.file.seek(0)
+        analyzed = await analyze_video(file)
+        saved = await asyncio.to_thread(attachments.save_video, session_id, raw, mime or _ext_of(name))
+        images = []
+        for url in analyzed['frames']:
+            frame, frame_mime = _load_frame(url)
+            image = await asyncio.to_thread(attachments.save_image, session_id, frame, frame_mime)
+            images.append(image['orig'])
+        _cleanup(_resolve_task(analyzed['task_id']))
+        return {'images': images, 'attachment': saved['orig'], 'text': f'[视频：{name}，以下附带按时间抽取的{len(images)}帧；不含音轨识别]'}
+    try:
+        def verify_image():
+            import io
+            from PIL import Image
+            try:
+                with Image.open(io.BytesIO(raw)) as image:
+                    image.verify()
+            except Exception as exc:
+                raise ValueError('图片无法解析，请确认文件完整') from exc
+        await asyncio.to_thread(verify_image)
+        saved = await asyncio.to_thread(_save_uploaded, session_id, name, mime, raw, 'upload')
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {'images': [saved['orig']], 'attachment': '', 'text': ''}
+
+
 @router.get("/attachments/stats")
 async def attachment_stats(session: str | None = Query(None)) -> dict:
     root = attachments.ATTACHMENTS_DIR
@@ -196,8 +271,7 @@ async def list_attachments(session: str = Query(..., min_length=1)) -> dict:
     items = []
     for it in data["items"]:
         refs = 0
-        if it["kind"] != "video":
-            refs = len(db.list_messages_by_image(it["orig"]))
+        refs = len(db.list_messages_by_image(it["orig"]))
         refs += len(db.list_gallery_by_orig(it["orig"]))
         items.append({**it, "refs": refs})
     return {"session": data["session"], "items": items, "count": len(items)}

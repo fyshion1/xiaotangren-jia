@@ -1,3 +1,4 @@
+import {UiLabel} from '../visual/UiIcon'
 // 小窝 · 抽屉（§9.6 布局改造）：默认收起，点标题栏才展开。
 //
 // 为什么不用原生 <details>（NestApiPanel 里那种）：小窝要能**从外面把它打开** ——
@@ -36,7 +37,7 @@ export default function NestDrawer({
         className="flex w-full items-center gap-2 px-4 py-3 text-left transition hover:bg-[color-mix(in_srgb,var(--pink)_8%,transparent)]"
       >
         <span className="w-3 shrink-0 text-[13px] text-[var(--text-3)]">{open ? '▾' : '▸'}</span>
-        <span className="text-[15px] font-bold text-[var(--text)]">{title}</span>
+        <span className="text-[15px] font-bold text-[var(--text)]"><UiLabel text={title}/></span>
         {hint && <span className="hidden truncate text-[11px] text-[var(--text-3)] sm:inline">{hint}</span>}
         {badge != null && <span className="ml-auto shrink-0 text-[11px] text-[var(--text-3)]">{badge}</span>}
       </button>

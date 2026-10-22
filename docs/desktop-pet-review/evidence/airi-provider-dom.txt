@@ -1,0 +1,31 @@
+AIRI
+ReLU
+新建对话
+尚未正确配置聊天 Provider
+请先前往设置页面选择并验证一个 Provider，再发送消息。
+打开 Provider 设置
+回复
+消息
+Onboarding
+选择服务来源
+OpenAI
+OpenAi.com
+Azure OpenAI
+Azure OpenAI API
+Anthropic | Claude
+anthropic.com
+Amazon Bedrock
+aws.amazon.com/bedrock
+Google Gemini
+gemini.google.com
+Groq
+groq.com
+OpenRouter
+OpenRouter.ai
+Ollama
+ollama.ai
+深度求索 DeepSeek
+DeepSeek.com
+OpenAI 兼容 API
+OpenAI 兼容 API
+下一步

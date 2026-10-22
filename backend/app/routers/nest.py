@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -40,6 +41,7 @@ from ..providers import openai
 from ..services import memory as memory_service
 from ..services import snowluma
 from ..services.prompt.forms import resolve_form
+from ..services.prompt.assembler import _persona_block
 
 router = APIRouter(prefix="/nest", tags=["nest"])
 
@@ -302,6 +304,126 @@ async def test_feature_api(feature_id: str) -> dict:
     }
 
 
+# 模型清单的入参：只读上游 /models，不写库
+class ModelListIn(BaseModel):
+    base_url: str = ""
+    api_key: str = ""
+    # 给了就用「真发一句话」探这个模型（流式，跟她说话走的是同一条路）
+    model: str = ""
+
+
+def _models_candidates(base_url: str) -> list[str]:
+    """按「大概该填什么」多试几个 /models 地址。
+
+    报 404 的常是 Base URL 填法不对：给了 `https://x/api/v1` 时 `/models` 拼出来是
+    `/api/v1/models`，可有的站模型清单挂在 `/v1/models`（或根上的 `/models`），
+    发消息却认 `/v1` —— 光看 404 分不清是「站点没这个接口」还是「地址多/少了一段」。
+    这里按顺序试，**第一本帐永远先用原样的地址**，试出来的建议只作参考、不改配置。
+    """
+    url = (base_url or "").strip().rstrip("/")
+    out = [url + "/models"] if url else []
+    # 最后一段是版本段（v1 / v2 / v3…）的，再看一眼站点根上的 /models
+    root = url.rsplit("/", 1)[0] if "/" in url else ""
+    if root and re.fullmatch(r"v\d+[a-z]?", url.rsplit("/", 1)[1]):
+        out.append(root + "/models")
+        # 再往上退一层（必须是真域名根，别拼出 `https://models` 这种怪地址）
+        if re.match(r"https?://[^/]+$", root):
+            out.append(root + "/models")
+    seen: set[str] = set()
+    return [u for u in out if not (u in seen or seen.add(u))]
+
+
+@router.post("/models")
+async def list_models(body: ModelListIn) -> dict:
+    """上游列出来的模型清单（`GET {base_url}/models`）—— 模型名那一栏的下拉用。
+
+    只读清单、不发消息；key 不落库（要存就点「保存全局默认」）。
+    上游不支持这个接口时也如实报，前端就在旁边写「手填也行」。
+    """
+    import httpx
+
+    base_url = (body.base_url or "").strip()
+    if not base_url:
+        return {"ok": False, "models": [], "detail": "还没填 Base URL"}
+    model = (body.model or "").strip()
+    if model:
+        cfg = {"base_url": base_url, "api_key": body.api_key}
+        got = await _probe_stream(cfg, model)
+        return {
+            "ok": got["ok"], "models": [], "status": got["status"],
+            "detail": got["detail"],
+            "hint": "" if got["ok"] else _hint_for(got["status"], got["detail"], base_url),
+        }
+    headers = {"Authorization": f"Bearer {body.api_key}"} if body.api_key else {}
+    last: dict = {}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0)) as client:
+        for cand in _models_candidates(base_url):
+            try:
+                resp = await client.get(cand, headers=headers)
+            except httpx.HTTPError as exc:
+                return {"ok": False, "models": [], "groups": [], "status": 0,
+                        "detail": f"连不上：{type(exc).__name__}: {exc}"}
+            is_json = (resp.headers.get("content-type") or "").lower().find("json") >= 0
+            if resp.status_code == 200:
+                try:
+                    data = json.loads(resp.text)
+                except ValueError:
+                    data = None
+                if isinstance(data, dict) and isinstance(data.get("data"), list):
+                    return _models_payload(data, resp.status_code, cand, base_url)
+            last = {
+                "ok": False, "models": [], "groups": [], "status": resp.status_code,
+                "detail": f"上游 {resp.status_code}：{_error_text(resp.text)[:300]}",
+                "hint": _hint_for(resp.status_code, resp.text, base_url),
+            }
+            if resp.status_code not in (404, 405) and resp.status_code < 500:
+                # 401 / 429 这类跟路径无关的错，换路径也是同一个结果，别多试
+                return last
+            if resp.status_code == 200 or (not is_json and resp.status_code < 300):
+                last["detail"] = f"{cand} 回的不是模型清单（多半是网页）"
+    return last
+
+
+def _models_payload(data: dict, status: int, used_url: str, base_url: str) -> dict:
+    rows = data.get("data")
+    # 中转站常按分组挂模型（有的还带 `渠道` / channel 字段），顺手按分组交出去，
+    # 前端两边各列一栏 —— 「站点有、我这条分组下没有」一眼就看得出来。
+    groups: dict[str, list[str]] = {}
+    for m in rows or []:
+        if not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"].strip():
+            continue
+        name = m["id"].strip()
+        tag = str(m.get("channel") or m.get("group") or "")
+        groups.setdefault(tag, []).append(name)
+    models = sorted({n for v in groups.values() for n in v})
+    owned = data.get("owned_by") if isinstance(data, dict) else None
+    payload = {
+        "ok": True, "models": models, "status": status,
+        "groups": [{"group": g, "models": sorted(v)} for g, v in sorted(groups.items())],
+        "detail": f"上游列了 {len(models)} 个模型" + (f"（{owned}）" if owned else ""),
+        "list_url": used_url,
+    }
+    root = (base_url or "").strip().rstrip("/")
+    if used_url != root + "/models":
+        # 原地址读不到、换了个路径才读到 —— 直说该填哪个（只是建议，不自动改）
+        prefix = used_url[: -len("/models")]
+        payload["suggest_base_url"] = prefix
+        payload["detail"] += f"（原地址读不到，是在 {used_url} 读到的 —— Base URL 可能要填 {prefix}）"
+    return payload
+
+
+def _error_text(raw: str) -> str:
+    """从上游响应体里抠一句人话（没抠出来就给原文前一段）。"""
+    try:
+        data = json.loads(raw or "")
+    except ValueError:
+        return (raw or "").strip()
+    err = data.get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("code") or err)
+    return (raw or "").strip()
+
+
 @router.get("/features/{feature_id}/api-config")
 async def get_feature_api_config(feature_id: str) -> dict:
     """该功能实际生效的配置（全局默认 + 功能覆盖合并后的结果）。"""
@@ -338,6 +460,7 @@ class NestTurn(BaseModel):
 
 
 class NestChatIn(BaseModel):
+    persona_id: str = Field(default='', max_length=120)
     feature_id: str = Field(min_length=1, max_length=80)
     world_id: str = Field(default="", max_length=160)
     player_id: str = Field(default="", max_length=160)
@@ -345,10 +468,10 @@ class NestChatIn(BaseModel):
     character_ids: list[str] = Field(default_factory=list, max_length=8)
     conversation_id: str = Field(default="", max_length=160)
     messages: list[NestTurn] = Field(min_length=1, max_length=50)
-    # 可选视觉：data URL 列表（data:image/...;base64,xxx），最多 8 张 —— 与视频抽帧同一条 token 安全线。
+    # 可选视觉：data URL 列表（data:image/...;base64,xxx），最多 10 张 —— 图片与视频帧共享视觉预算。
     # 有图 → 走上该功能的「视觉路」（vision_* 配置）；该功能 needs_vision=False 时直接拒。
     # **必须是 data URL**：裸 base64 会被 vsllm 等中转打成 400（见 media.py 的注释）。
-    images: list[str] = Field(default_factory=list, max_length=8)
+    images: list[str] = Field(default_factory=list, max_length=10)
     state: dict = Field(default_factory=dict)
     stream: bool = False
     max_tokens: int = Field(default=2048, ge=1, le=8192)
@@ -397,15 +520,10 @@ def _recall_memory_block(body: "NestChatIn", ids: list[str], characters: list[di
         )
         if not query:
             return ""
-        recalled = memory_service.recall_for(
-            ids, query,
-            session_kind="single" if len(ids) == 1 else "group",
-        )
-        # 身份挑选（§22.4）：功能侧和外设没有「当前身份」的念头，统一按大老大的挑选口径 ——
-        # 小糖人在 QQ 里也是同一个人，不该因为换了个入口就换一套记忆。
         from ..services import persona_memory as pm
-        pinned, excluded = pm.injectable(db.get_active_persona_id(), ids)
-        recalled = [m for m in recalled if m.get("id") not in excluded]
+        persona_id = body.persona_id or db.get_active_persona_id()
+        pinned, excluded = pm.injectable(persona_id, ids, query=query)
+        recalled = []
         name_of = {cid: (c.get("name") or "小糖人") for cid, c in zip(ids, characters, strict=True)}
         return memory_service.format_memory_block(recalled, name_of, pinned=pinned)
     except Exception:  # 记忆检索失败不该拖垮聊天
@@ -414,6 +532,25 @@ def _recall_memory_block(body: "NestChatIn", ids: list[str], characters: list[di
 
 @router.post("/chat")
 async def nest_chat(body: NestChatIn):
+    from ..services.turn_coordinator import turn
+    ids = body.character_ids or [body.character_id]
+    if body.persona_id and not db.get_profile(body.persona_id):
+        raise HTTPException(404, '用户身份不存在')
+    persona = body.persona_id or db.get_active_persona_id() or 'dalaoda'
+    body.persona_id = persona
+    # Hold the lease through stream consumption as well as prompt assembly.
+    if body.stream:
+        async def stream():
+            async with turn(persona, ids):
+                response = await _nest_chat(body)
+                async for chunk in response.body_iterator:
+                    yield chunk
+        return StreamingResponse(stream(), media_type='text/event-stream')
+    async with turn(persona, ids):
+        return await _nest_chat(body)
+
+
+async def _nest_chat(body: NestChatIn):
     ids = body.character_ids or [body.character_id]
     if len(set(ids)) != len(ids) or body.character_id not in ids:
         raise HTTPException(422, "角色列表必须唯一并包含主角色")
@@ -434,7 +571,7 @@ async def nest_chat(body: NestChatIn):
     )
     if len(ids) > 1:
         personas = [{"character_id": character_id, "name": character.get("name", character_id),
-                     "about": character.get("about", "")} for character_id, character in zip(ids, characters, strict=True)]
+                     "about": _persona_block(character)} for character_id, character in zip(ids, characters, strict=True)]
         system = (
             "在一次回复中扮演以下所有角色，保持各自人格，他们能听到彼此的台词。\n"
             + json.dumps(personas, ensure_ascii=False) + "\n" + rules
@@ -443,7 +580,7 @@ async def nest_chat(body: NestChatIn):
         )
     else:
         character = characters[0]
-        system = f"你是{character.get('name', ids[0])}。\n{character.get('about', '')}\n" + rules + "只返回对话文字。"
+        system = f"你是{character.get('name', ids[0])}。\n{_persona_block(character)}\n" + rules + "只返回对话文字。"
     # 默认不调用普通聊天组装器（不主动带家庭记忆和私人聊天上下文）；memory_recall=True 的功能
     # 只借组装器里的「召回 + 排版」这一段，人设和规则仍由本函数自己的 system 决定。
     if _wants_memory_recall(body):
@@ -452,6 +589,11 @@ async def nest_chat(body: NestChatIn):
             system += "\n\n" + memory_block
     context = {"feature_id": body.feature_id, "world_id": body.world_id,
                "player_id": body.player_id, "state": body.state}
+    if body.persona_id:
+        from ..services.activity_memory import prompt
+        evidence = prompt(body.persona_id, ids, body.messages[-1].content)
+        if evidence:
+            system += '\n\n' + evidence
     settings = get_settings()
     provider = _effective_config(body.feature_id)
     if not provider.get("base_url"):
@@ -541,7 +683,7 @@ class ToolTurnIn(BaseModel):
     character_id: str = Field(min_length=1, max_length=120)
     conversation_id: str = Field(default="", max_length=160)
     messages: list[ToolMsg] = Field(min_length=1, max_length=60)
-    images: list[str] = Field(default_factory=list, max_length=8)
+    images: list[str] = Field(default_factory=list, max_length=10)
     tools: list[dict] = Field(default_factory=list, max_length=20)
     state: dict = Field(default_factory=dict)
     max_tokens: int = Field(default=1024, ge=1, le=8192)
@@ -568,13 +710,13 @@ def _tool_system(character: dict, tools: list[dict], tool_note: str = "") -> str
     rules = (
         "你通过外部功能适配器陪着用户。你可以调用工具去做事，**不要声称做过没做的事**。\n"
         f"可用的工具：{'、'.join(names) or '（无）'}。\n"
-        "能用工具就用工具拿真实结果，别猜文件里有什么；拿到结果后用一两句话直接回应用户，"
+        "能用工具就用工具拿真实结果（读文件、联网查资料都先查再说），别猜；拿到结果后用一两句话直接回应用户，"
         "不要念工具返回的原文，也不要展示思考过程。\n"
         "工具被拒绝（越界 / 不在白名单）时如实说做不到，不要换个说法硬编。\n"
     )
     if tool_note:
         rules += tool_note.strip() + "\n"
-    return f"你是{character.get('name', '')}。\n{character.get('about', '')}\n" + rules
+    return f"你是{character.get('name', '')}。\n{_persona_block(character)}\n" + rules
 
 
 @router.post("/tool-turn")
@@ -775,6 +917,9 @@ def _settings_payload(feature_id: str) -> dict:
     spec = _settings_spec(feature_id)
     saved = db.get_feature_settings(feature_id)
     data = dict(saved.get("data") or {})
+    if feature_id == 'qq_bridge' and isinstance(data.get('sticker.library'), list):
+        from ..services.qq_stickers import deduplicate
+        data['sticker.library'] = deduplicate(data['sticker.library'])
     out: dict = {}
     for field in spec:
         key = field["key"]
@@ -782,7 +927,21 @@ def _settings_payload(feature_id: str) -> dict:
             out[key] = data[key]
         else:
             out[key] = field.get("default")
+    overrides = dict(data)
+    if feature_id == "qq_bridge" and get_settings().runtime_profile == "lightweight":
+        constrained = {"accounts": [], "onebot.mode": "server",
+                       "onebot.listen_port": 3010,
+                       "onebot.listen_path": "/onebot/v11/ws",
+                       "voice.enabled": False, "voice.auto": "off",
+                       "asr.engine": "none", "asr.fallback": "none",
+                       "proactive.enabled": False}
+        out.update(constrained)
+        overrides.update(constrained)
     return {"feature_id": feature_id, "schema": spec, "values": out,
+            # Feature processes must only apply saved values and runtime constraints.
+            # Schema defaults are for rendering the settings form and must not
+            # silently override a local fallback config.
+            "overrides": overrides,
             "configured": bool(saved.get("updated_at")), "updated_at": saved.get("updated_at", "")}
 
 
@@ -815,6 +974,9 @@ async def put_feature_settings(feature_id: str, body: SettingsIn) -> dict:
             unknown.append(str(key))          # 没声明过的一律不要（防塞垃圾进库）
             continue
         clean[str(key)] = _coerce(field, value)
+    if feature_id == 'qq_bridge' and isinstance(clean.get('sticker.library'), list):
+        from ..services.qq_stickers import deduplicate
+        clean['sticker.library'] = await asyncio.to_thread(deduplicate, clean['sticker.library'])
     db.set_feature_settings(feature_id, clean)
     return {**_settings_payload(feature_id), "ignored": unknown}
 
@@ -895,6 +1057,8 @@ async def run_feature(feature_id: str, body: RunIn) -> dict:
     焊死几百秒 —— 表现就是「点了自检整个小窝都卡死了」，连别的请求（日志、状态轮询）都进不来。
     同一功能的按钮也串行化（一把锁）：连点两下不会起两个进程。
     """
+    if get_settings().runtime_profile == "lightweight" and feature_id != "qq_bridge":
+        raise HTTPException(503, "轻量模式仅运行 QQ 桥，其他功能请在原生主机运行")
     info = _runner(feature_id)
     argv, spec = _build_command(info["runner"], {"name": body.command}, body)
     async with _run_lock(feature_id):
@@ -1204,6 +1368,8 @@ def _auto_swap_bot(feature_id: str, gw: dict) -> dict:
     有 WebUI 密码就替大老大把这个号摘下来、让机器人号顶上去；没填密码就老实说
     「只是提醒，自己换」。**任何失败都只是没换成**，不影响「网关已经开好了」这件事。
     """
+    if _setting(feature_id, 'accounts', []):
+        return {'ok': True, 'message': '多账号模式各用自己的端口，不执行独占换号'}
     want = str(_setting(feature_id, "onebot.self_id", "") or "").strip()
     password = str(_setting(feature_id, "gateway.password", "") or "").strip()
     webui_port = int(_setting(feature_id, "gateway.webui_port", snowluma.DEFAULT_WEBUI_PORT)

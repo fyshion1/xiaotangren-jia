@@ -13,6 +13,7 @@ from .config import get_settings
 from . import crash, runtime
 from .db import init_db
 from .services import harvest
+from .services import reminders as reminder_service
 from .routers import (
     agents,
     characters,
@@ -31,6 +32,7 @@ from .routers import (
     model_config,
     nest,
     profiles,
+    system,
     qq_bridge,
     voice,
     worldbook,
@@ -43,6 +45,8 @@ from .routers import (
 )
 from .services import attachments
 from .services import self_profile as sp
+from .services import memory_workflow as workflow_service
+from .services import exploration_autonomy
 
 settings = get_settings()
 
@@ -51,20 +55,39 @@ crash.install()
 
 init_db()
 sp.ensure_root()
+workflow_service.initialize()
+from .services import memory_sources
+from .routers import activity_memory
+from .routers import voice_call
+from .routers import knowledge
+memory_sources.migrate_legacy()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # 成果巡检（任务①）：后台低频轮询，发现新文件弹待确认卡片。
     crash.attach(asyncio.get_running_loop())
-    harvest.start()
+    if settings.runtime_profile == "full":
+        harvest.start()
+    reminder_service.start()
+    if settings.runtime_profile == "full":
+        exploration_autonomy.start()
     try:
         yield
     finally:
+        from .services import memory_batch
+        await memory_batch.stop()
         harvest.stop()
+        await reminder_service.stop()
+        await exploration_autonomy.stop()
 
 
 app = FastAPI(title="小糖人之家 后端", version="0.1.0", lifespan=lifespan)
+
+from .services.runtime_profile import LightweightGuard
+app.add_middleware(LightweightGuard)
+from .routers import compute as compute_router
+app.include_router(compute_router.router, prefix="/api")
 
 if settings.cors_origin_list:
     # 本地留空不启用 CORS（前后端同源）；部署时填前端域名。
@@ -77,11 +100,23 @@ if settings.cors_origin_list:
     )
 
 app.include_router(chat.router, prefix="/api")
+app.include_router(activity_memory.router, prefix="/api")
 app.include_router(session_chat.router, prefix="/api")
+from .routers import pet_companion
+app.include_router(pet_companion.router, prefix='/api')
+from .routers import tools as tools_router
+app.include_router(tools_router.router, prefix="/api")
+from .routers import project_costs as project_costs_router
+app.include_router(project_costs_router.router, prefix="/api")
+from .routers import exploration_projects as exploration_projects_router
+app.include_router(exploration_projects_router.router, prefix="/api")
+from .routers import reminders as reminders_router
+app.include_router(reminders_router.router, prefix="/api")
 app.include_router(images.router, prefix="/api")
 app.include_router(imagegen.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(voice.router, prefix="/api")
+app.include_router(voice_call.router, prefix="/api")
 app.include_router(messages.router, prefix="/api")
 app.include_router(memory.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
@@ -90,6 +125,7 @@ app.include_router(model_config.router, prefix="/api")
 app.include_router(gallery.router, prefix="/api")
 app.include_router(game.router, prefix="/api")
 app.include_router(nest.router, prefix="/api")
+app.include_router(system.router, prefix="/api")
 app.include_router(qq_bridge.router, prefix="/api")
 app.include_router(gemini_sync.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
@@ -98,9 +134,12 @@ app.include_router(profiles.router, prefix="/api")
 app.include_router(self_router.router, prefix="/api")
 from .routers import personal_db
 app.include_router(personal_db.router, prefix="/api")
+from .routers import memory_workflow
+app.include_router(memory_workflow.router, prefix="/api")
 from .routers import harvest as harvest_router
 app.include_router(harvest_router.router, prefix="/api")
 app.include_router(worldbook.router, prefix="/api")
+app.include_router(knowledge.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 
 # 附件图片静态目录（§15.1：媒体落盘，库里只存引用）
@@ -113,7 +152,7 @@ app.mount("/api/media-files", StaticFiles(directory=str(media.ROOT)), name="medi
 @app.get("/api/health")
 async def health() -> dict:
     """顶栏那颗灯靠它 —— 「大脑活着没有、这一个是第几次起来的、活了多久」。"""
-    return {"status": "ok", "name": "小糖人之家", **runtime.info()}
+    return {"status": "ok", "name": "小糖人之家", "profile": settings.runtime_profile, **runtime.info()}
 
 
 @app.post("/api/system/restart")
@@ -125,7 +164,7 @@ async def system_restart(background: BackgroundTasks) -> dict:
     真起不来的话 `runtime.restart()` 会抛，这里回 500 —— 当前这个大脑不受影响，继续跑。
     """
     try:
-        log_path = runtime.restart()
+        log_path = await asyncio.to_thread(runtime.restart)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"没能叫起新进程：{exc}") from exc
     background.add_task(runtime.exit_soon)
@@ -196,7 +235,18 @@ async def self_check() -> dict:
             "crash": crash.latest()}
 
 
+# Production can serve prebuilt frontend from the primary alone (no Node daemon).
+if settings.serve_frontend:
+    from pathlib import Path
+    frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if frontend_dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+    else:
+        raise RuntimeError("SERVE_FRONTEND=true 但缺少 frontend/dist，请先构建前端")
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=True)
+    uvicorn.run("app.main:app", host=settings.host, port=settings.port,
+                timeout_graceful_shutdown=5)

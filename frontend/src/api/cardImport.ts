@@ -2,13 +2,14 @@
 //
 // 三步走，前两步都是「先预览、后落库」：
 //   previewTavernCard(file)   → 只读卡 + 立绘落盘 + 拼 about，**立刻返回草稿**（不建角色、不叫模型）
-//   extractTavernCard(file)   → 画面出来之后才叫模型抽词条（后填；慢的是它）
-//   translateTavernCard(text) → 另要一份中文译文（只给界面看，原文照旧喂模型）
+//   extractTavernCardStream(file)   → 用户点击后才叫模型抽词条（流式，边抽边显示）
+//   translateTavernCardStream(text) → 用户点击后才要中文译文（流式；原文照旧喂模型）
 //   commitTavernCard(...)     → 用户在预览里确认 / 改过名字词条之后，才真的建角色
 //
 // 读卡与抽取的规则在后端 `services/card_import.py`（原文一字不改）；这里只管传输。
 
 import type { CharacterProfile } from '../data/characters'
+import { readSSE } from './stream'
 
 /** 抽取 / 翻译模型走聊天那一份上游（与 lib/visionRoute 同源）：留空则由后端回退 .env。 */
 export type CardImportRoute = { baseUrl: string; apiKey: string; model: string }
@@ -65,25 +66,58 @@ export async function previewTavernCard(file: File): Promise<CardPreview> {
   return asJson<CardPreview>('/api/imports/tavern-card/preview?extract=false', { method: 'POST', body: fd })
 }
 
-/** 第二步：叫模型从原文里抽词条（后填）。要几秒，抽不到就是空词条 + warnings，不抛。 */
-export async function extractTavernCard(
-  file: File,
-  route?: CardImportRoute,
-): Promise<{ extracted: boolean; fields: Partial<CharacterProfile>; warnings: string[] }> {
-  const fd = new FormData()
-  fd.append('file', file)
-  return asJson(`/api/imports/tavern-card/extract${routeQuery(route)}`, { method: 'POST', body: fd })
+/** 流式请求的进度回调。`token` 是模型新吐的一段字；`status` 是「正在重试 1/2」这类提示。 */
+export type StreamHandlers = {
+  onToken?: (text: string) => void
+  onStatus?: (message: string) => void
+  /** 最终结果（done 事件）。 */
+  onDone?: (payload: Record<string, unknown>) => void
+  /** 失败（error 事件 / 断连 / HTTP 错误）—— **不致命**，拿来当提醒就行。 */
+  onError?: (message: string, payload?: Record<string, unknown>) => void
+  signal?: AbortSignal
 }
 
-/** 第三步：要一份**只给界面看**的中文译文。翻的是传进来的 text（用户改过就翻改过的）。 */
-export async function translateTavernCard(
-  text: string,
-  route?: CardImportRoute,
-): Promise<{ aboutZh: string; warnings: string[] }> {
-  return asJson(`/api/imports/tavern-card/translate${routeQuery(route)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+function runStream(
+  url: string,
+  body: unknown,
+  h: StreamHandlers,
+  mapDone: (payload: Record<string, unknown>) => void,
+): Promise<void> {
+  return readSSE(
+    url,
+    body,
+    (type, payload) => {
+      if (type === 'token') h.onToken?.(String(payload.text ?? ''))
+      else if (type === 'status') h.onStatus?.(String(payload.message ?? ''))
+      else if (type === 'done') mapDone(payload)
+      else if (type === 'error') h.onError?.(String(payload.message ?? '未知错误'), payload)
+    },
+    { signal: h.signal },
+  ).catch((e: unknown) => {
+    if (h.signal?.aborted) return
+    h.onError?.(e instanceof Error ? e.message : String(e))
+  })
+}
+
+/** 第二步：叫模型从原文里抽词条（**流式**）。抽不到就是空词条 + warnings，不抛。 */
+export function extractTavernCardStream(file: File, route: CardImportRoute | undefined, h: StreamHandlers) {
+  const fd = new FormData()
+  fd.append('file', file)
+  return runStream(`/api/imports/tavern-card/extract/stream${routeQuery(route)}`, fd, h, (p) => {
+    h.onDone?.({
+      extracted: Boolean(p.extracted),
+      fields: (p.fields ?? {}) as Partial<CharacterProfile>,
+      warnings: (p.warnings ?? []) as string[],
+      reason: p.reason,
+    })
+  })
+}
+
+/** 第三步：要一份**只给界面看**的中文译文（流式）。翻的是传进来的 text（用户改过就翻改过的）。
+ *  正文本来就是中文时后端直接跳过（`skipped: true`），一个 token 都不吐。 */
+export function translateTavernCardStream(text: string, route: CardImportRoute | undefined, h: StreamHandlers) {
+  return runStream(`/api/imports/tavern-card/translate/stream${routeQuery(route)}`, { text }, h, (p) => {
+    h.onDone?.({ aboutZh: String(p.aboutZh ?? ''), skipped: Boolean(p.skipped), reason: String(p.reason ?? '') })
   })
 }
 
@@ -109,11 +143,16 @@ export async function commitTavernCard(body: {
 }
 
 /** 角色介绍页的「插入开场白」：把档案里存的那份开场白写成她私聊的第一条。
- *  会话已经聊过则 400（开场白该在最前面），把后端的原话抛给用户看。 */
+ *  会话已经聊过则 409（开场白插到最新消息后面会很怪），把后端的原话抛给用户看 ——
+ *  用户确认「还是要插」之后带 `insert: true` 再调一次。 */
 export async function insertTavernCardGreeting(
   charId: string,
+  insert = false,
 ): Promise<{ ok: boolean; session_id: string; content: string }> {
-  return asJson(`/api/imports/tavern-card/${encodeURIComponent(charId)}/greeting`, { method: 'POST' })
+  return asJson<{ ok: boolean; session_id: string; content: string }>(
+    `/api/imports/tavern-card/${encodeURIComponent(charId)}/greeting`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ insert }) },
+  )
 }
 
 /** 删掉导入的角色卡（角色介绍 / 最近对话里都能点）。

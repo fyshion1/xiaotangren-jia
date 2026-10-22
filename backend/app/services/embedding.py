@@ -15,6 +15,8 @@ from __future__ import annotations
 import array
 import hashlib
 import json
+import math
+import threading
 from pathlib import Path
 
 import httpx
@@ -25,6 +27,7 @@ DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "mo
 
 # 本地模型懒加载缓存：{model_name: SentenceTransformer}
 _local_cache: dict[str, object] = {}
+_load_lock = threading.Lock()
 
 
 class EmbeddingError(RuntimeError):
@@ -43,21 +46,32 @@ def engine_signature(engine: str, local_model: str, cloud_model: str) -> str:
 
 def _load_local(model_name: str, model_dir: Path) -> object:
     """懒加载本地模型。首次调用会加载权重（几百 ms ~ 数秒），之后走缓存。"""
-    cached = _local_cache.get(model_name)
+    local_path = model_dir / model_name.replace("/", "__")
+    # 兼容已下载到 embedding 根目录的旧布局，离线加载，绝不悄悄联网。
+    if not local_path.is_dir() and (model_dir / "config.json").is_file():
+        local_path = model_dir
+    cache_key = str(local_path.resolve()) + ":" + model_name
+    cached = _local_cache.get(cache_key)
     if cached is not None:
         return cached
     try:
         from sentence_transformers import SentenceTransformer
-    except ImportError as exc:
+    except Exception as exc:
         raise EmbeddingError(
             "本地 embedding 需要 sentence-transformers：请先跑 download_embedding.sh 下模型、"
             "再 uv pip install sentence-transformers"
         ) from exc
     # 优先用本地目录里的权重（离线），没有再让 sentence-transformers 按名字取（会联网下载）
-    local_path = model_dir / model_name.replace("/", "__")
-    source = str(local_path) if local_path.is_dir() else model_name
-    model = SentenceTransformer(source)
-    _local_cache[model_name] = model
+    if not local_path.is_dir():
+        raise EmbeddingError("本地向量模型文件缺失，请下载模型到 backend/data/models/embedding")
+    try:
+        with _load_lock:
+            if cache_key in _local_cache:
+                return _local_cache[cache_key]
+            model = SentenceTransformer(str(local_path), local_files_only=True, device="cpu")
+            _local_cache[cache_key] = model
+    except Exception as exc:
+        raise EmbeddingError(f"本地向量模型加载失败：{exc}") from exc
     return model
 
 
@@ -86,16 +100,20 @@ def _embed_cloud(
         resp = httpx.post(
             f"{base}/embeddings",
             headers=headers,
-            json={"model": model, "input": texts},
-            timeout=httpx.Timeout(120.0, connect=30.0),
+            json={"model": model, "input": texts, "encoding_format": "float"},
+            timeout=httpx.Timeout(15.0, connect=3.0),
         )
     except httpx.HTTPError as exc:
-        raise EmbeddingError(f"云端 embedding 请求失败：{exc}") from exc
+        raise EmbeddingError("云端 embedding 连接失败或超时，已使用关键词降级") from exc
     if resp.status_code >= 400:
-        raise EmbeddingError(f"上游 {resp.status_code}: {resp.text[:300]}")
+        raise EmbeddingError(f"云端 embedding HTTP {resp.status_code}，已使用关键词降级")
     data = resp.json().get("data") or []
+    if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+        raise EmbeddingError("云端向量返回格式无效，已使用关键词降级")
     # 按 index 排序，保证与入参顺序一致（部分中转不保证返回顺序）
     data = sorted(data, key=lambda d: d.get("index", 0))
+    if [item.get("index") for item in data] != list(range(len(texts))):
+        raise EmbeddingError("云端向量序号缺失或重复，已使用关键词降级")
     return [[float(x) for x in item.get("embedding", [])] for item in data]
 
 
@@ -110,14 +128,41 @@ def embed_texts(
     cloud_model: str = "text-embedding-3-small",
     base_url: str = "",
     api_key: str = "",
+    _delegate: bool = True,
 ) -> list[list[float]]:
     """把一批文本编码成向量（同步；本地 CPU 与云端阻塞调用都用这个入口）。"""
     cleaned = [t if isinstance(t, str) else str(t or "") for t in texts]
     if not cleaned:
         return []
     if engine == "cloud":
-        return _embed_cloud(cleaned, cloud_model, base_url, api_key)
-    return _embed_local(cleaned, local_model, model_dir or DEFAULT_MODEL_DIR)
+        try:
+            vectors = _embed_cloud(cleaned, cloud_model, base_url, api_key)
+        except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
+            raise EmbeddingError("云端向量返回格式无效，已使用关键词降级") from exc
+    else:
+        # Explicit cloud API bypasses delegation in both runtime modes.
+        if _delegate:
+            from ..config import get_settings
+            from . import compute
+            try:
+                cfg = compute.configuration()
+                if cfg.mode == "delegated":
+                    result = compute.request_sync("embeddings", {"texts": cleaned, "model": local_model})
+                    if result.get("model") != local_model:
+                        raise EmbeddingError("算力端向量模型不一致，请核对配置")
+                    vectors = [[float(x) for x in row] for row in result["vectors"]]
+                elif get_settings().runtime_profile == "lightweight":
+                    raise EmbeddingError("轻量模式未启用本地向量模型，使用关键词检索或配置外部 API")
+                else:
+                    vectors = _embed_local(cleaned, local_model, model_dir or DEFAULT_MODEL_DIR)
+            except (compute.ComputeUnavailable, ValueError, TypeError, KeyError) as exc:
+                raise EmbeddingError("委托向量计算不可用，已使用关键词降级") from exc
+        else:
+            vectors = _embed_local(cleaned, local_model, model_dir or DEFAULT_MODEL_DIR)
+    if (len(vectors) != len(cleaned) or not vectors or not vectors[0]
+            or any(len(v) != len(vectors[0]) or not all(math.isfinite(x) for x in v) for v in vectors)):
+        raise EmbeddingError("向量返回为空、数量不符或维度无效，已使用关键词降级")
+    return vectors
 
 
 # ---- 向量与 BLOB 的互转（sqlite 存 BLOB，检索时读回算余弦）----
@@ -138,7 +183,7 @@ def unpack_vector(blob: bytes, dim: int = 0) -> list[float]:
 
 def cosine(a: list[float], b: list[float]) -> float:
     """余弦相似度。本地模型已归一化，云端未归一，这里都按通用式算。"""
-    if not a or not b:
+    if not a or not b or len(a) != len(b) or not all(math.isfinite(v) for v in [*a, *b]):
         return 0.0
     n = min(len(a), len(b))
     dot = 0.0

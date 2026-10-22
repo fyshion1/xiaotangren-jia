@@ -1,0 +1,10 @@
+# Optional, separately approved capability. No host CLI/auth installation.
+FROM node:22-bookworm-slim AS cli
+RUN npm install -g @openai/codex@0.163.0
+FROM xiaotangren-sandbox:local
+USER root
+COPY --from=cli /usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/ /usr/local/bin/
+COPY --from=cli /usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path/rg /usr/local/bin/rg
+COPY agent_runner.py /opt/xtr-agent.py
+USER 65534:65534
+WORKDIR /work

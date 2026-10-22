@@ -1,0 +1,11 @@
+C:\Users\32437\Desktop\xiaotangren-jia\backend\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+test_cross_day_correction_is_pending_and_old_memory_needs_explicit_retirement (test_memory_followup.MemoryFollowupTests.test_cross_day_correction_is_pending_and_old_memory_needs_explicit_retirement) ... ok
+test_cross_day_same_topic_preserves_distinct_events (test_memory_followup.MemoryFollowupTests.test_cross_day_same_topic_preserves_distinct_events) ... ok
+test_overview_links_shared_evidence_without_mutating_files (test_memory_followup.MemoryFollowupTests.test_overview_links_shared_evidence_without_mutating_files) ... ok
+test_two_events_from_one_message_both_survive_and_can_be_approved (test_memory_followup.MemoryFollowupTests.test_two_events_from_one_message_both_survive_and_can_be_approved) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 2.301s
+
+OK

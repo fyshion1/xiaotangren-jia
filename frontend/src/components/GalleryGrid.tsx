@@ -1,3 +1,4 @@
+import GalleryComposition from '../visual/GalleryComposition'
 // 个人介绍 / 糖人小窝下方的画廊（《项目要求》§9.4）。
 // 有真图就展示真实收藏（缩略图 + 描述），点开看大图；一张都没有时退回占位格子。
 // 收藏入口在聊天里：图片气泡右上角的 ⭐ 或顶栏的 🖼 画廊。
@@ -132,49 +133,7 @@ export default function GalleryGrid({ owner, variant = 'character', bare = false
   const privateItems = items.filter((g) => g.private)
 
   function renderCell(g: GalleryItem) {
-    return (
-      <button
-        key={g.id}
-        type="button"
-        onClick={() => setLightbox(g)}
-        title={g.description || (g.kind === 'video' ? '点开看视频' : '点开看大图')}
-        className="relative aspect-[3/4] cursor-pointer overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] shadow-[var(--shadow-sm)] transition hover:-translate-y-1 hover:border-[var(--pink)] hover:shadow-[var(--shadow)]"
-      >
-        <GalleryMedia
-          item={g}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-        <div className="absolute right-2 top-2 flex gap-1">
-          {g.kind === 'video' && (
-            <span
-              className="flex h-[22px] w-[22px] items-center justify-center rounded-md border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] text-[11px]"
-              title="视频"
-            >
-              ▶
-            </span>
-          )}
-          {g.private && (
-            <span
-              className="flex h-[22px] w-[22px] items-center justify-center rounded-md border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] text-[11px]"
-              title="私密层：默认不展示（防别人瞥屏），仍可进小糖人记忆"
-            >
-              🔒
-            </span>
-          )}
-          {g.in_memory && (
-            <span
-              className="flex h-[22px] w-[22px] items-center justify-center rounded-md border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] text-[11px] text-[var(--pink-deep)]"
-              title="这张进了小糖人的记忆"
-            >
-              🧠
-            </span>
-          )}
-        </div>
-        <div className="absolute bottom-0 left-0 right-0 line-clamp-2 bg-[color-mix(in_srgb,var(--surface)_82%,transparent)] px-2.5 py-1.5 text-left text-[12px] text-[var(--text-2)] backdrop-blur">
-          {g.description || '（还没有描述）'}
-        </div>
-      </button>
-    )
+    return <figure key={g.id} className="gallery-media-card"><button type="button" onClick={()=>setLightbox(g)} title="查看收藏" className="gallery-media-open"><GalleryMedia item={g} className="h-full w-full object-contain"/></button><figcaption><span>{g.kind==='video'?'视频 · ':''}{g.private?'私密 · ':''}{g.in_memory?'已收录记忆 · ':''}{g.description||'尚无描述'}</span></figcaption></figure>
   }
 
   return (
@@ -215,6 +174,8 @@ export default function GalleryGrid({ owner, variant = 'character', bare = false
         <div className="rounded-2xl border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)] px-4 py-8 text-center text-[12px] text-[var(--text-3)]">
           公开层是空的 —— 这里的图都收在私密层了（下面那条展开）。
         </div>
+      ) : publicItems.some(g=>g.kind!=='video') ? (
+        <><GalleryComposition images={publicItems.filter(g=>g.kind!=='video').map(g=>g.orig)} labels={publicItems.filter(g=>g.kind!=='video').map(g=>g.description)} name={isHome?'全家':characters.find(c=>c.id===owner)?.name||'角色'} onOpen={src=>{const g=publicItems.find(g=>g.orig===src);if(g)setLightbox(g)}}/>{publicItems.some(g=>g.kind==='video')&&<div className="grid grid-cols-2 gap-4 sm:grid-cols-3">{publicItems.filter(g=>g.kind==='video').map(renderCell)}</div>}</>
       ) : (
         <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-6">
           {hasReal

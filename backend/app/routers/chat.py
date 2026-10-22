@@ -7,6 +7,7 @@
 """
 
 import json
+from typing import Literal
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter
@@ -23,6 +24,7 @@ router = APIRouter()
 class ChatMessage(BaseModel):
     role: str
     content: str
+    images: list[str] = Field(default_factory=list, max_length=10)
 
 
 class ChatRequest(BaseModel):
@@ -39,10 +41,26 @@ class ChatRequest(BaseModel):
     max_tokens: int | None = None
     # 是否走无审查通道：为真时组装引擎额外追加「无审查专属」越狱块（§7）。
     uncensored: bool = False
+    card_display_mode: Literal['chat', 'html'] | None = None
 
 
 def _role_of(role: str) -> str:
     return role if role in {"user", "assistant"} else "user"
+
+
+def apply_card_display_mode(messages: list[dict], character_ids: list[str], mode: str | None) -> None:
+    if mode not in {'chat', 'html'} or len(character_ids) != 1:
+        return
+    character = db.get_character(character_ids[0])
+    if not character or not character.get('imported'):
+        return
+    instruction = ('本轮使用仅聊天模式。像朋友发消息一样用自然中文回应，保持角色个性；'
+                   '只输出聊天正文，不输出 HTML、CSS、JavaScript、代码围栏、状态面板或卡片模板。') if mode == 'chat' else (
+                   '本轮使用角色卡 HTML 渲染模式。遵循卡内已有的显示格式与模板；没有格式要求时自然回应，不必另造模板。')
+    if messages and messages[0].get('role') == 'system':
+        messages[0]['content'] += '\n\n' + instruction
+    else:
+        messages.insert(0, {'role': 'system', 'content': instruction})
 
 
 def _resolve_persona(persona_id: str | None) -> dict | None:
@@ -58,7 +76,17 @@ def _to_openai_messages(
     persona: dict | None = None,
 ) -> list[dict]:
     # 世界书需要原文消息，先转成 dict 再传给组装引擎。
-    raw = [{"role": _role_of(m.role), "content": m.content} for m in messages]
+    raw = [{"role": _role_of(m.role), "content": m.content, "images": m.images} for m in messages]
+    # Keep the most recent visuals within a shared request budget, including video frames.
+    from ..services.attachments import MAX_CONTEXT_IMAGES
+    remaining = MAX_CONTEXT_IMAGES
+    for message in reversed(raw):
+        pictures = message["images"] if message["role"] == "user" else []
+        selected = pictures[-remaining:] if remaining else []
+        if len(selected) < len(pictures):
+            message["content"] += "\n[较早附件未重复发送；需要查看细节请重新上传]"
+        message["images"] = selected
+        remaining -= len(selected)
     system = build_system_prompt(
         character_ids=character_ids, messages=raw, uncensored=uncensored, persona=persona
     )
@@ -73,12 +101,33 @@ def _to_openai_messages(
     if len(present) > 1 and len(by_id) > len(present):
         raw = _strip_absent_speakers(raw, present)
     out: list[dict] = [{"role": "system", "content": system}] if system else []
-    out.extend(raw)
+    from ..services.attachments import image_for_model
+
+    for message in raw:
+        images = message.pop("images", []) if message["role"] == "user" else []
+        message.pop("images", None)
+        if images:
+            message["content"] = [
+                {"type": "text", "text": message["content"]},
+                *[{"type": "image_url", "image_url": {"url": image_for_model(url)}} for url in images],
+            ]
+        out.append(message)
     return out
 
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def context_debug(messages: list[dict], model: str) -> dict:
+    """记录实际交给 provider 的结构，省略图片字节和密钥。"""
+    return {"model": model, "messages": [
+        {"role": m["role"], "text": m["content"] if isinstance(m["content"], str) else
+         "\n".join(p.get("text", "") for p in m["content"] if p.get("type") == "text"),
+         "image_count": sum(p.get("type") == "image_url" for p in m["content"])
+         if isinstance(m["content"], list) else 0}
+        for m in messages
+    ]}
 
 
 @router.post("/chat/preview")
@@ -93,8 +142,9 @@ async def chat_preview(req: ChatRequest) -> dict:
     messages = _to_openai_messages(
         req.messages, req.character_ids, req.uncensored, _resolve_persona(req.persona_id)
     )
+    apply_card_display_mode(messages, req.character_ids, req.card_display_mode)
     return {
-        "model": req.model or settings.model_chat,
+        "model": req.model or (settings.model_vision if any(m.images for m in req.messages) else settings.model_chat),
         "base_url": req.base_url or settings.model_base_url,
         "max_tokens": req.max_tokens if req.max_tokens and req.max_tokens > 0 else None,
         "messages": messages,
@@ -109,24 +159,18 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     settings = get_settings()
     base_url = req.base_url or settings.model_base_url
     api_key = req.api_key or settings.model_api_key
-    model = req.model or settings.model_chat
+    model = req.model or (settings.model_vision if any(m.images for m in req.messages) else settings.model_chat)
     messages = _to_openai_messages(
         req.messages, req.character_ids, req.uncensored, _resolve_persona(req.persona_id)
     )
+    apply_card_display_mode(messages, req.character_ids, req.card_display_mode)
     max_tokens = req.max_tokens if req.max_tokens and req.max_tokens > 0 else None
 
     async def gen() -> AsyncIterator[str]:
-        try:
-            async for ev in openai.stream_chat_retry(
-                messages, model, base_url, api_key, max_tokens=max_tokens
-            ):
-                if ev["type"] == "text":
-                    yield _sse("token", {"text": ev["text"]})
-                elif ev["type"] == "done":
-                    yield _sse("done", {"finish_reason": ev.get("finish_reason")})
-                else:
-                    yield _sse("error", {"message": ev["message"]})
-        except Exception as exc:  # noqa: BLE001
-            yield _sse("error", {"message": str(exc)})
+        from ..services.conversation_runtime import transient_stream
+        yield _sse("context", context_debug(messages, model))
+        async for event in transient_stream(messages, model, base_url, api_key, max_tokens=max_tokens, source="chat"):
+            kind = event.pop('type')
+            yield _sse(kind, event)
 
     return StreamingResponse(gen(), media_type="text/event-stream")

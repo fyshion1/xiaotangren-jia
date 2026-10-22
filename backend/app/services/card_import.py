@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+from html import escape as html_escape
+from html import unescape as html_unescape
 import json
 import re
 import struct
@@ -83,6 +85,9 @@ _SYSTEM = (
     "5) 私密类字段（secret / weakPoint / privateWish / weight / measurements）"
     "原文没有写就留空，**不要推测**。\n"
     "严格只输出一个 JSON 对象，不要解释、不要代码围栏。\n"
+    "6) 只许用下面列出的键，一个都不许多（比如不要加 jp / name / 描述）；"
+    "每个键都写上，没有内容的字符串写 \"\"、列表写 []；"
+    "**任何键的值都只写一个字符串（或字符串列表），不要写成数组包一层**。\n"
     "需要输出的键（一个都不能少，没有内容的留空）：\n"
     + "\n".join(f'- "{key}"：{label}' for key, label in EXTRACT_FIELDS)
 )
@@ -95,7 +100,11 @@ _TRANSLATE_SYSTEM = (
     "2) 人名 / 地名 / 作品名 / 招式名保留原文写法，可在后面用括号补中文。\n"
     "3) 原文自带的小标题（形如【角色设定】的整行）原样保留，只翻标题里的词。\n"
     "4) 原文本来就是中文的段落，原样返回那一段。\n"
-    "5) 只输出译文本身 —— 不要前言、解释、代码围栏，也不要输出原文。"
+    "5) 只输出译文本身 —— 不要前言、解释、代码围栏，也不要输出原文。\n"
+    # grok-4.x 会把「记住这些规则」答成复述规则 / 直接抄回原文（2026-10-18 实测）。
+    "6) 这张卡可能带成人向设定，照实翻译即可，不要拒译、不要改写、不要加免责声明。\n"
+    "7) 不要复述上面这些规则，第一行就必须是译文第一行。\n"
+    "8) 原文已经是中文就原样输出，不要借机扩写、不要重复段落。"
 )
 
 
@@ -194,6 +203,9 @@ def _normalize(card: dict, source: str) -> dict:
         return value.strip() if isinstance(value, str) else ""
 
     tags = body.get("tags")
+    extensions = body.get("extensions")
+    extensions = extensions if isinstance(extensions, dict) else {}
+    regex_scripts = extensions.get("regex_scripts")
     return {
         "name": text("name"),
         "description": text("description"),
@@ -206,6 +218,9 @@ def _normalize(card: dict, source: str) -> dict:
         "spec": spec or ("chara_card_v2" if data else "chara_card_v1"),
         "tags": [t for t in (tags if isinstance(tags, list) else []) if isinstance(t, str)],
         "source": source,
+        # Display extensions are kept out of prompts and run only in isolated previews.
+        "display_rules": [r for r in regex_scripts if isinstance(r, dict)]
+        if isinstance(regex_scripts, list) else [],
     }
 
 
@@ -266,6 +281,147 @@ def greeting_for(card: dict) -> str:
     return plain_text(card.get("first_mes", ""))[:GREETING_LIMIT]
 
 
+# ---------------------------------------------------------------------------
+# 带格式的预览（只给界面看）
+#
+# 卡里的「关于」和开场白大多自带 HTML（`<p>` `<b>` `<i>` `<br>`，还有 SillyTavern 的
+# `{{user}}` 之类）。原文照旧一字不改地存着、喂模型；这里另算一份**洗过**的 HTML，
+# 只给界面用 —— 白名单标签保留，其余全去掉，没有属性、没有 script/style/iframe，
+# 所以前端可以放心 `dangerouslySetInnerHTML`（配合 `RichText` 组件的兜底）。
+# ---------------------------------------------------------------------------
+
+# 保留的标签：只留「读起来像排版」的那些，且一律不带任何属性。
+_ALLOWED_TAGS = {
+    "p", "br", "hr",
+    "b", "strong", "i", "em", "u", "s", "del", "sub", "sup", "small", "mark", "code", "pre",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "ul", "ol", "li", "blockquote", "span",
+}
+# 不要内容也一起带走的整块（标签里的东西删掉）。
+_DROP_BLOCKS = {"script", "style", "iframe", "object", "embed", "noscript", "template", "svg", "math"}
+# 能起换行作用的块级标签：结束处补一个换行，标签虽被去掉，段落感还在。
+_BLOCK_LIKE = {
+    "p", "div", "li", "ul", "ol", "blockquote", "pre", "hr",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+}
+# 自闭合 / 空元素：没有闭合标签。
+_VOID_TAGS = {"br", "hr"}
+# 危险块被整颗拿掉后，剩下的内容直接接上，不留一行空白。
+_BLOCK_LIKE = _BLOCK_LIKE | {t for t in _DROP_BLOCKS if t not in _VOID_TAGS} - {"script", "style"}
+# 这些标签丢标签时，开闭两头都当段边界（各补一个换行 → 空行分段）。
+_BOTH_SIDES = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote"}
+# 长度上限：预览再长也没人逐字读，防一手超大卡把界面撑爆（存档不受影响）。
+PREVIEW_LIMIT = 12000
+
+
+def _unescape_html(text: str) -> str:
+    return html_unescape(text or "")
+
+
+def sanitize_html(raw: str, limit: int = PREVIEW_LIMIT) -> str:
+    """任意 HTML → 只剩白名单标签、无属性的 HTML（可安全放进 `innerHTML`）。
+
+    做法是**逐标签重建**而不是「删掉坏标签」：白名单内的标签重新拼成干净的开/闭标签，
+    白名单外的标签整颗丢掉（块级标签处补换行），文本里的 `<` `>` `&` 重新转义 ——
+    原文里写成字面量的 `<3` 之类不会变成半个标签。
+    """
+    text = (raw or "")[: limit * 2]
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    # 整块带内容的危险标签连里面的字一起删掉（标准库 re 不支持回溯，分段删）：
+    # 先删有闭合的整对，再把落单的开标签当「块」处理（标签去掉、内容留下、补换行）。
+    # script / style 没闭合时后面全算它的内容（浏览器也是这么解析的）。
+    for tag in ("script", "style"):
+        text = re.sub(rf"<{tag}\b[^>]*>.*?</{tag}\s*>", "", text, flags=re.I | re.S)
+    for tag in sorted(_DROP_BLOCKS - {"script", "style"}):
+        text = re.sub(rf"<{tag}\b[^>]*>.*?</{tag}\s*>", "", text, flags=re.I | re.S)
+    for tag in ("script", "style"):
+        text = re.sub(rf"<{tag}\b[^>]*>.*$", "", text, flags=re.I | re.S)
+    out: list[str] = []
+    pos = 0
+    for match in re.finditer(r"<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9]*)[^>]*>", text):
+        out.append(_escape_text(text[pos : match.start()]))
+        pos = match.end()
+        closing = bool(match.group(1))
+        tag = match.group(2).lower()
+        if tag in _ALLOWED_TAGS:
+            if tag in _VOID_TAGS:
+                if not closing:
+                    out.append(f"<{tag}>")
+            else:
+                out.append(f"</{tag}>" if closing else f"<{tag}>")
+        elif tag in _BLOCK_LIKE:
+            # div/h1 这类：开闭两头都算段边界，丢了标签也还是一条一条分开的。
+            if not closing or tag in _BOTH_SIDES:
+                out.append("\n")
+    out.append(_escape_text(text[pos:]))
+    html = "".join(out)
+    # 标签被去掉后留下的空行与前后空壳标签收拾一下（只影响预览，存档是另一份）。
+    html = re.sub(r"<(p|div)>\s*</\1>", "\n", html)
+    html = re.sub(r"\n{3,}", "\n\n", html)
+    html = re.sub(r"[ \t]+\n", "\n", html)
+    html = html.strip()
+    if len(html) > limit:
+        # 截在标签外面的文本里，别把 `<b>` 切成半截；截断处补上还没闭合的标签，
+        # 不然未闭合的 <b> 会把后面的「…」和整块界面都变成粗体。
+        cut = html[:limit]
+        html = cut[: cut.rfind("<")] if cut.rfind("<") > cut.rfind(">") else cut
+        html = _close_open_tags(html).rstrip() + "…"
+    return html
+
+
+def _close_open_tags(html: str) -> str:
+    open_stack: list[str] = []
+    for match in re.finditer(r"<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9]*)[^>]*>", html):
+        tag = match.group(2).lower()
+        if tag in _VOID_TAGS:
+            continue
+        if match.group(1):
+            if open_stack and open_stack[-1] == tag:
+                open_stack.pop()
+        else:
+            open_stack.append(tag)
+    return html + "".join(f"</{tag}>" for tag in reversed(open_stack))
+
+
+def _escape_text(text: str) -> str:
+    """文本段重新转义：原文里已经写好的实体先还原，再统一转义，不会双重编码。"""
+    return html_escape(html_unescape(text or ""), quote=False)
+
+
+def _cjk_ratio(text: str) -> float:
+    """汉字占「有意义的字符」的比例 —— 判断这段是不是本来就中文（中方卡）。"""
+    letters = [ch for ch in text or "" if ch.isalpha()]
+    if not letters:
+        return 1.0
+    cjk = sum(1 for ch in letters if "一" <= ch <= "鿿")
+    return cjk / len(letters)
+
+
+def is_mostly_chinese(text: str) -> bool:
+    """本来就中文的正文不值得再「翻」一遍（翻一遍只会慢、还可能改掉原文的词）。"""
+    return _cjk_ratio(text) >= 0.6
+
+
+def has_markup(raw: str) -> bool:
+    """这段原文里有没有真正的排版标签（决定界面上要不要按富文本渲染）。"""
+    return bool(re.search(r"<\s*/?\s*(p|br|b|strong|i|em|u|h[1-6]|ul|ol|li|blockquote|div|span)\b[^>]*>", raw or "", re.I))
+
+
+def about_html(about: str) -> str:
+    """「关于」→ 带格式的预览。纯文本原样转义（换行由界面按 pre-wrap 处理）。"""
+    if not has_markup(about):
+        return ""
+    return sanitize_html(about)
+
+
+def greeting_html_for(card: dict) -> str:
+    """卡里的开场白 → 带格式的预览 HTML（洗过的）。没有开场白就是空串。"""
+    raw = card.get("first_mes", "")
+    if not has_markup(raw):
+        return ""
+    return sanitize_html(raw)
+
+
 def blank_profile() -> dict:
     """一份空档案（键与前端 CharacterProfile 完全一致）—— 抽取结果往它身上填。"""
     profile = {
@@ -305,6 +461,8 @@ def blank_profile() -> dict:
         # 卡里的开场白（去标签后的纯文本）。默认不勾选，不自动发言 ——
         # 角色介绍页给一个「插入开场白」按钮，用户点了才写进私聊。
         "greeting": "",
+        # 开场白的带格式预览（洗过的 HTML，只给界面看）；没有格式就是空串。
+        "greetingHtml": "",
         # 导入标记（前端 buildSessions 用）：默认**不进**「小糖人的家」群聊 ——
         # 别的作品来的角色，先单独聊；想拉进群，去群聊成员面板手动勾。
         "imported": True,
@@ -313,30 +471,54 @@ def blank_profile() -> dict:
 
 
 def _strip_fences(raw: str) -> str:
+    """去掉代码围栏，**原样**取第一个 `{` 到最后一个 `}` 之间的内容（流式用，不补括号）。
+
+    返回空串 = 输出里根本没有对象的开头（模型在说人话 / 还没开始写 JSON）。
+    """
     text = (raw or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-    if text.startswith("{") and text.endswith("}"):
-        return text
-    start, end = text.find("{"), text.rfind("}")
-    return text[start : end + 1] if 0 <= start < end else ""
+    start = text.find("{")
+    if start < 0:
+        return ""
+    end = text.rfind("}")
+    return text[start : end + 1] if end > start else text[start:]
 
 
 def parse_fields(raw: str) -> dict:
-    """模型输出 → 词条 dict。解析失败返回空 dict（不猜）。"""
+    """模型输出 → 词条 dict。解析失败返回空 dict（不猜）。
+
+    流式里连接中途断时，收到的常是半截 JSON —— 先把最外层收口补齐再试一次，
+    已经写全的那几个键照样能用（半份词条也比零份强）。补出来的只是括号，不是内容。
+    """
+    return _parse_fields(raw, repair=False)
+
+
+def parse_fields_partial(raw: str) -> dict:
+    """同上，但解析失败时补上没收口的 `} ] "` 再解析一次（只给流式中途用）。"""
+    return _parse_fields(raw, repair=True)
+
+
+def _parse_fields(raw: str, *, repair: bool) -> dict:
     cleaned = _strip_fences(raw)
     if not cleaned:
         return {}
     try:
         obj = json.loads(cleaned)
     except ValueError:
-        return {}
+        if not repair:
+            return {}
+        obj = _repair_json(cleaned)
     if not isinstance(obj, dict):
         return {}
     out: dict = {}
     for key, _label in EXTRACT_FIELDS:
         value = obj.get(key)
+        # 模型常把单值键也包成数组（`"age": ["17"]`、`"alias": ["星野爱"]`）——
+        # 之前这种一律当解析失败丢掉，卡明明抽到了却显示「词条没抽全」（2026-10-18 实测 gemini）。
+        if key not in _LIST_KEYS and isinstance(value, list):
+            value = next((v for v in value if isinstance(v, str) and v.strip()), None)
         if key in _LIST_KEYS:
             if isinstance(value, list):
                 items = [str(v).strip() for v in value if str(v).strip()]
@@ -352,6 +534,74 @@ def parse_fields(raw: str) -> dict:
             if text and not re.fullmatch(r"(无|没有|未知|不明确|未提及|none|n/?a|null|-|—)+", text, re.I):
                 out[key] = text
     return out
+
+
+def _repair_json(text: str) -> dict | None:
+    """半截 JSON → 能解析的 dict（不行就 None）。
+
+    扫到写了一半的那个键就停，补上仍在打开的 `]` `}`；「键写全了但值没写完」
+    （`"a": "上半` 或 `"a": ["x"`）的那个键一并丢掉 —— 没写完的值宁可不填。
+    """
+    try:
+        out = json.loads(_balanced(text))
+    except ValueError:
+        pass
+    else:
+        if isinstance(out, dict):
+            return out
+    # 收口之后不行，多半是「最后一个键写到一半」：从后往前丢掉没写完的键再试。
+    for cut in _boundaries(text):
+        head = text[:cut].rstrip().rstrip(",")
+        try:
+            out = json.loads(_balanced(head))
+        except ValueError:
+            continue
+        if isinstance(out, dict) and out:
+            return out
+    return None
+
+
+def _boundaries(text: str) -> list[int]:
+    """顶层对象里每个「完整键值对」之后的位置（从后往前）。"""
+    cuts: list[int] = []
+    depth = 0
+    in_str = esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            esc = ch == "\\" and not esc
+            if ch == '"' and not esc:
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif ch == "," and depth == 1:
+            cuts.append(i)
+    return list(reversed(cuts))
+
+
+def _balanced(text: str) -> str:
+    """补上还没闭合的字符串与括号（按出现顺序反着关）。"""
+    stack: list[str] = []
+    in_str = esc = False
+    for ch in text:
+        if in_str:
+            esc = ch == "\\" and not esc
+            if ch == '"' and not esc:
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "[{":
+            stack.append("]" if ch == "[" else "}")
+        elif ch in "]}" and stack and stack[-1] == ch:
+            stack.pop()
+    if in_str:
+        text += '"'
+    return text.rstrip().rstrip(",") + "".join(reversed(stack))
 
 
 def card_text_for_extract(card: dict) -> str:
@@ -374,11 +624,14 @@ def clean_translation(raw: str) -> str:
 
     优先取代码围栏**内部**的内容：模型常把译文包在 ``` 里、外面还带两句客套话
     （"好的：\n```\n…\n```\n希望有帮助"）—— 只剥围栏会把那两句客套话也留下。
+    流式里围栏还没闭合（只收到开头那行 ```）时也照样剥开头。
     """
     text = (raw or "").strip()
-    fenced = re.search(r"```[a-zA-Z]*\s*\n(.*?)```", text, re.DOTALL)
+    fenced = re.search(r"```[a-zA-Z]*\s*\r?\n(.*?)```", text, re.DOTALL)
     if fenced:
         text = fenced.group(1).strip()
+    elif text.startswith("```") and "```" not in text[3:]:
+        text = re.sub(r"^```[a-zA-Z]*\s*\r?\n?", "", text)
     text = re.sub(r"^```[a-zA-Z]*\s*\n?", "", text).rstrip("`").strip()
     text = re.sub(r"^(译文|翻译|中文译文)\s*[：:]\s*", "", text)
     return text.strip()

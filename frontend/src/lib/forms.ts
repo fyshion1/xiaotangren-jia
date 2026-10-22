@@ -47,6 +47,6 @@ export function resolveForm(p: CharacterProfile, formId?: string): ResolvedForm 
   return {
     id: form.id,
     name: form.name,
-    profile: { ...p, ...over, id: p.id, name: p.name, activeFormId: form.id },
+    profile: { ...p, ...over, id: p.id, name: p.name, hiddenFields: p.hiddenFields, hiddenInProfiles: p.hiddenInProfiles, activeFormId: form.id },
   }
 }

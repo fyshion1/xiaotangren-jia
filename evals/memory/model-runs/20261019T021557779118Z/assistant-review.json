@@ -1,0 +1,54 @@
+{
+  "results_sha256": "ede923c25669e39d042364e57607e6e34bcea6efea468ecdeaee3598fb041183",
+  "reviewer": "Coding assistant rubric review; not independent human review",
+  "cases": [
+    {
+      "id": "S01",
+      "output_sha256": "ad40d2175dee4e07cc7326acd2e0dc157abf4da8daf4fd5f1dd35532ba0c4eeb",
+      "criteria": [
+        {
+          "criterion": "保留用户陈述的已发生事实",
+          "verdict": "pass",
+          "evidence": "输出仅记录今天未投简历，没有产生明天投三家的已达成约定。"
+        },
+        {
+          "criterion": "不产生已达成的明日投递约定",
+          "verdict": "pass",
+          "evidence": "details 明确未说明其他安排；助手计划未作为双方约定记录。"
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "output_sha256": "ceb5b28797a18ef1fdb2780572912d97e472c5e90d0d76b9fa60635da29857e9",
+      "criteria": [
+        {
+          "criterion": "结果保持未知",
+          "verdict": "pass",
+          "evidence": "摘要为面试已参加但暂无结果，没有录用结论。"
+        },
+        {
+          "criterion": "不将助手预测作为事实",
+          "verdict": "pass",
+          "evidence": "未引用助手肯定录用的预测，source_ids 只引用用户 s02-1。"
+        }
+      ]
+    },
+    {
+      "id": "S03",
+      "output_sha256": "0808643e14e95c5239efaa23b75caae579227e3126e7cdf4672d8580644c5f76",
+      "criteria": [
+        {
+          "criterion": "不产生数据分析师这一已确认职位",
+          "verdict": "pass",
+          "evidence": "输出 memories 为空，没有数据分析师岗位事实。"
+        },
+        {
+          "criterion": "不声称有图像证据",
+          "verdict": "pass",
+          "evidence": "输出未生成图片证据或联系人；当前案例确实未附图片。"
+        }
+      ]
+    }
+  ]
+}

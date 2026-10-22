@@ -81,6 +81,61 @@ def to_data_url(raw: bytes, mime: str = "image/png") -> str:
     return f"data:{mime or 'image/png'};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
+MODEL_IMAGE_MAX = 1280
+MAX_CONTEXT_IMAGES = 10
+
+
+def model_image_data(raw: bytes) -> str:
+    """Bound visual resolution and payload; retain original files for local viewing."""
+    from fastapi import HTTPException
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "上下文图片超过 20 MB")
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            # Animated uploads use the first frame, never the entire animation.
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((MODEL_IMAGE_MAX, MODEL_IMAGE_MAX))
+            if image.mode in ("RGBA", "LA") or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                image = Image.new("RGB", rgba.size, "white")
+                image.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                image = image.convert("RGB")
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=85, optimize=True)
+            return to_data_url(output.getvalue(), "image/jpeg")
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise HTTPException(422, "图片无法解码或分辨率过大，请换一张图片") from exc
+
+
+def image_for_model(url: str) -> str:
+    """Resolve and resize all chat images, including inline data and video frames."""
+    from fastapi import HTTPException
+
+    if url.startswith("data:image/"):
+        if len(url) > ((MAX_IMAGE_BYTES + 2) // 3) * 4 + 128:
+            raise HTTPException(413, "上下文图片超过 20 MB")
+        try:
+            raw, _ = parse_data_url(url)
+        except ValueError as exc:
+            raise HTTPException(422, "图片 data URL 不合法") from exc
+        return model_image_data(raw)
+    if url.startswith("/api/media-files/"):
+        from ..routers.media import _load_frame
+        raw, _ = _load_frame(url)
+        return model_image_data(raw)
+    path = _resolve_local(url)
+    if path is None:
+        raise HTTPException(422, "图片必须是本地附件或图片 data URL")
+    if not path.is_file():
+        raise HTTPException(422, "上下文中的图片文件已清理，请重新上传图片，或减少历史注入条数")
+    if path.stat().st_size > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "上下文图片超过 20 MB")
+    return model_image_data(path.read_bytes())
+
+
 def thumb_url(orig_url: str) -> str:
     """原图引用 URL → 对应缩略图 URL（与前端 thumbOf 同一套规则）。"""
     if not orig_url:

@@ -3,6 +3,7 @@ import TopBar from './components/TopBar'
 import HomeView from './components/HomeView'
 import ChatView from './components/ChatView'
 import NestView from './components/NestView'
+import { ReminderNotice } from './components/ReminderPanel'
 import type { CharacterProfile } from './data/characters'
 import { PERSONA_FALLBACK, PROFILE_FALLBACK } from './data/characters'
 import { MAIN_PERSONA_ID } from './data/chats'
@@ -30,7 +31,12 @@ function initialTheme(): Theme {
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme)
-  const [view, setView] = useState<View>('chat')
+  const [view, setView] = useState<View>(() => ['#tool-center', '#autonomous-activity', '#project-costs'].includes(window.location.hash) ? 'nest' : 'chat')
+  useEffect(() => {
+    const openTools = () => { if (['#tool-center', '#autonomous-activity', '#project-costs'].includes(window.location.hash)) setView('nest') }
+    window.addEventListener('hashchange', openTools)
+    return () => window.removeEventListener('hashchange', openTools)
+  }, [])
   const [characters, setCharacters] = useState<CharacterProfile[]>([])
   const [charsReady, setCharsReady] = useState(false)
   // 个人档案（§22）：用户自己的身份，放在「私人空间」里切换。与 characters 分开存，
@@ -235,6 +241,7 @@ export default function App() {
           />
         )}
       </div>
+      <ReminderNotice personaId={activePersonaId} />
       <nav className="app-mobile-nav" aria-label="手机端主导航">
         <button onClick={() => { setChatMobileTab('sessions'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-sessions')) }}><span>💬</span>消息</button>
         <button onClick={() => { setChatMobileTab('chat'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-chat')) }}><span>🐾</span>聊天</button>

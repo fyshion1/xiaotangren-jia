@@ -3,8 +3,10 @@
 小糖人专属的本地优先、无审查的多模态 AI 聊天客户端。
 核心是小糖人角色（大诗音、小诗音、小白、小红薯头），并配有 Live2D / 3D 可视化形象。
 
+项目费用：糖人小窝 → 一起玩 → 项目费用（`/#project-costs`），支持实付记账、微信／支付宝账单导入与人工确认对账；工具中心可启用小糖人记账与查询。使用说明见 [项目费用](features/project-costs/README.md)。该功能目录是独立 Git 仓库，需单独保留。
+
 > 本文档讲「怎么跑起来」**并记录当前实际实现了什么**。
-> [`项目要求.txt`](./项目要求.txt) 是早期设计稿（编号 §x.y 的出处），部分内容已过时 ——
+> [`项目要求.txt`](项目要求.txt) 是早期设计稿（编号 §x.y 的出处），部分内容已过时 ——
 > 与代码冲突时**以本文档和代码为准**。
 
 ---
@@ -27,6 +29,22 @@
 | Node.js | >= 18 |
 
 ---
+
+## Windows 日常启动与退出
+
+依赖安装好后双击 `start.bat`，首次默认启动后端、前端、QQ 桥（含网关）和桌宠。
+总启动窗口直接点 × 即退出所有由本次小窝启动的服务，隐藏子进程也会回收，无需记得 Ctrl+C。
+QQ 客户端本身、浏览器和从外部单独启动的服务不属于本次小窝的进程树。
+
+糖人小窝 → 小窝设置 → **进程管理**，上方可勾选下次启动哪些服务，保存后下次 BAT 启动生效。
+取消后端会同时取消依赖它的 QQ 桥和桌宠；未勾选的服务不会启动。
+若关闭了前端或后端导致设置页不可用，可在命令行运行 `start.bat --configure` 调整，
+或 `start.bat --reset-startup` 恢复默认全部启动。设置保存在本机 `backend/data/launcher.json`。
+
+日常启动关闭自动重载；“重启大脑”交给总启动器更换后端，QQ 桥、桌宠和前端继续受总窗口管理。
+启动器会检查后端健康；连续三次无响应时尝试恢复，并在窗口及 `backend/logs/` 留下日志。
+QQ 登录、功能依赖或本机素材缺失会明确报告失败，不会阻塞其他服务启动和退出。
+旧版启动器遗留的同仓库服务会在首次启动时回收；端口被其他程序占用时报告冲突，不冒充启动成功。
 
 ## 快速开始（本地开发）
 
@@ -128,7 +146,7 @@ start-tunnel.bat
 
 安装好 Python + uv 与 Node 后：
 
-- Windows：双击 [`start.bat`](./start.bat)
+- Windows：双击 [`start.bat`](start.bat)
 - Linux / macOS：`./start.sh`
 
 脚本会并行拉起后端（:8000）与前端（:5173）。
@@ -144,6 +162,10 @@ docker compose up --build
 ---
 
 ## 模型配置
+
+记忆语义检索可单独使用外部 Embedding API，无需安装本地向量模型：在「个人数据库 → 记忆语义检索 · Embedding 设置」配置地址、模型和独立密钥。此选项独立于单机或委托运行方式，原有本地默认配置保留；详见 [Embedding API 配置](docs/guides/embedding-api.md)。
+
+低配置常驻主机可使用轻量配置，并在「小窝大脑」选择原生或委托模式。算力端掉线时，主机继续保存记忆并使用关键词检索；详见 [委托模式与 Debian 部署](docs/guides/delegated-mode.md)。
 
 后端配置在 `backend/.env`（本地敏感信息，已被 .gitignore 忽略，不会提交）：
 
@@ -181,6 +203,8 @@ IMAGE_BASE_URL=                       # 生图中转地址（留空 = 用 MODEL_
 
 ## 语音（TTS）
 
+**持续语音通话首版已接入**：打开单角色私聊，点电话图标，配置百炼/Soniox 识别和 Fish Audio 密钥、音色 ID，即可持续说话、自动接话和插话打断。沿用当前聊天模型、身份及原会话。设置方法与待实测范围见 [语音通话说明](docs/voice-call.md)。原有 Edge/Piper 朗读仍可使用。
+
 多引擎 TTS，**先选引擎、后选音色**（聊天页右栏「🗣 语音」）：
 
 | 引擎 | 说明 | 音色 |
@@ -210,7 +234,7 @@ edge 连点朗读时后端会做 250ms 最小间隔节流 —— edge-tts 每次
 piper 音色文件放在 `backend/data/tts/piper/*.onnx`（约 60MB/个，已 gitignore，不随仓库提交）。
 **换机器 / 新 clone 后需先下载一次**：
 
-- Windows：双击 [`download_piper_voices.bat`](./download_piper_voices.bat)
+- Windows：双击 [`download_piper_voices.bat`](download_piper_voices.bat)
 - Linux / macOS：`./download_piper_voices.sh`
 
 脚本默认走国内镜像 hf-mirror（可设 `PIPER_MIRROR` 换源）。下好后 `GET /api/voice/voices?engine=piper` 才会列出对应音色。
@@ -238,7 +262,7 @@ EMBED_CLOUD_MODEL=text-embedding-3-small
 ### ⚠ 换 embedding engine 需重建向量库
 
 本地小模型与云端 `/v1/embeddings` 产出的向量**口径不同**（不同模型向量空间不同，余弦相似度不可比）。
-换 engine 后请务必清空并重建记忆索引，否则检索会乱掉（见 [`项目要求.txt` §16.6](./项目要求.txt)）。
+换 engine 后请务必清空并重建记忆索引，否则检索会乱掉（见 [`项目要求.txt` §16.6](项目要求.txt)）。
 最简单方式：删掉 `backend/data/xiaotangren.db` 里的 `memories` 表，重新触发记忆存储即可。
 
 ---
@@ -284,11 +308,11 @@ COMFYUI_TIMEOUT=180                     # 单张图总预算（秒）
 
 不填 `COMFYUI_WORKFLOW` 就用内置的 SD1.5 示例（`backend/examples/comfyui/sd15_basic.json`）——
 **用之前记得把里面的 `ckpt_name` 改成你本地实际有的模型名**，否则 ComfyUI 会直接报节点错误。
-示例与导出说明见 [`backend/examples/comfyui/README.md`](./backend/examples/comfyui/README.md)。
+示例与导出说明见 [`backend/examples/comfyui/README.md`](backend/examples/comfyui/README.md)。
 
 工作流里的节点**按拓扑定位，不按 id**：正向提示词取 `KSampler.positive` 连着的 `CLIPTextEncode`、
 宽高取 `latent_image` 连着的 `EmptyLatentImage`、出图取 `SaveImage` ——
-所以你换模型、加 LoRA、改组节点 id 都不会崩（详见 [`项目要求.txt` §16.13](./项目要求.txt)）。
+所以你换模型、加 LoRA、改组节点 id 都不会崩（详见 [`项目要求.txt` §16.13](项目要求.txt)）。
 
 > 云端各种算力方案仍在逐个试（CNB 按核计费不合算 / vast.ai 需信用卡 / AutoDL 禁 NSFW / NovelAI 待适配），
 > 引擎抽象已就位，**试出哪个就填哪个地址，不用改代码**。
@@ -425,12 +449,23 @@ COMFYUI_TIMEOUT=180                     # 单张图总预算（秒）
 
 ---
 
+## 角色资料与酒馆模式
+
+角色介绍的「编辑资料」保存到共享角色档案，后续聊天、QQ 桥、沙盒及桌宠请求读取更新后的资料；已发送的消息不重写。
+
+- 「展示与词条设置」可隐藏介绍中的词条或整个角色；勾选「显示已隐藏角色」会同时列出手动隐藏的角色和因酒馆模式关闭而隐藏的导入卡，可查看和编辑资料。手动隐藏可在编辑中取消；导入卡的聊天入口仍需开启酒馆模式。隐藏保留资料和聊天人设。
+- 性格、喜好、讨厌及形态覆盖词条支持中文、英文逗号和顿号。自定义词条可以新增、编辑或删除。
+- 「生成词条草稿」使用聊天模型，先生成可编辑的文本，应用到表单并保存后才更新档案。
+- 蓝色手写署名填写英文或罗马音；已知角色的旧假名署名显示为对应罗马音。
+- 「糖人小窝 → 小窝设置 → 酒馆模式」默认关闭。开启后才显示角色世界书、规则 / 越狱、导入角色卡介绍、最近聊天中的导入卡会话和导入按钮；关闭时保留这些数据。
+- 酒馆模式下，最近聊天顶部可选择「仅聊天」或「HTML 渲染」，选择会保存在当前浏览器。仅聊天显示正文，并要求角色像朋友发消息一样回应；HTML 渲染使用卡内 CSS 与显示规则，在隔离页面显示排版，默认不执行脚本。切换显示方式保留聊天原文。
+
 ## 立绘与头像
 
 **角色介绍页 → ✎ 编辑资料** 里，「立绘（静态 / GIF）」和「头像」两个字段都可以：
 
 - 点「**🖼 选择本地图片**」从浏览器选图上传（立绘支持 GIF），或
-- 直接手填一个外链 URL
+- 点「从画廊选择」使用已经上传的图片，或直接手填外链 URL
 
 头像**留空就回退 emoji**。头像会出现在：聊天头部、**群聊里分段说话人的头像 + 名字**（QQ 式）、
 助手气泡上方的名字行、左侧会话列表。
@@ -444,16 +479,13 @@ Live2D / 3D 形象还没做（§5 远期计划），素材先攒着。
 
 ## 糖人小窝 🏠
 
-全家的**共同回忆**与以后要接的**共同玩法**入口。两个地方都能进：
-
-- 顶部导航的「🏠 糖人小窝」
-- **角色介绍页成员切换行最左边**（四位小糖人前面）的那个按钮
+全家的**共同回忆**与以后要接的**共同玩法**入口，从顶部导航的「🏠 糖人小窝」进入。
 
 里面现在有：
 
 - **共同回忆 · 画廊** —— 只放归属为「家 · 共用」的图（每人专属的在各自介绍页里）
 - **家 · 共用世界书** —— 群聊里生效的就是这一档
-- **Gemini 网页同步测试** —— 采集本机浏览器已打开的 Gemini 会话文字，推送到固定 `test · Gemini` 群聊。**不用 Gemini API Key**，只需本机配对凭证；该会话保留角色署名但**不写入长期记忆**。安装与说明见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)
+- **Gemini 网页同步测试** —— 采集本机浏览器已打开的 Gemini 会话文字，推送到固定 `test · Gemini` 群聊。**不用 Gemini API Key**，只需本机配对凭证；该会话保留角色署名但**不写入长期记忆**。安装与说明见 [extensions/gemini-sync/README.md](extensions/gemini-sync/README.md)
 - 📬 **小糖人找到了什么** —— 功能动态流。独立功能（逛 B站…）把挑好的东西推回来，这里渲染成卡片（封面 / 推荐语 / 外链）；**收藏 / 不感兴趣**会写回给功能当偏好信号
 - 🚀 **让功能跑起来** —— 不用去终端敲命令：在这里**选谁去看**（选项来自角色介绍里的人，也可以全选让「都去看」）、选怎么跑（试跑 / 逛一轮 / 一直逛）、点按钮，**输出日志就在旁边滚动**（后端按 utf-8 读，中文不会乱码）。前端只能传「功能 id + 注册表里列出的子命令 + 白名单参数」，真命令由后端按注册表拼，cwd 锁在功能目录里
   - 同一个面板里还有 **🎯 主要看什么** —— 拿捏不住「让它找什么」时直接写一句话（想看的 / 别给我看的）。本体只存原文（`/api/nest/features/{id}/directive`），**怎么用是功能自己的事**：逛 B站 把它当最高权重（压过从收藏学来的口味），写进「别给我看的」直接淘汰，**每轮都重读一次**，改完下一轮生效
@@ -465,7 +497,7 @@ Live2D / 3D 形象还没做（§5 远期计划），素材先攒着。
   不用去开终端编辑 `features/<folder>/config.json`（终端里中文还是乱码）。**能配什么由功能自己在注册表里声明**，
   前端不写死字段 —— 加一条声明就自动长出一个开关。改完立刻生效、不用重启（功能每轮自己来读一次）。
   两个「留口子」的功能开关（逛 B站 的「一起看」和「去别人视频下留言」）也在这里，**默认关**；
-  打开只是记下意愿，代码里那两条路仍然没写（见 [docs/nest-integration.md](./docs/nest-integration.md)）
+  打开只是记下意愿，代码里那两条路仍然没写（见 [docs/integrations/nest-integration.md](docs/integrations/nest-integration.md)）
 - **Agent 协作** —— 跨项目 Agent 通用消息中转（`/api/agents/messages`，具体功能字段由独立项目解析）
 
 ### 小窝大脑 API（§9.6 通用外设接入层）
@@ -492,7 +524,7 @@ Live2D / 3D 形象还没做（§5 远期计划），素材先攒着。
   > 📺 这就是「一起看」的口子：视频抽成 ≤8 帧传进来即可；实时逐帧 token 太贵，按 §9.6.3 暂不做。
 
 > 📌 功能本身**不造假功能**：注册表里 `planned` 的点了会说明「实现是独立项目」，`available` 的才有真入口。
-> 协议见 [通用外设接入层](./docs/nest-integration.md)（旧的[游戏专用协议](./docs/game-integration.md)仍兼容）。
+> 协议见 [通用外设接入层](docs/integrations/nest-integration.md)（旧的[游戏专用协议](docs/integrations/game-integration.md)仍兼容）。
 
 **Unity 互动小家的路径**在 `.env` 里配（不配就用代码里的默认值）：
 
@@ -642,12 +674,12 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 - [x] 私人空间（§21：大老大独立成页，复用介绍页全部内容、只钉在他一个人身上；顶部导航 🐻 进入）
 - [x] 个人档案身份系统（§22：私人空间是一排**身份卡**，「成为这个身份」全局换视角 —— 小糖人们的反应跟着变；私聊群聊各自身份一条记录，记忆不随视角变；`relation` 单独喂给模型；`asCharacter` 决定她要不要现身当角色）
 - [x] 糖人小窝（§9.6：共同回忆画廊 + Gemini 网页同步测试 + Agent 协作 + 一起玩功能列表 + 小窝大脑 API；功能清单来自后端注册表，`planned` 的不造假功能）
-- [x] 通用外设接入层（§9.6：`/api/nest/*` —— 全局默认 API（带视觉）+ 每功能可覆盖 / 屏蔽视觉 + 功能注册表；游戏专用的 `/api/game/*` 原样保留，见 [`docs/nest-integration.md`](./docs/nest-integration.md)）
+- [x] 通用外设接入层（§9.6：`/api/nest/*` —— 全局默认 API（带视觉）+ 每功能可覆盖 / 屏蔽视觉 + 功能注册表；游戏专用的 `/api/game/*` 原样保留，见 [`docs/integrations/nest-integration.md`](docs/integrations/nest-integration.md)）
 - [x] 记忆功能隔离（§9.6：记忆按功能命名空间存 —— 自动提炼可带 `feature_id` 落到 `memories.game_id`，普通聊天留空；玩游戏 / 用外设攒下的记忆召回时不串进日常聊天）
-- [x] 功能独立仓库约定（§9.6：每个功能是独立 git 项目、放 `features/<folder>/`，本体仓库 gitignore 掉；见 [`features/README.md`](./features/README.md)）
+- [x] 功能独立仓库约定（§9.6：每个功能是独立 git 项目、放 `features/<folder>/`，本体仓库 gitignore 掉；见 [`features/README.md`](features/README.md)）
 - [x] 功能动态流（§9.6：`/api/nest/feed` —— 功能把「给人看的产出」推回小窝渲染成卡片；同功能下同 url 覆盖更新；收藏 / 不感兴趣写回 status 当功能的偏好信号；小窝新增「📬 小糖人找到了什么」）
 - [x] 带图功能对话（§9.6：`/api/nest/chat` 支持 `images`（data URL ≤8 张）—— 有图走该功能的视觉路，没图走普通路；功能被「屏蔽视觉」时带图直接 409。这也是「一起看」的口子）
-- [x] Gemini 网页同步（浏览器扩展采集已打开的 Gemini 会话文字 → `test · Gemini` 群聊；不用 Gemini API Key，只需本机配对凭证，见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)）
+- [x] Gemini 网页同步（浏览器扩展采集已打开的 Gemini 会话文字 → `test · Gemini` 群聊；不用 Gemini API Key，只需本机配对凭证，见 [extensions/gemini-sync/README.md](extensions/gemini-sync/README.md)）
 - [x] 无审查通道（§7.1：常规 / 🔓 无审查双通道独立配 base_url/key/model，聊天·看图·画廊自动描述一键切；无审查专属越狱规则）
 - [x] 人设「粘贴模板填充」（编辑器里粘贴《角色设定.md》某角色整段或「标签：值」逐行，解析 → 预览勾选 → 填入表单）
 - [x] 看提示词（§24：`POST /api/chat/preview` 只组装不调上游，零 token 摊开 system + 外发历史；档案 / 世界书不生效时用它排查）
@@ -662,16 +694,16 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 
 ## 规划中
 
-- 实时语音通话（§18：聊天头部的 📞 是占位。先做「按住说话 → 回复自动朗读」的半自动版，全双工再上商用实时 API）
+- 实时语音通话扩展：首版已支持单角色持续通话；多角色、动画联动和本地语音适配待做，见 [通话说明](docs/voice-call.md)。
 - Live2D / VRM 3D 可视化
 - 提示词词典（§9.5：中文→英文标签映射、可扩展、按类别分，存后端 SQLite）+ 提示词预览图（小类手动裁剪上传 / 大类前端拼贴；自动生成留钩子）
 - 糖人小窝里的具体功能（§9.6：接入层与配置已就绪，每个功能是独立项目 —— 逛 B站 / 饥荒 / QQ 桥等，逐个在 `features/<folder>/` 里做）
-  - 逛 B站：采集端已落地（[`features/bilibili-scout/`](./features/bilibili-scout/)，**独立 git 仓库**）—— 小糖人自己刷热门 / 排行 / 分区 / 相关推荐，本地打分挑出值得看的，请小糖人写一句推荐语推回小窝；**能在小窝里直接配置 + 启动**（选谁去看 / 都去看、看日志、写「主要看什么」）；人设读角色介绍；「一起看」按 §9.6.3 只留口子不做；在别人的视频下**发评论 @ 主人**留了口子但**默认关**（有话在小窝前端说）
-  - QQ 桥：骨架已落地（[`features/qq-bridge/`](./features/qq-bridge/)，**独立 git 仓库**）—— 小糖人住进 QQ（私聊 / 群聊），收图 / 表情包 / 视频（走大脑的视觉路）/ 语音；回话可打字、可语音（走大脑的 TTS）、可发表情包；**聊过的同步进小窝**的群聊与对应私聊；**能在小窝里直接启动**（自检 / 接上 QQ / 看演谁）。
+  - 逛 B站：采集端已落地（[`features/bilibili-scout/`](features/bilibili-scout)，**独立 git 仓库**）—— 小糖人自己刷热门 / 排行 / 分区 / 相关推荐，本地打分挑出值得看的，请小糖人写一句推荐语推回小窝；**能在小窝里直接配置 + 启动**（选谁去看 / 都去看、看日志、写「主要看什么」）；人设读角色介绍；「一起看」按 §9.6.3 只留口子不做；在别人的视频下**发评论 @ 主人**留了口子但**默认关**（有话在小窝前端说）
+  - QQ 桥：骨架已落地（[`features/qq-bridge/`](features/qq-bridge)，**独立 git 仓库**）—— 小糖人住进 QQ（私聊 / 群聊），收图 / 表情包 / 视频（走大脑的视觉路）/ 语音；回话可打字、可语音（走大脑的 TTS）、可发表情包；**聊过的同步进小窝**的群聊与对应私聊；**能在小窝里直接启动**（自检 / 接上 QQ / 看演谁）。
     媒体与语音都**不另搞一套**：图 / 视频走大脑的附件管道与抽帧接口，语音走 `/api/voice/tts`，人设仍然只读角色介绍。
     ⚠ **本地没有语音识别（ASR）** —— 收到语音默认只当「[语音]」（`asr.engine=none`），要听懂得配外部 whisper（见该项目 `QUESTIONS.md` 第 1 条）。
   - 饥荒联机：尚未开工（位置登记见 `features/dont-starve-together/`）
-  - 日语实验室：已落地（[`features/japanese-lab/`](./features/japanese-lab/)，**独立 git 仓库**）—— 用自己的例句和插图学 N5→N1：旧单词表导进来（先预览再入库、同词只补空字段）、自己写例句配插图、不懂的语法当场问小糖人、**日语成绩记下来让她写分析**（走势 / 薄弱 / 今天怎么练，分三口气问再拼起来 —— 单条回复 120 汉字是本体契约）。她能讲词 / 答疑 / 写分析，人设仍然只读角色介绍；插图走大脑的附件管道（去重 + 缩略图）；**生图留了口子未接**（`brain.py::generate_image`）。服务只绑回环、挂 `/jplab` 前缀，**常驻后在端点一下就能用**；`serve` 顺手还发一个不依赖构建的独立网页（原生 JS）。学习数据存在它自己的 `data/jplab.db`，和家里的库分开
+  - 日语实验室：已落地（[`features/japanese-lab/`](features/japanese-lab)，**独立 git 仓库**）—— 用自己的例句和插图学 N5→N1：旧单词表导进来（先预览再入库、同词只补空字段）、自己写例句配插图、不懂的语法当场问小糖人、**日语成绩记下来让她写分析**（走势 / 薄弱 / 今天怎么练，分三口气问再拼起来 —— 单条回复 120 汉字是本体契约）。她能讲词 / 答疑 / 写分析，人设仍然只读角色介绍；插图走大脑的附件管道（去重 + 缩略图）；**生图留了口子未接**（`brain.py::generate_image`）。服务只绑回环、挂 `/jplab` 前缀，**常驻后在端点一下就能用**；`serve` 顺手还发一个不依赖构建的独立网页（原生 JS）。学习数据存在它自己的 `data/jplab.db`，和家里的库分开
 - 英语学习二期（大老大提的「更综合一些」）：练翻译 / 练口语（跟读打分）/ 拼写填空模式 / 连续打卡 / 把当天例句自动配图推一条到小窝动态流
 - 小糖人「一起看」B站（先做「自己刷 → 推荐」；实时逐帧太贵，前端已留位）
 - Live2D / VRM 3D 可视化
@@ -681,17 +713,19 @@ XTR_UNITY_EDITOR=D:\other software\unity\...\Unity.exe    # Unity 编辑器可�
 - 自我档案 ↔ Obsidian 同步（§23：档案已是磁盘 `.md`，同步功能未实现）
 - Google Takeout 导入的**前端界面**（后端预览接口已就绪）
 
-编号出处见 [`项目要求.txt`](./项目要求.txt)（早期设计稿，部分已过时）。
+编号出处见 [`项目要求.txt`](项目要求.txt)（早期设计稿，部分已过时）。
 
 ---
 
 ## 目录结构
 
-Gemini 网页实时文字同步的入口在「糖人小窝 → Gemini 网页同步测试」，安装说明见 [extensions/gemini-sync/README.md](./extensions/gemini-sync/README.md)；
-小窝通用外设接入层协议见 [docs/nest-integration.md](./docs/nest-integration.md)，旧的游戏专用协议见 [docs/game-integration.md](./docs/game-integration.md)，
-功能独立仓库约定见 [features/README.md](./features/README.md)；
+完整文档索引及维护约定见 [docs/README.md](docs/README.md)。
+
+Gemini 网页实时文字同步的入口在「糖人小窝 → Gemini 网页同步测试」，安装说明见 [extensions/gemini-sync/README.md](extensions/gemini-sync/README.md)；
+小窝通用外设接入层协议见 [docs/integrations/nest-integration.md](docs/integrations/nest-integration.md)，旧的游戏专用协议见 [docs/integrations/game-integration.md](docs/integrations/game-integration.md)，
+功能独立仓库约定见 [features/README.md](features/README.md)；
 QQ 网关（SnowLuma）那些坑 —— 同时登两个号为什么挂错号、WebUI API、怎么自动换回机器人号 —— 见
-[docs/qq-gateway-snowluma.md](./docs/qq-gateway-snowluma.md)（**下次动 QQ 桥之前先读它**）。
+[docs/integrations/qq-gateway-snowluma.md](docs/integrations/qq-gateway-snowluma.md)（**下次动 QQ 桥之前先读它**）。
 
 ```
 小糖人之家/
@@ -700,9 +734,13 @@ QQ 网关（SnowLuma）那些坑 —— 同时登两个号为什么挂错号、W
 ├── start.bat / start.sh  # 一键启动脚本
 ├── docker-compose.yml    # Docker（可选）
 ├── docs/
-│   ├── nest-integration.md   # 通用外设接入层协议（§9.6；功能在独立项目）
-│   ├── game-integration.md   # 旧的游戏专用协议（仍兼容，等价于 feature_id=game_id）
-│   └── media-import-plan.md  # 媒体导入（视频抽帧）方案
+│   ├── README.md         # 文档导航、分类索引与归档规则
+│   ├── guides/           # 功能使用与排查
+│   ├── integrations/     # 接入协议
+│   ├── plans/            # 方案与未来路径
+│   ├── research/         # 调研与探索
+│   ├── evaluations/      # 评测与实施留档
+│   └── product/          # 发布与权属
 ├── features/             # 小窝功能（§9.6）：每个功能一个独立 git 项目，**不进本体仓库**
 │   ├── README.md         # 只有 README 被本体收录（说明这个目录是干什么的）
 │   ├── bilibili-scout/   # 小糖人逛 B站 · 采集端（独立 git 仓库，见其 README）

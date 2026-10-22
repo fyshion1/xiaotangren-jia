@@ -26,8 +26,8 @@ export type BrainHealth = {
   uptime_seconds: number
 }
 
-export async function fetchHealth(): Promise<BrainHealth> {
-  return asJson<BrainHealth>('/api/health')
+export async function fetchHealth(signal?: AbortSignal): Promise<BrainHealth> {
+  return asJson<BrainHealth>('/api/health', { signal: signal ?? AbortSignal.timeout(3000), cache: 'no-store' })
 }
 
 /**
@@ -37,11 +37,30 @@ export async function fetchHealth(): Promise<BrainHealth> {
  * 中间大概断一两秒 —— 调用方别看它自己的返回值判断好了没，要等 `/api/health` 报出**新的 pid**。
  */
 export async function restartBrain(): Promise<{ ok: boolean; message: string; log: string }> {
-  return asJson('/api/system/restart', { method: 'POST' })
+  return asJson('/api/system/restart', { method: 'POST', signal: AbortSignal.timeout(8000) })
 }
 
 export async function fetchCharacters(): Promise<CharacterProfile[]> {
   return asJson<CharacterProfile[]>('/api/characters')
+}
+
+export type QqSticker = {
+  id: string; url: string; description: string; emotions: string[]
+  status: 'pending' | 'ready' | 'error'; manual: boolean; detail: string
+}
+
+export function fetchQqStickers(): Promise<{ items: QqSticker[]; emotions: string[] }> {
+  return asJson('/api/qq-bridge/stickers')
+}
+
+export function describeQqSticker(url = '', force = false): Promise<{ ok: boolean }> {
+  return asJson('/api/qq-bridge/stickers/describe', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, force }) })
+}
+
+export function saveQqSticker(id: string, description: string, emotions: string[]): Promise<QqSticker> {
+  return asJson(`/api/qq-bridge/stickers/${encodeURIComponent(id)}`, { method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ description, emotions }) })
 }
 
 export async function saveCharacter(char: CharacterProfile): Promise<CharacterProfile> {
@@ -281,6 +300,27 @@ export async function testNestFeatureApi(featureId: string): Promise<NestApiTest
   )
 }
 
+/** 上游模型清单（`GET {base_url}/models`）—— 模型名那一栏的下拉用。 */
+export type NestModelList = {
+  ok: boolean
+  models: string[]
+  /** 中转站按分组挂的模型；`group: ''` 是不带分组的那些。 */
+  groups: { group: string; models: string[] }[]
+  status?: number
+  detail: string
+  hint?: string
+  /** 原地址读不到、换了个路径才读到时给的建议 Base URL（只作参考，不自动改）。 */
+  suggest_base_url?: string
+}
+
+export async function fetchNestModels(baseUrl: string, apiKey: string, model = ''): Promise<NestModelList> {
+  return asJson<NestModelList>('/api/nest/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base_url: baseUrl, api_key: apiKey, model }),
+  })
+}
+
 /** 功能动态流（§9.6）：独立功能把小糖人的产出推进来，小窝渲染成卡片。 */
 export type NestFeedItem = {
   id: string
@@ -509,6 +549,7 @@ export type PersonaDbItem = {
 export type PersonaPicks = {
   persona_id: string
   memories: PersonaMemoryItem[]
+  legacy?: PersonaMemoryItem[]
   database: PersonaDbItem[]
 }
 
@@ -608,16 +649,17 @@ export type PromptDump = {
   base_url: string
   max_tokens: number | null
   /** 与真正发给上游的一模一样：system 打头，其后是原始对话 */
-  messages: { role: string; content: string }[]
+  messages: { role: string; content: string | ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] }[]
   /** messages[0] 的正文（没有 system 块时为空串），方便前端默认只展示这一段 */
   system: string
 }
 
 export type PromptPreviewBody = {
-  messages: { role: string; content: string }[]
+  messages: { role: string; content: string; images?: string[] }[]
   character_ids: string[]
   persona_id: string
   uncensored: boolean
+  card_display_mode?: 'chat' | 'html'
 }
 
 /** 只组装、不调用模型（零 token 消耗）：核对自我档案 / 世界书 / 记忆进没进提示词。 */
@@ -640,8 +682,8 @@ export async function renamePersonalDbFile(path:string,new_name:string):Promise<
 export async function archivePersonalDbFile(path:string):Promise<void>{await asJson(`/api/personal-db/archive?path=${encodeURIComponent(path)}`,{method:'POST'})}
 export async function movePersonalDbPath(path:string,destination:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,destination})})}
 export async function renamePersonalDbFolder(path:string,new_name:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/rename-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,new_name})})}
-export async function copyToAiLayer(source:string,destination:string,title?:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/layer/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,destination,title})})}
-export async function approveAiLayer(source:string,destination:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/layer/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,destination})})}
+export async function copyToAiLayer(source:string,destination:string,title?:string,persona_id?:string,expected_sha256?:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/layer/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,destination,title,persona_id,expected_sha256})})}
+export async function approveAiLayer(source:string,destination:string,persona_id?:string,expected_sha256?:string):Promise<PersonalDbEntry>{return asJson('/api/personal-db/layer/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,destination,persona_id,expected_sha256})})}
 
 // ── 成果巡检（任务①，§28.1）─────────────────────────────────────────────────
 
@@ -683,4 +725,13 @@ export async function setPatrolEventDate(id: string, date_done: string): Promise
 export async function fetchWatchDirs(): Promise<{ watch_dirs: string[] }> { return asJson('/api/patrol/watch-dirs') }
 export async function saveWatchDirs(watch_dirs: string[]): Promise<{ watch_dirs: string[] }> {
   return asJson('/api/patrol/watch-dirs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ watch_dirs }) })
+}
+
+export async function summarizePersonalDb(source: string, persona_id: string): Promise<PersonalDbEntry> {
+  let config: Record<string, string> = {}
+  try { config = JSON.parse(localStorage.getItem('xiaotangren.config') || '{}') } catch { /* server defaults */ }
+  const uncensored = config.channel === 'uncensored'
+  return asJson('/api/personal-db/layer/summarize', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source, persona_id, base_url: (uncensored && config.uncensoredBaseUrl) || config.baseUrl || '',
+      api_key: (uncensored && config.uncensoredApiKey) || config.apiKey || '', model: (uncensored && config.uncensoredChatModel) || config.chatModel || '' }) })
 }

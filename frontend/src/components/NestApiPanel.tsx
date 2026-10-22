@@ -14,10 +14,74 @@ import {
   saveNestFeatureConfig,
   clearNestFeatureConfig,
   testNestFeatureApi,
+  fetchNestModels,
   type NestFeature,
   type NestEffectiveConfig,
   type NestApiTestResult,
+  type NestModelList,
 } from '../api/client'
+
+/** 模型名输入框 + 下拉 + 🧪：「↓」读一次上游 /models，同页同地址共用结果；
+ *  上游列法各不一样（普通 /v1、中转站按分组），读不到的也如实说，手填照样能用。
+ *  「↓」只证明清单读得到；**能不能用要 🧪 真发一句** —— 中转站按 key 的分组挂模型，
+ *  名字列着、分组下没渠道照样 500。 */
+function ModelInput({
+  value, onChange, placeholder, list, probe, onList, onProbe, busy, hint, fix, onFix,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  list: NestModelList | null
+  probe: NestModelList | null
+  onList: () => void
+  onProbe: (m: string) => void
+  busy: boolean
+  /** 刚读清单的结论：读失败给原因，读成功给「几组」—— 只在这次填的地址上显示。 */
+  hint?: string
+  /** 原地址读不到、换了个路径才读到：给出建议 Base URL，点「改成这个」填回去。 */
+  fix?: string
+  onFix?: (u: string) => void
+}) {
+  const known = Boolean(list?.ok && list.models.length > 0)
+  const stale = known && value && !list!.models.includes(value)
+  return (
+    <div>
+      <div className="flex items-center gap-1">
+        <input className="input min-w-0 flex-1" placeholder={placeholder} list="nest-model-options"
+          value={value} onChange={(e) => onChange(e.target.value)} />
+        <button className="btn ghost sm" title="从上游读模型清单" disabled={busy} onClick={onList}>
+          {busy ? '…' : '↓'}
+        </button>
+        <button className="btn ghost sm" title="用这个模型真发一句话试试" disabled={!value.trim() || busy}
+          onClick={() => onProbe(value.trim())}>
+          🧪
+        </button>
+      </div>
+      {known && (
+        <datalist id="nest-model-options">
+          {list!.models.map((m) => <option key={m} value={m} />)}
+        </datalist>
+      )}
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+        {known && !value.trim() && <span className="text-[var(--text-3)]">未填</span>}
+        {stale && <span className="text-[var(--pink-deep)]" title="清单里没有这个名字">⚠不在清单</span>}
+        {probe && (
+          <span className={probe.ok ? 'text-[var(--text-2)]' : 'text-[var(--pink-deep)]'}>
+            {probe.ok ? '✅ 这个能用' : `❌ ${probe.detail}`}
+            {!probe.ok && probe.hint && <span className="block">→ {probe.hint}</span>}
+          </span>
+        )}
+        {hint && <span className={list?.ok ? 'text-[var(--text-3)]' : 'text-[var(--pink-deep)]'}>{hint}</span>}
+        {fix && onFix && (
+          <span className="flex items-center gap-1">
+            <span className="text-[var(--text-2)]">清单是在 <b>{fix}</b> 读到的</span>
+            <button className="btn ghost sm" onClick={() => onFix(fix)}>改成这个</button>
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -30,6 +94,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 const KIND_LABEL: Record<string, string> = {
   game: '游戏', media: '媒体', im: '聊天软件', home: '小窝', other: '其他',
+}
+
+/** Base URL 的比较键：末尾斜杠不算区别（下拉/试模型按它查缓存）。 */
+function keyOf(url: string): string {
+  return (url || '').trim().replace(/\/+$/, '')
 }
 
 export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) {
@@ -47,6 +116,11 @@ export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) 
   // 跟真的没配一模一样 —— 后端没连上时不该这么说。
   const [loadErr, setLoadErr] = useState('')
   const [testing, setTesting] = useState(false)
+  // 覆盖框里留空的字段走全局默认 —— 下拉/试模型也跟着走同一个上游，不拿空地址去读
+  const overrideUrl = (override.base_url || brain.base_url || '').trim()
+  const overrideKey = override.api_key || brain.api_key || ''
+  const overrideVisionUrl = (override.vision_base_url || overrideUrl).trim()
+  const visionUrl = (brain.vision_base_url || brain.base_url || '').trim()
   const [probe, setProbe] = useState<NestApiTestResult | null>(null)
   // 屏上这张卡是哪个功能的（'' = 还没读到 / 读失败）—— 和设置面板同一个道理：
   // 换功能时先清空、读回来了才画，不然上个功能的卡会留在新功能底下。
@@ -54,6 +128,12 @@ export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) 
   // 没选中功能时保存全局默认失败，会被说成「这个功能的配置没读到」。
   const [featureErr, setFeatureErr] = useState('')
   const reqRef = useRef(0)
+  // 模型清单：按 Base URL 缓存（换地址就重读），探测结果按 key 分开记
+  const [models, setModels] = useState<Record<string, NestModelList>>({})
+  const [modelBusy, setModelBusy] = useState('')
+  const [probes, setProbes] = useState<Record<string, NestModelList>>({})
+  const [modelHints, setModelHints] = useState<Record<string, string>>({})
+  const [urlFixes, setUrlFixes] = useState<Record<string, string>>({})
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 4000) }
 
@@ -144,8 +224,60 @@ export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) 
     flash(`已把 Base URL 改成 ${url} —— 记得点「保存全局默认」再测一次`)
   }
 
-  const toggleVision = async (id: string, on: boolean) => {
-    setBusy(true); setErr('')
+  /** 读上游模型清单（只读，不发消息）。key 用请求时输入框里的那份。 */
+  const loadModels = async (baseUrl: string, apiKey: string) => {
+    const url = baseUrl.trim()
+    if (!url) { flash('先填 Base URL 再读模型清单'); return }
+    const slot = keyOf(url)
+    setModelBusy('list:' + slot)
+    try {
+      const r = await fetchNestModels(url, apiKey)
+      setModels((m) => ({ ...m, [slot]: r }))
+      if (r.suggest_base_url) setUrlFixes((u) => ({ ...u, [slot]: r.suggest_base_url! }))
+      else setUrlFixes((u) => { const n = { ...u }; delete n[slot]; return n })
+      setModelHints((h) => ({
+        ...h,
+        [slot]: r.ok
+          ? (r.groups.filter((g) => g.group).length > 1
+              ? `站点有 ${r.models.length} 个；按分组是站点自己的渠道名，不代表你 key 能用 —— 拿不准就点 🧪 真发一句`
+              : `读到 ${r.models.length} 个`)
+          : `读不到清单：${r.detail}`,
+      }))
+    } catch (e) {
+      setModelHints((h) => ({ ...h, [slot]: '读不到清单：' + (e instanceof Error ? e.message : String(e)) }))
+    } finally {
+      setModelBusy('')
+    }
+  }
+
+  /** 用给定模型真发一句话（流式，跟她说话同一条路）：ok = 这条路确实能用。
+   *  **光在清单里不代表能用** —— 中转站会按 key 的分组挂模型，名字列着、分组下没渠道就 500
+   *  （「分组 X 下模型 Y 的可用渠道不存在」）。 */
+  const probeModel = async (baseUrl: string, apiKey: string, model: string) => {
+    const url = baseUrl.trim()
+    if (!url) { flash('先填 Base URL 再试'); return }
+    const key = 'probe:' + keyOf(url) + '|' + model
+    setModelBusy(key)
+    try {
+      const r = await fetchNestModels(url, apiKey, model)
+      setProbes((p) => ({ ...p, [key]: r }))
+    } catch (e) {
+      setProbes((p) => ({ ...p, [key]: {
+        ok: false, models: [], groups: [], detail: e instanceof Error ? e.message : String(e),
+      } }))
+    } finally {
+      setModelBusy('')
+    }
+  }
+
+  const modelsOf = (url: string) => models[keyOf(url)] ?? null
+  const probeOf = (url: string, model: string) => (model.trim() ? probes['probe:' + keyOf(url) + '|' + model.trim()] ?? null : null)
+  const modelHintOf = (url: string) => modelHints[keyOf(url)] || ''
+  const urlFixOf = (url: string) => urlFixes[keyOf(url)] || ''
+  // 「↓」「🧪」忙的时候一起变灰，免得连点把同一个上游打一串
+  const busyModel = modelBusy.startsWith('list:') || modelBusy.startsWith('probe:')
+
+  const toggleVision = async (id: string, on: boolean) => {    setBusy(true); setErr('')
     try {
       // 只改屏蔽开关：先取出该功能生效配置里的 base_url/key/model 兜底，避免覆盖成空。
       const eff = await fetchNestFeatureConfig(id)
@@ -197,8 +329,32 @@ export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) 
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
           <Field label="Base URL"><input className="input" placeholder="https://…/v1" value={brain.base_url || ''} onChange={(e) => setBrain({ ...brain, base_url: e.target.value })} /></Field>
           <Field label="API Key"><input className="input" type={showKey ? 'text' : 'password'} placeholder="本地保存，不外发" value={brain.api_key || ''} onChange={(e) => setBrain({ ...brain, api_key: e.target.value })} /></Field>
-          <Field label="对话模型"><input className="input" placeholder="gemini-3.8-flash" value={brain.model || ''} onChange={(e) => setBrain({ ...brain, model: e.target.value })} /></Field>
-          <Field label="视觉模型"><input className="input" placeholder="留空 = 跟对话模型同一路" value={brain.vision_model || ''} onChange={(e) => setBrain({ ...brain, vision_model: e.target.value })} /></Field>
+          <Field label="对话模型">
+            <ModelInput value={brain.model || ''} onChange={(v) => setBrain({ ...brain, model: v })}
+              placeholder="gemini-3.8-flash" list={modelsOf(brain.base_url || '')}
+              probe={probeOf(brain.base_url || '', brain.model || '')} busy={busyModel}
+              onList={() => void loadModels(brain.base_url || '', brain.api_key || '')}
+              onProbe={(m) => void probeModel(brain.base_url || '', brain.api_key || '', m)}
+              hint={modelHintOf(brain.base_url || '')}
+              fix={urlFixOf(brain.base_url || '')}
+              onFix={(u) => {
+                setBrain({ ...brain, base_url: u })
+                flash(`Base URL 改成 ${u} —— 点 🧪 再试一次，对了再保存`)
+              }} />
+          </Field>
+          <Field label="视觉模型">
+            <ModelInput value={brain.vision_model || ''} onChange={(v) => setBrain({ ...brain, vision_model: v })}
+              placeholder="留空 = 跟对话模型同一路" list={modelsOf(visionUrl)} probe={null} busy={busyModel}
+              onList={() => void loadModels(visionUrl, brain.vision_api_key || brain.api_key || '')}
+              onProbe={(m) => void probeModel(visionUrl, brain.vision_api_key || brain.api_key || '', m)}
+              hint={modelHintOf(visionUrl)}
+              fix={urlFixOf(visionUrl)}
+              onFix={(u) => {
+                // 视觉地址留空时跟着对话那路走 —— 这里改的是视觉那一格
+                setBrain({ ...brain, vision_base_url: u })
+                flash(`视觉 Base URL 改成 ${u}`)
+              }} />
+          </Field>
           <Field label="视觉 Base URL（可空）"><input className="input" placeholder="留空 = 与上面同一个 Base URL" value={brain.vision_base_url || ''} onChange={(e) => setBrain({ ...brain, vision_base_url: e.target.value })} /></Field>
           <Field label="视觉 API Key（可空）"><input className="input" type={showKey ? 'text' : 'password'} placeholder="留空 = 与上面同一个 Key" value={brain.vision_api_key || ''} onChange={(e) => setBrain({ ...brain, vision_api_key: e.target.value })} /></Field>
         </div>
@@ -294,8 +450,24 @@ export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) 
                 <Field label="配置名称"><input className="input" value={override.name} onChange={(e) => setOverride({ ...override, name: e.target.value })} /></Field>
                 <Field label="Base URL"><input className="input" placeholder="留空 = 全局默认" value={override.base_url} onChange={(e) => setOverride({ ...override, base_url: e.target.value })} /></Field>
                 <Field label="API Key"><input className="input" type={showKey ? 'text' : 'password'} value={override.api_key} onChange={(e) => setOverride({ ...override, api_key: e.target.value })} /></Field>
-                <Field label="对话模型"><input className="input" value={override.model} onChange={(e) => setOverride({ ...override, model: e.target.value })} /></Field>
-                <Field label="视觉模型"><input className="input" value={override.vision_model} onChange={(e) => setOverride({ ...override, vision_model: e.target.value })} /></Field>
+                <Field label="对话模型">
+                  <ModelInput value={override.model} onChange={(v) => setOverride({ ...override, model: v })}
+                    placeholder={brain.model || ''}
+                    list={modelsOf(overrideUrl)} probe={probeOf(overrideUrl, override.model)} busy={busyModel}
+                    onList={() => void loadModels(overrideUrl, overrideKey)}
+                    onProbe={(m) => void probeModel(overrideUrl, overrideKey, m)}
+                    hint={modelHintOf(overrideUrl)}
+                    fix={urlFixOf(overrideUrl)}
+                    onFix={(u) => setOverride({ ...override, base_url: u })} />
+                </Field>
+                <Field label="视觉模型">
+                  <ModelInput value={override.vision_model} onChange={(v) => setOverride({ ...override, vision_model: v })}
+                    placeholder="留空 = 全局默认的视觉模型"
+                    list={modelsOf(overrideVisionUrl)} probe={null} busy={busyModel}
+                    onList={() => void loadModels(overrideVisionUrl, override.api_key || '')}
+                    onProbe={(m) => void probeModel(overrideVisionUrl, override.api_key || '', m)}
+                    hint={modelHintOf(overrideVisionUrl)} />
+                </Field>
                 <Field label="视觉 Base URL"><input className="input" value={override.vision_base_url} onChange={(e) => setOverride({ ...override, vision_base_url: e.target.value })} /></Field>
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2">

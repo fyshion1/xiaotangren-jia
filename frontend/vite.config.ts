@@ -84,8 +84,13 @@ export default defineConfig({
     // 允许用 IP / 局域网主机名访问；仅本地开发用，别拿去公网裸奔。
     allowedHosts: true,
     port: 5173,
-    strictPort: false,
+    strictPort: true,
     proxy: {
+      '/api/voice/call/ws': {
+        target: 'http://127.0.0.1:8000',
+        ws: true,
+        changeOrigin: false,
+      },
       // 后端留 127.0.0.1 即可：代理发生在电脑本机，手机只跟 Vite 打交道，
       // /api 由 Vite 转发给后端，所以手机侧不需要、也不应该直连 8000。
       '/api': {

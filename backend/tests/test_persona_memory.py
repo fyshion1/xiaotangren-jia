@@ -13,6 +13,7 @@ from app.routers import profiles
 from app.services import memory as memory_service
 from app.services import persona_memory as pm
 from app.services import self_profile as sp
+from app.services import memory_workflow as work
 
 
 class PersonaMemoryTests(unittest.TestCase):
@@ -41,7 +42,7 @@ class PersonaMemoryTests(unittest.TestCase):
             "review_status: pending\n---\n还没审的。\n",
             encoding="utf-8",
         )
-        env = patch.dict("os.environ", {"PERSONAL_DATABASE_ROOT": str(self.db_root)})
+        env = patch.dict("os.environ", {"PERSONAL_DATABASE_ROOT": str(self.db_root), "PERSONAL_MEMORY_ROOT": str(Path(self.tmp.name) / "memory")})
         env.start()
         self.addCleanup(env.stop)
 
@@ -57,15 +58,40 @@ class PersonaMemoryTests(unittest.TestCase):
         self.addCleanup(vec.stop)
 
         self.m1 = db.add_memory(bucket="home", char_id="", text="烤饼干要做三次", source="manual")
-        self.m2 = db.add_memory(bucket="home", char_id="", text="喜欢吃提拉米苏", source="manual")
+        self.m2 = db.add_memory(bucket="home", char_id="", text="喜欢吃提拉米苏", source="manual", fingerprint="tiramisu")
 
         db.upsert_profile("dalaoda", {"name": "大老大"})
         db.upsert_profile("xizi", {"name": "汐子"})
+
+        pending = work.propose("烤饼干要做三次", "dalaoda", ["dashiyin"], scope="shared")
+        formal = work.review(pending["id"], "dalaoda", "approve", {"core": True}, pending["revision"])
+        self.formal = {**formal, "id": "file:" + formal["id"]}
+        db.delete_persona_pick("dalaoda", "memory", self.formal["id"])
 
         app = FastAPI()
         app.include_router(profiles.router, prefix="/api")
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
+
+    def test_prompt_never_recalls_unpicked_or_disabled_memory(self):
+        from app.services.prompt.assembler import build_system_prompt
+        db.upsert_character("dashiyin", {"name": "大诗音"})
+        pm.set_pick("dalaoda", "memory", self.formal["id"], True)
+        for persona_id in ("dalaoda", "xizi"):
+            with patch.object(memory_service, "recall_for", return_value=[self.m2]) as recall:
+                prompt = build_system_prompt(["dashiyin"], [{"role": "user", "content": "提拉米苏"}],
+                                             persona=db.get_profile(persona_id))
+            recall.assert_not_called()
+            self.assertNotIn(self.m2["text"], prompt)
+            self.assertEqual(self.m1["text"] in prompt, persona_id == "dalaoda")
+
+    def test_disabled_pick_does_not_leak_through_prompt(self):
+        from app.services.prompt.assembler import build_system_prompt
+        db.upsert_character("dashiyin", {"name": "大诗音"})
+        pm.set_pick("dalaoda", "memory", self.formal["id"], False)
+        prompt = build_system_prompt(["dashiyin"], [{"role": "user", "content": "烤饼干"}],
+                                     persona=db.get_profile("dalaoda"))
+        self.assertNotIn(self.m1["text"], prompt)
 
     def test_default_is_empty(self):
         data = self.client.get("/api/profiles/dalaoda/memory-picks").json()
@@ -74,7 +100,7 @@ class PersonaMemoryTests(unittest.TestCase):
         self.assertEqual(pm.injectable("dalaoda", []), ([], set()))
 
     def test_put_toggles_and_is_per_persona(self):
-        m_id = self.m1["id"]
+        m_id = self.formal["id"]
         r = self.client.put(f"/api/profiles/dalaoda/memory-picks/memory/{m_id}", json={"enabled": True})
         self.assertEqual(r.status_code, 200)
 
@@ -102,11 +128,29 @@ class PersonaMemoryTests(unittest.TestCase):
         self.assertEqual([i["id"] for i in items], ["db:" + ref])
         block = memory_service.format_memory_block([], {}, pinned=items)
         self.assertIn("住在深圳坪山", block)
-        self.assertIn("确定的真实信息", block)
+        self.assertIn("已批准的真实信息", block)
 
     def test_unapproved_db_cannot_be_picked(self):
         r = self.client.put("/api/profiles/dalaoda/memory-picks/db/现实/草稿.md", json={"enabled": True})
         self.assertEqual(r.status_code, 404)
+
+    def test_memory_and_database_share_content_budget(self):
+        ref = "现实/长资料.md"
+        path = self.db_root / "03_AI注入层" / ref
+        path.write_text(
+            "---\ntitle: 长资料\ninject: true\nvisible_to: all\ncreated_at: 2026-01-04\n"
+            "review_status: approved\n---\n" + "资" * 1300 + "\n",
+            encoding="utf-8",
+        )
+        pending = work.propose("忆" * 1300, "dalaoda", ["dashiyin"], scope="shared")
+        approved = work.review(pending["id"], "dalaoda", "approve", {}, pending["revision"])
+        pm.set_pick("dalaoda", "memory", "file:" + approved["id"], True)
+        pm.set_pick("dalaoda", "db", ref, True)
+
+        items, _ = pm.injectable("dalaoda", ["dashiyin"])
+        content_size = sum(len(item.get("text") or item.get("content") or "") for item in items)
+        self.assertLessEqual(content_size, 2400)
+        self.assertEqual(len(items), 1)
 
     def test_unknown_profile_or_memory(self):
         self.assertEqual(self.client.get("/api/profiles/nobody/memory-picks").status_code, 404)
@@ -115,7 +159,7 @@ class PersonaMemoryTests(unittest.TestCase):
 
     def test_delete_memory_clears_picks(self):
         m_id = self.m1["id"]
-        self.client.put(f"/api/profiles/dalaoda/memory-picks/memory/{m_id}", json={"enabled": True})
+        db.set_persona_pick("dalaoda", "memory", m_id, True)
         self.assertTrue(db.delete_memory(m_id))
         self.assertIsNone(db.get_memory(m_id))
         # 挑中行跟着删，不留指向已消失记忆的孤儿
@@ -125,7 +169,7 @@ class PersonaMemoryTests(unittest.TestCase):
 
     def test_clear_memories_drops_all_memory_picks(self):
         m_id = db.add_memory(bucket="personal", char_id="dashiyin", text="爱吃火锅", source="manual")["id"]
-        self.client.put(f"/api/profiles/dalaoda/memory-picks/memory/{m_id}", json={"enabled": True})
+        db.set_persona_pick("dalaoda", "memory", m_id, True)
         db.clear_memories()
         self.assertFalse(any(p["kind"] == "memory" for p in db.list_persona_picks("dalaoda")))
 

@@ -58,7 +58,15 @@ async def _build_engines() -> list[dict]:
     local_url = (s.comfyui_url or "").strip()
     cloud_url = (s.comfyui_cloud_url or "").strip()
     local_ok, cloud_ok = False, False
-    if local_url:
+    from ..services import compute
+    delegated = compute.configuration().mode == "delegated"
+    if delegated:
+        status = await compute.status()
+        local_ok = bool(status["online"] and "images" in status["capabilities"])
+        local_url = "委托算力端"
+    elif s.runtime_profile == "lightweight":
+        local_url = "轻量模式未启用"
+    elif local_url:
         local_ok = await comfyui.health(local_url)
     if cloud_url:
         cloud_ok = await comfyui.health(cloud_url)
@@ -69,10 +77,10 @@ async def _build_engines() -> list[dict]:
     return [
         {
             "id": "local",
-            "name": "本地 ComfyUI",
+            "name": "委托生图" if delegated else "本地 ComfyUI",
             "ready": local_ok,
             "desc": (
-                f"3050 4GB 本地跑，免费无限，吃显存。地址：{local_url or '（未配置 COMFYUI_URL）'}"
+                f"计算位置：{local_url or '（未配置 COMFYUI_URL）'}"
                 + ("" if local_ok else " —— 现在探测不通，确认 ComfyUI 已启动。")
             ),
         },
@@ -214,13 +222,26 @@ async def generate_images(req: ImageGenRequest) -> dict:
     """按当前引擎出图，结果统一落附件库，返回 {images: [{id, orig, thumb}, ...]}。"""
     engine = _selected_engine()
 
-    if engine == "novelai":
+    from ..services import compute
+    delegated = engine == "local" and compute.configuration().mode == "delegated"
+    if delegated:
+        try:
+            results = await compute.image_bytes(req.model_dump(include={
+                "prompt", "negative", "size", "n", "seed", "steps", "cfg"}))
+        except compute.ComputeUnavailable as exc:
+            raise HTTPException(503, str(exc)) from None
+    elif engine == "local" and conf.get_settings().runtime_profile == "lightweight":
+        raise HTTPException(503, "轻量模式不运行本地生图，请配置算力端或云端生图")
+
+    if not delegated and engine == "novelai":
         raise HTTPException(status_code=501, detail=str(novelai.NovelAINotImplemented(
             "NovelAI 通道还没实接 —— 它的接口不是 OpenAI 兼容，得照官方文档单独适配。"
             "先切到 local / cloud / thirdparty 其中一个。"
         )))
 
-    if engine in ("local", "cloud"):
+    if delegated:
+        pass
+    elif engine in ("local", "cloud"):
         results = await _run_comfyui(req, engine)
     elif engine == "thirdparty":
         results = await _run_thirdparty(req)

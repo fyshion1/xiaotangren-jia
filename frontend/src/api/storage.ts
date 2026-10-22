@@ -13,6 +13,7 @@ export type StoredMessage = {
   image_source: string
   kind: 'text' | 'groups'
   segments: { speaker: string; text: string }[]
+  frames?: string[]
   created_at?: string
 }
 
@@ -28,7 +29,7 @@ export function toChatMessage(s: StoredMessage): ChatMessage {
   return {
     role: s.role,
     content: s.content,
-    image: s.image ? thumbOf(s.image) : undefined,
+    image: s.image_source === 'video' && s.frames?.length ? s.frames[0] : s.image ? thumbOf(s.image) : undefined,
     imageOrig: s.image || undefined,
     imageSource: (s.image_source as 'upload' | 'generated' | 'video') || undefined,
     kind: s.kind === 'groups' ? 'groups' : 'text',
@@ -36,6 +37,7 @@ export function toChatMessage(s: StoredMessage): ChatMessage {
     seq: s.seq,
     dbId: s.id,
     createdAt: s.created_at,
+    frames: s.frames,
   }
 }
 
@@ -50,6 +52,7 @@ function toPayload(sessionId: string, m: ChatMessage) {
     image_source: m.imageSource ?? '',
     kind: m.kind === 'groups' ? 'groups' : 'text',
     segments: m.segments ?? [],
+    frames: m.frames ?? [],
   }
 }
 

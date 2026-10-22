@@ -43,8 +43,13 @@ def _purge(removed: list[dict]) -> dict:
         return {"deleted": 0, "files_removed": 0, "gallery_removed": 0}
 
     deleted_ids = [m["id"] for m in removed]
+    from . import memory_sources
+    memory_sources.remove(deleted_ids)
+    from . import qq_media_context
+    qq_media_context.prune_sessions({m['session_id'] for m in removed})
     # 只对「被删消息确实带图」的那些 URL 做清理
-    candidates = list(dict.fromkeys(_message_image(m) for m in removed if _message_image(m)))
+    candidates = list(dict.fromkeys(url for m in removed for url in
+                                   [_message_image(m), *(m.get('frames') or [])] if url))
     orphaned: list[str] = []
     for orig in candidates:
         if not db.list_messages_by_image(orig, exclude_ids=deleted_ids):

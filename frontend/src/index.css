@@ -353,18 +353,12 @@ body {
 }
 
 /* ===== 画廊占位渐变 ===== */
-.t1 { background: linear-gradient(160deg, #ffe1ea, #ffd9e4); }
-.t2 { background: linear-gradient(160deg, #dff3ec, #c9ecdf); }
-.t3 { background: linear-gradient(160deg, #dfeefb, #cfe7f7); }
-.t4 { background: linear-gradient(160deg, #f6ead9, #f0dcc0); }
-.t5 { background: linear-gradient(160deg, #f3e3ff, #e8d3fb); }
-.t6 { background: linear-gradient(160deg, #ffe9d9, #ffdcc2); }
-.dark .t1 { background: linear-gradient(160deg, #4a2f38, #3a2430); }
-.dark .t2 { background: linear-gradient(160deg, #2c433c, #234034); }
-.dark .t3 { background: linear-gradient(160deg, #2a3a4a, #22303e); }
-.dark .t4 { background: linear-gradient(160deg, #43372b, #392e24); }
-.dark .t5 { background: linear-gradient(160deg, #3b2f47, #31263c); }
-.dark .t6 { background: linear-gradient(160deg, #463229, #3a2a23); }
+.t1 { background: linear-gradient(160deg,var(--pink-soft),var(--surface-2)); }
+.t2 { background: linear-gradient(160deg,color-mix(in srgb,var(--mint) 28%,var(--surface)),var(--bg-soft)); }
+.t3 { background: linear-gradient(160deg,color-mix(in srgb,var(--sky) 30%,var(--surface)),var(--surface-2)); }
+.t4 { background: linear-gradient(160deg,var(--bg-soft),var(--pink-soft)); }
+.t5 { background: linear-gradient(160deg,var(--surface-2),color-mix(in srgb,var(--pink) 18%,var(--surface))); }
+.t6 { background: linear-gradient(160deg,color-mix(in srgb,var(--mint) 17%,var(--surface)),color-mix(in srgb,var(--sky) 20%,var(--surface))); }
 
 /* 小标签 */
 .eyebrow {
@@ -885,3 +879,18 @@ body {
   }
   .persona-memory-panel .persona-memory-list + .persona-memory-list { border-top:1px solid var(--border); }
 }
+
+/* 记忆手记：短期上下文与个人双库 */
+.memory-backdrop{position:fixed;inset:0;z-index:60;background:#28232c66;backdrop-filter:blur(7px);display:flex;align-items:center;justify-content:center;padding:20px}
+.context-notebook{width:min(760px,100%);max-height:88dvh;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:24px;box-shadow:0 24px 90px #24172130;overflow:hidden;color:var(--text)}
+.context-heading{display:flex;gap:14px;align-items:center;padding:24px 26px 12px}.context-heading h2{font-size:20px;font-weight:650;margin:4px 0}.context-heading>button{margin-left:auto}.context-emblem{padding:12px;border-radius:16px;background:var(--surface-2);color:var(--pink-deep)}.memory-eyebrow{font-size:11px;letter-spacing:.12em;color:var(--text-3)}
+.context-intro{padding:0 26px;color:var(--text-3);font-size:12px;line-height:1.8}.context-metrics{display:flex;margin:18px 26px;gap:24px}.context-metrics span{font-size:11px;color:var(--text-3)}.context-metrics b{display:block;font-size:22px;font-weight:550;color:var(--text)}
+.memory-tabs{display:flex;gap:18px;border-bottom:1px solid var(--border);padding:0 24px;flex-wrap:wrap}.memory-tabs button{padding:10px 0;font-size:12px;color:var(--text-3);border-bottom:2px solid transparent}.memory-tabs .active{color:var(--pink-deep);border-color:var(--pink-deep)}
+.context-scroll{min-height:100px;overflow-y:auto;padding:18px 24px;flex:1;background:var(--bg-soft)}.context-message{border:1px solid var(--border);background:var(--surface);border-radius:16px;padding:14px 16px;margin-bottom:12px;font-size:13px;line-height:1.8;overflow-wrap:anywhere}.context-message.user{border-left:3px solid var(--pink)}.context-message p{white-space:pre-wrap;margin-top:8px}.context-message-label{display:flex;justify-content:space-between;margin-bottom:5px;font-size:12px;font-weight:600}.context-message-label small{font-weight:400;color:var(--text-3)}.context-message summary{cursor:pointer;font-size:11px;color:var(--text-3)}
+.context-images{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.context-images img{height:100px;max-width:160px;object-fit:cover;border-radius:8px}.context-footer{display:flex;align-items:center;gap:12px;justify-content:space-between;padding:14px 24px;font-size:11px;color:var(--text-3);border-top:1px solid var(--border)}.context-note,.memory-empty{padding:18px;color:var(--text-3);font-size:12px;line-height:1.8}
+.personal-libraries{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start;margin:20px 0}.personal-libraries>*{min-width:0;margin:0!important}.personal-libraries .personal-db-layout{grid-template-columns:1fr}.memory-event{margin:0 0 14px;padding:18px;border:1px solid var(--border);border-radius:16px;background:var(--surface)}.memory-event-title{display:flex;align-items:center;gap:10px;justify-content:space-between}.memory-event time{font-size:11px;color:var(--text-3)}.memory-event h3{font-size:14px;line-height:1.8;white-space:pre-wrap;margin:10px 0;font-weight:550}.memory-event details{font-size:12px;color:var(--text-2);line-height:1.8}.memory-event summary{cursor:pointer}.memory-event textarea{margin:8px 0;width:100%;min-width:0}.memory-event-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.memory-event-settings{display:grid;gap:10px;margin-top:12px;padding:12px;background:var(--surface-2);border-radius:10px}.memory-run{padding:10px 14px;font-size:11px;color:var(--text-3);line-height:1.8}.memory-library-description{font-size:12px;color:var(--text-3);padding:12px 16px;line-height:1.8}.memory-stage-line{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 16px 12px;font-size:11px;color:var(--text-3)}.memory-stage-line b{background:var(--surface-2);padding:4px 8px;border-radius:6px;color:var(--text-2)}
+@media(max-width:1000px){.personal-libraries{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:520px){.memory-backdrop{padding:10px}.context-notebook{max-height:94dvh;border-radius:18px}.context-heading{padding:18px 16px 10px}.context-heading h2{font-size:16px}.context-intro{padding:0 16px}.context-metrics{margin:14px 16px;gap:16px}.context-scroll{padding:12px}.context-footer{padding:12px;flex-wrap:wrap}.memory-event{padding:12px}.memory-tabs{gap:12px;padding:0 14px}}
+
+.personal-libraries .personal-db-panel .db-tree{width:150px}.personal-libraries .personal-db-panel .panel-header{flex-wrap:wrap;gap:10px}.personal-libraries .personal-db-panel .db-toolbar{flex-wrap:wrap}.personal-libraries .personal-db-panel .db-meta-form{grid-template-columns:1fr}.storage-settings{min-width:0}.storage-settings .storage-panel{overflow-wrap:anywhere}.storage-settings select{max-width:100%}
+@media(max-width:767px){.personal-libraries .personal-db-panel .db-tree{width:100%}}

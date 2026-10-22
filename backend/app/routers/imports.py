@@ -19,10 +19,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import zipfile
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .. import db
@@ -113,6 +115,187 @@ class CardTextIn(BaseModel):
     text: str = ""
 
 
+class CardGreetingIn(BaseModel):
+    """「插入开场白」：会话里已经有消息时，前端先问过用户，带了 `insert: true` 才硬插。"""
+
+    insert: bool = False
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _openai_events(
+    messages: list[dict],
+    mdl: str,
+    url: str,
+    key: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+    stage: str,
+):
+    """`stream_chat_retry` 的薄包装 → SSE 事件串。
+
+    - 重试时吐一条 `status`，前端据此显示「上游没接上，正在重试 1/2」；
+    - 非「上游报错」的异常（断连 / 超时）不抛出去，化成一个 `error` 事件，
+      调用方拿着已收到的半截正文去解析 —— 半份词条也比零份强。
+
+    `on_retry` 是同步回调、没法在里面 yield，先记到 `state`，下一轮开头再吐。
+    """
+    state: dict = {"pending": ""}
+
+    def on_retry(next_attempt: int, error: dict) -> None:
+        state["pending"] = (
+            f"上游暂时没接上（{error.get('message', '')}），正在重试 {next_attempt + 1}/3…"
+        )
+
+    try:
+        async for ev in openai.stream_chat_retry(
+            messages,
+            model=mdl,
+            base_url=url,
+            api_key=key,
+            attempts=3,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            on_retry=on_retry,
+        ):
+            if state["pending"]:
+                yield {"type": "status", "stage": stage, "message": state["pending"]}
+                state["pending"] = ""
+            yield ev
+    except Exception as exc:  # noqa: BLE001  断连 / 超时 / 解析异常
+        yield {"type": "error", "message": f"连接中途断了（{type(exc).__name__}: {exc}）", "exception": True}
+
+
+async def _with_ping(gen):
+    """正文事件 + 每 15 秒一条心跳（模型很久不出字时，别让中间层以为连接死了）。"""
+    agen = gen.__aiter__()
+    while True:
+        try:
+            item = await asyncio.wait_for(agen.__anext__(), timeout=15)
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            yield "event: ping\ndata: {}\n\n"
+            continue
+        yield item
+
+
+@router.post("/tavern-card/extract/stream")
+async def extract_tavern_card_stream(
+    file: UploadFile = File(...),  # noqa: B008
+    base_url: str = Query(""),
+    api_key: str = Query(""),
+    model: str = Query(""),
+) -> StreamingResponse:
+    """抽词条的**流式**版：模型边吐边显示，中途断也把已收到的半份 JSON 解析掉。
+
+    事件：`ping` / `status`（重试中）/ `token` `{text}` / `done`
+    `{reason, fields, extracted, warnings}` / `error` `{message, fields}`。
+    这里出错也一样不挡导入 —— 前端只把 `fields` 合进草稿。
+    """
+    _raw, card = await _read_upload(file)
+    text = card_import.card_text_for_extract(card)
+
+    async def gen():
+        yield "event: start\ndata: {}\n\n"
+        if not text:
+            msg = "卡里没有可抽取的正文（描述 / 性格 / 场景都是空的），词条留空。"
+            yield _sse("done", {"reason": "empty", "fields": {}, "extracted": False, "warnings": [msg]})
+            return
+        mdl, url, key = _chat_route(base_url, api_key, model)
+        messages = [
+            {"role": "system", "content": card_import.extract_system_prompt()},
+            {"role": "user", "content": f"【角色名】{card.get('name', '')}\n\n【原文】\n{text}"},
+        ]
+        buf: list[str] = []
+        reason = ""
+        failure = ""
+        async for ev in _openai_events(
+            messages, mdl, url, key, max_tokens=1200, temperature=0.2, stage="extract"
+        ):
+            kind = ev.get("type")
+            if kind == "text":
+                buf.append(ev.get("text", ""))
+                yield _sse("token", {"text": ev.get("text", "")})
+            elif kind == "status":
+                yield _sse("status", {"stage": "extract", "message": ev.get("message", "")})
+            elif kind == "done":
+                reason = ev.get("finish_reason") or ""
+                break
+            elif kind == "error":
+                failure = ev.get("message", "") or "上游没回话"
+                break
+        raw = "".join(buf)
+        fields = card_import.parse_fields_partial(raw) if raw.strip() else {}
+        warnings: list[str] = []
+        if failure:
+            warnings.append(f"自动解析词条没成功（{failure}）—— 不影响导入，落库后可以手动补。")
+        elif not fields:
+            warnings.append("模型没给出能用的词条 —— 词条留空，落库后可以手动补。")
+        if reason == "length":
+            warnings.append("词条太多被截断了 —— 抽到多少用多少，缺的可以手动补。")
+        payload = {"reason": reason or ("error" if failure else "done"), "fields": fields,
+                   "extracted": bool(fields), "warnings": warnings}
+        yield _sse("error" if failure else "done", {"message": failure, **payload} if failure else payload)
+
+    return StreamingResponse(_with_ping(gen()), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/tavern-card/translate/stream")
+async def translate_tavern_card_stream(
+    body: CardTextIn,
+    base_url: str = Query(""),
+    api_key: str = Query(""),
+    model: str = Query(""),
+) -> StreamingResponse:
+    """中文译文的**流式**版：同理，边翻边显示；本来就是中文就直接跳过，不叫模型。
+
+    事件：`ping` / `status` / `token` / `done` `{aboutZh, skipped, reason}` / `error` `{message, aboutZh}`。
+    """
+    text = (body.text or "").strip()
+
+    async def gen():
+        yield "event: start\ndata: {}\n\n"
+        if not text:
+            yield _sse("done", {"aboutZh": "", "skipped": True, "reason": "没有正文"})
+            return
+        if card_import.is_mostly_chinese(text):
+            yield _sse("done", {"aboutZh": "", "skipped": True, "reason": "正文本来就是中文，不用翻"})
+            return
+        mdl, url, key = _chat_route(base_url, api_key, model)
+        messages = [
+            {"role": "system", "content": card_import.translate_system_prompt()},
+            {"role": "user", "content": text},
+        ]
+        buf: list[str] = []
+        failure = ""
+        async for ev in _openai_events(
+            messages, mdl, url, key, max_tokens=4096, temperature=0.2, stage="translate"
+        ):
+            kind = ev.get("type")
+            if kind == "text":
+                buf.append(ev.get("text", ""))
+                yield _sse("token", {"text": ev.get("text", "")})
+            elif kind == "status":
+                yield _sse("status", {"stage": "translate", "message": ev.get("message", "")})
+            elif kind == "error":
+                failure = ev.get("message", "") or "上游没回话"
+                break
+        about_zh = card_import.clean_translation("".join(buf))
+        if failure:
+            message = f"中文译文没翻成（{failure}）—— 不影响导入，界面继续看原文。"
+            yield _sse("error", {"message": message, "aboutZh": about_zh, "skipped": False})
+        else:
+            yield _sse("done", {"aboutZh": about_zh, "skipped": False, "reason": ""})
+
+    return StreamingResponse(_with_ping(gen()), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @router.post("/tavern-card/preview")
 async def preview_tavern_card(
     file: UploadFile = File(...),  # noqa: B008
@@ -141,8 +324,14 @@ async def preview_tavern_card(
         warnings.append("卡里没写角色名，先用文件名顶上，记得在预览里改。")
     profile["name"] = name
     profile["about"] = about
+    # 带格式的预览（洗过的 HTML，只给界面看）；原文照旧在 about 里。
+    profile["aboutHtml"] = card_import.about_html(about)
     # 开场白：存**去标签后的纯文本**，默认不勾、不自动发言（见 CardImportDialog）。
     profile["greeting"] = card_import.greeting_for(card)
+    profile["greetingHtml"] = card_import.greeting_html_for(card)
+    # Keep original markup separately: the legacy lightweight preview drops CSS/scripts.
+    profile["greetingSource"] = card.get("first_mes", "")
+    profile["tavernRegexScripts"] = card.get("display_rules", [])
 
     # 立绘：卡图本身就是立绘 + 头像。落盘走附件管道（正文页 / 会话列表都能自取）。
     if raw[:8] == b"\x89PNG\r\n\x1a\n" or raw[:3] == b"GIF":
@@ -168,7 +357,7 @@ async def preview_tavern_card(
         "spec": card.get("spec", ""),
         "creator": card.get("creator", ""),
         "tags": card.get("tags", []),
-        "has_greeting": bool(profile["greeting"]),
+        "has_greeting": bool(profile["greeting"] or profile["greetingSource"]),
         "profile": profile,
         "warnings": warnings,
         "duplicates": [{"id": c["id"], "name": c.get("name", "")} for c in same_name],
@@ -186,7 +375,9 @@ async def _run_extract(card: dict, base_url: str, api_key: str, model: str) -> t
         {"role": "user", "content": f"【角色名】{card.get('name', '')}\n\n【原文】\n{text}"},
     ]
     try:
-        reply = await openai.complete_chat(messages, model=mdl, base_url=url, api_key=key, max_tokens=1200, temperature=0.2)
+        reply = await openai.complete_chat_with_retry(
+            messages, model=mdl, base_url=url, api_key=key, attempts=3,
+            max_tokens=1200, temperature=0.2)
         return card_import.parse_fields(reply), []
     except Exception as exc:  # noqa: BLE001
         return {}, [f"自动解析词条没成功（{exc}）—— 词条留空，落库后可以手动补。"]
@@ -224,13 +415,17 @@ async def translate_tavern_card(
     text = (body.text or "").strip()
     if not text:
         return {"aboutZh": "", "warnings": []}
+    if card_import.is_mostly_chinese(text):
+        return {"aboutZh": "", "skipped": True, "warnings": []}
     mdl, url, key = _chat_route(base_url, api_key, model)
     messages = [
         {"role": "system", "content": card_import.translate_system_prompt()},
         {"role": "user", "content": text},
     ]
     try:
-        reply = await openai.complete_chat(messages, model=mdl, base_url=url, api_key=key, max_tokens=4096, temperature=0.2)
+        reply = await openai.complete_chat_with_retry(
+            messages, model=mdl, base_url=url, api_key=key, attempts=3,
+            max_tokens=4096, temperature=0.2)
     except Exception as exc:  # noqa: BLE001
         return {"aboutZh": "", "warnings": [f"中文译文没翻成（{exc}）—— 不影响导入，界面继续看原文。"]}
     return {"aboutZh": card_import.clean_translation(reply), "warnings": []}
@@ -248,6 +443,12 @@ async def commit_tavern_card(body: CardFieldIn) -> dict:
     fields = dict(body.fields or {})
     fields["name"] = body.name.strip()
     fields["imported"] = True
+    # 带格式的预览按**最终**的 about / greeting 重算：用户在预览里改过字，预览要跟着改。
+    # 原文/纯文本仍是唯一喂给模型、写进聊天的版本。greetingHtml 为空说明前端没改动过
+    # 开场白 —— 沿用预览里洗好的那份（纯文本的前端补不了原文的排版）。
+    fields["aboutHtml"] = card_import.about_html(fields.get("about") or "")
+    if "greetingHtml" not in fields:
+        fields["greetingHtml"] = card_import.sanitize_html(fields.get("greeting") or "")
     char_id = (body.id or "").strip()
     if not char_id or db.get_character(char_id) is not None:
         import uuid
@@ -293,11 +494,12 @@ def _seed_greeting(char_id: str, fields: dict) -> str:
 
 
 @router.post("/tavern-card/{char_id}/greeting")
-async def insert_greeting(char_id: str) -> dict:
+async def insert_greeting(char_id: str, body: CardGreetingIn | None = None) -> dict:
     """角色介绍页的「插入开场白」：把档案里存的那份开场白写成她私聊的第一条。
 
     给「导入时没勾」的人留的后路 —— 卡里的那份一直躺在档案里，什么时候想用都行。
-    会话已经聊过就不硬塞（开场白塞在中间很奇怪），如实说明，让用户自己决定要不要清空。
+    会话已经聊过就不硬塞（开场白塞在中间很奇怪），如实说明，让用户自己决定：
+    前端问过之后带 `insert: true` 再来说「还是要插」，这时才真插进去。
     """
     char = db.get_character(char_id)
     if char is None:
@@ -307,8 +509,8 @@ async def insert_greeting(char_id: str) -> dict:
         raise HTTPException(400, "这张卡里没有开场白")
 
     session_id = _private_session_id(char_id)
-    if db.count_messages(session_id) > 0:
-        raise HTTPException(400, "这段私聊已经有消息了 —— 开场白该在最前面，先清空再插。")
+    if db.count_messages(session_id) > 0 and not (body and body.insert):
+        raise HTTPException(409, "这段私聊已经有消息了 —— 开场白插进去会排在最新的消息后面，看着很怪。")
     db.append_message(session_id=session_id, role="assistant", content=text)
     return {"ok": True, "session_id": session_id, "content": text}
 

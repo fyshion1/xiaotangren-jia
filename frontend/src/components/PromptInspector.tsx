@@ -17,9 +17,13 @@ type Props = {
   /** 当前用户身份 id（§22） */
   personaId: string
   /** 当前这条聊天线的历史消息（含刚打完还没发的那条也行） */
-  messages: { role: string; content: string }[]
+  messages: { role: string; content: string; images?: string[] }[]
   /** 当前是否走无审查通道（§7）—— 决定要不要多注入无审查规则块 */
+  model: string
+  baseUrl: string
+  maxTokens: number | null
   uncensored: boolean
+  cardDisplayMode?: 'chat' | 'html'
 }
 
 /** 把「角色名 → id」的展示做轻量一点：后端返回的是纯 JSON，这里只做高亮与折叠。 */
@@ -33,7 +37,7 @@ function RoleTag({ role }: { role: string }) {
   return <span className={`rounded-md border px-1.5 py-0.5 text-[11px] ${cls}`}>{role}</span>
 }
 
-export default function PromptInspector({ open, onClose, characterIds, personaId, messages, uncensored }: Props) {
+export default function PromptInspector({ open, onClose, characterIds, personaId, messages, uncensored, model, baseUrl, maxTokens, cardDisplayMode }: Props) {
   const [dump, setDump] = useState<PromptDump | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
@@ -51,8 +55,12 @@ export default function PromptInspector({ open, onClose, characterIds, personaId
         character_ids: characterIds,
         persona_id: personaId,
         uncensored,
+        model: model || null,
+        base_url: baseUrl || null,
+        max_tokens: maxTokens,
+        card_display_mode: cardDisplayMode,
       }),
-    [messages, characterIds, personaId, uncensored],
+    [messages, characterIds, personaId, uncensored, model, baseUrl, maxTokens, cardDisplayMode],
   )
 
   const run = useCallback(async () => {
@@ -121,7 +129,7 @@ export default function PromptInspector({ open, onClose, characterIds, personaId
                   (scope === s ? 'bg-[var(--pink)] text-white' : 'text-[var(--text-2)] hover:bg-[var(--surface-2)]')
                 }
               >
-                {s === 'system' ? '系统提示词' : '完整消息数组'}
+                {s === 'system' ? '系统提示词' : '短期记忆池 / 完整消息'}
               </button>
             ))}
           </span>
@@ -176,7 +184,9 @@ export default function PromptInspector({ open, onClose, characterIds, personaId
                     <span className="text-[11px] text-[var(--text-3)]">{m.content.length} 字</span>
                   </div>
                   <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-[var(--text)]">
-                    {m.content}
+                    {typeof m.content === 'string' ? m.content : m.content.map((part, j) => part.type === 'text'
+                      ? <span key={j}>{part.text}</span>
+                      : <span key={j} className="block mt-2">图片 {j} · 已携带 image_url<img src={part.image_url.url} alt={`上下文图片 ${j}`} className="mt-1 max-h-48 rounded" /></span>)}
                   </pre>
                 </div>
               ))}

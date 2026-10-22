@@ -17,6 +17,13 @@ DEFAULT_PERSONA = (
     "用自然的中文交流，真诚地回应。"
 )
 
+DEFAULT_REPLY_STYLE = (
+    "【日常回复篇幅】默认每位实际发言的角色约 250～400 个中文字，"
+    "用一段贴合人设的动作、神态或情绪描写，配合有具体内容的自然台词，充分回应本轮话题。"
+    "保持各自口吻，不用重复、空话或机械列点凑字数，也不要替用户编造行动。"
+    "这只是日常参考；用户明确要求简短、仅需简单确认或正在实时语音通话时，按场景缩短。"
+)
+
 # 扫描世界书时回看的最近消息条数
 WORLDBOOK_WINDOW = 10
 
@@ -28,7 +35,7 @@ _SPEAKER_MARKER = re.compile(r"^\s*(?:\*\*([^*\n]+?)\*\*|【([^】\n]+?)】)\s*[
 
 # 档案里挑出来、用「键：值」展示的字段（越靠前越重要）
 _PROFILE_ROWS: list[tuple[str, str]] = [
-    ("日文假名", "jp"),
+    ("英文 / 罗马音签名", "signature"),
     ("别名", "alias"),
     ("生日", "birthday"),
     ("年龄", "age"),
@@ -80,6 +87,11 @@ def _persona_block(profile: dict) -> str:
         value = _val(profile, key)
         if value:
             lines.append(f"- {label}：{value}")
+    for field in profile.get('customFields') or []:
+        if isinstance(field, dict) and str(field.get('label') or '').strip() and str(field.get('value') or '').strip():
+            lines.append(f"- {str(field['label'])[:100]}：{str(field['value'])[:4000]}")
+    if profile.get('jp') and not profile.get('signature') and not re.search(r"[\u3040-\u30ff]", str(profile.get('jp'))):
+        lines.append(f"- 日文假名：{profile['jp']}")
     priv = [(label, _val(profile, key)) for label, key in _PRIVATE_ROWS]
     priv = [(k, v) for k, v in priv if v]
     if priv:
@@ -97,7 +109,7 @@ def _group_director(names: list[str]) -> str:
         f"这是一个多人聊天场景，在场角色有：{'、'.join(names)}。"
         "请你一人分饰多角：轮流扮演在场的每个角色，让她们自然地对话、互相搭话或拌嘴。"
         "每位角色都要保持自己的语气与个性，不要串戏；用户是谁见下文的「用户身份」。"
-        "格式要求：每位角色发言时，先另起一行写「**角色名**：」，再写动作描写和小段台词；"
+        "格式要求：每位角色发言时，先另起一行写「**角色名**：」，再写动作描写和完整台词；"
         "每个人一段，段落之间空一行分开，不要挤在一个大段落里。"
     )
 
@@ -278,23 +290,20 @@ def build_system_prompt(
     if persona_id:
         try:
             from .. import persona_memory as pm
-            pinned, excluded = pm.injectable(persona_id, mem_ids)
+            pinned, excluded = pm.injectable(persona_id, mem_ids, query=query)
         except Exception:  # noqa: BLE001
             pinned, excluded = [], set()
     recalled: list[dict] = []
-    if mem_ids and query:
-        try:
-            recalled = [m for m in memory_service.recall_for(
-                mem_ids,
-                query,
-                session_kind="single" if len(profiles) == 1 else "group",
-            ) if m.get("id") not in excluded]
-        except Exception:  # noqa: BLE001
-            # 记忆检索失败不该拖垮聊天：模型没装好 / 向量库异常时静默跳过
-            recalled = []
+    # 缺少身份时不注入长期记忆；旧 SQLite 记录需迁移审核，不能绕过 02 直接召回。
     mem_block = memory_service.format_memory_block(recalled, name_of, pinned=pinned)
     if mem_block:
         parts.append(mem_block)
+
+    if persona_id:
+        from ..activity_memory import prompt as activity_prompt
+        evidence = activity_prompt(persona_id, mem_ids, str(messages[-1].get('content', '')) if messages else '')
+        if evidence:
+            parts.append(evidence)
 
     settings = db.get_settings()
     jailbreak = (settings.get("jailbreak") or "").strip()
@@ -307,4 +316,5 @@ def build_system_prompt(
         if jailbreak_unc:
             parts.append(f"【无审查通道规则 · 最高优先级】\n{jailbreak_unc}")
 
+    parts.append(DEFAULT_REPLY_STYLE)
     return "\n\n".join(p for p in parts if p)

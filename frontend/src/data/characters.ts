@@ -25,9 +25,13 @@ export const BASE_FORM_ID = 'base'
 
 export type CharacterProfile = {
   id: string
+  hiddenInProfiles?: boolean
+  hiddenFields?: string[]
+  customFields?: { label: string; value: string }[]
+  signature?: string
   // 头部
   name: string
-  jp: string // 日文假名
+  jp: string // 兼容旧档案字段；界面优先显示 signature
   alias: string // 别名 / 称号
   emoji: string // 暂代立绘的 emoji（日后换成 Live2D / 立绘图）
   portrait?: string // 静态立绘 / GIF 图片 URL（未填则用 emoji 占位）
@@ -44,9 +48,18 @@ export type CharacterProfile = {
   /** 「关于」的**中文译文，只给界面看**（导入的酒馆卡才有）。
    *  喂给模型的永远是 `about` 原文，一个字不动；这份只是摆着好读，一键能切回原文看。 */
   aboutZh?: string
+  /** 「关于」的**排版版本**（导入时后端洗过的轻量 HTML：`<p> <b> <i> <br>`）。
+   *  只给界面画格式用；文字跟 `about` 对不上（比如后来手改了原文）就忽略它。 */
+  aboutHtml?: string
   /** 卡里的开场白（去标签后的纯文本，导入的酒馆卡才有）。
    *  **绝不自动发言**：导入时默认不勾选，不写进聊天记录；想用去角色介绍页点「插入开场白」。 */
   greeting?: string
+  /** 开场白的**排版版本**（洗过的 HTML），只给预览画格式用；`greeting` 仍是插进聊天的那份纯文本。 */
+  greetingHtml?: string
+  /** 卡片开场白的完整 HTML 源码，仅供隔离预览；不直接注入页面、不喂给模型。 */
+  greetingSource?: string
+  /** 酒馆显示扩展；仅转换预览，不改聊天原文和提示词。 */
+  tavernRegexScripts?: import('../lib/cardDisplay').CardDisplayRule[]
   // 基本词条
   birthday: string
   age: string

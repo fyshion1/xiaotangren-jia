@@ -55,6 +55,7 @@ Thumbs.db
 
 # 个人数据库（让小糖人索引用，日常更新维护，不进 git）
 /个人数据库/
+/个人记忆库/
 
 # Agent 联调中间 JSON（暂存数据，不进 git）
 docs/agent-game-handoff.json

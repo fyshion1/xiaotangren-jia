@@ -7,7 +7,7 @@ const POLL_MS = 5000
 // 重启期间查得勤一点 —— 这几秒正是用户盯着看的时候。
 const RESTART_POLL_MS = 800
 // 超过这么久还没报上新 pid，就直说没起来，别让人一直等。
-const RESTART_TIMEOUT_MS = 40_000
+const RESTART_TIMEOUT_MS = 60_000
 
 type Phase = 'alive' | 'down' | 'restarting' | 'stuck'
 
@@ -31,7 +31,7 @@ function humanUptime(seconds: number): string {
  *  - 重启窗口里后端本来就是断的，所以那一两秒的失败不算错，是流程的一部分。
  */
 export default function BrainHealthDot() {
-  const [phase, setPhase] = useState<Phase>('alive')
+  const [phase, setPhase] = useState<Phase>('down')
   const [health, setHealth] = useState<BrainHealth | null>(null)
   const [note, setNote] = useState('')
 
@@ -41,11 +41,21 @@ export default function BrainHealthDot() {
   const busyRef = useRef(false)
 
   const probe = useCallback(async () => {
+    const expired = () => {
+      if (!busyRef.current || Date.now() - startedAtRef.current < RESTART_TIMEOUT_MS) return false
+      busyRef.current = false
+      oldPidRef.current = null
+      setPhase('stuck')
+      setNote('重启超时，请查看 backend/logs/ 中的重启日志')
+      return true
+    }
+    if (expired()) return false
     try {
       const info = await fetchHealth()
+      if (expired()) return false
       // 重启中：还是老 pid 说明新进程没接手，继续等。
       if (oldPidRef.current !== null && info.pid === oldPidRef.current) return false
-      if (oldPidRef.current !== null) {
+      if (busyRef.current) {
         oldPidRef.current = null
         busyRef.current = false
         setNote('大脑已经换新的了')
@@ -55,14 +65,9 @@ export default function BrainHealthDot() {
       setPhase('alive')
       return true
     } catch {
+      if (expired()) return false
       // 没连上 ≠ 没响应的时候也要分清楚：正在重启的话这是预期内的。
       if (busyRef.current) {
-        if (Date.now() - startedAtRef.current > RESTART_TIMEOUT_MS) {
-          busyRef.current = false
-          oldPidRef.current = null
-          setPhase('stuck')
-          setNote('新大脑迟迟没上来，可以看 backend/logs/ 里的日志')
-        }
         return false
       }
       setPhase('down')
@@ -98,7 +103,7 @@ export default function BrainHealthDot() {
       // 500 = 中间人没叫起来，**当前这个大脑还在跑**，别把人吓着。
       busyRef.current = false
       oldPidRef.current = null
-      setPhase('alive')
+      setPhase('down')
       setNote(err instanceof Error ? `重启没发出去：${err.message}` : '重启没发出去')
     }
   }

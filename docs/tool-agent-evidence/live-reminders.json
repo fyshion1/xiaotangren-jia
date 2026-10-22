@@ -1,0 +1,99 @@
+{
+  "model": "gpt-6.1-sol",
+  "base_url": "https://moyuu.cc/v1",
+  "requests": [
+    {
+      "number": 1,
+      "context_verified": {
+        "character": true,
+        "memory": true
+      },
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 41,
+        "total_tokens": 1299,
+        "prompt_tokens": 1258,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [
+        "reminder_draft"
+      ],
+      "finish_reason": "tool_calls",
+      "seconds": 4.2
+    },
+    {
+      "number": 2,
+      "context_verified": {
+        "character": true,
+        "memory": true
+      },
+      "http_status": 200,
+      "reported_model": "gpt-6.1-sol",
+      "usage": {
+        "completion_tokens": 65,
+        "total_tokens": 1478,
+        "prompt_tokens": 1413,
+        "prompt_tokens_details": {
+          "cached_tokens": 1152,
+          "cache_write_tokens": 0,
+          "cached_creation_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "tools": [],
+      "finish_reason": "stop",
+      "seconds": 6.35
+    },
+    {
+      "number": 3,
+      "context_verified": {
+        "character": true,
+        "memory": true
+      },
+      "http_status": 429,
+      "reported_model": null,
+      "usage": null,
+      "error_summary": "all eligible channels are at capacity; please retry later (request id: 202610190302197954690928268d9d6Olb48BE2)",
+      "error_type": "RuntimeError",
+      "seconds": 0.61
+    }
+  ],
+  "cases": [
+    {
+      "name": "reminder_draft",
+      "passed": true,
+      "http_status": 200,
+      "run_status": "completed",
+      "model_requests": 2,
+      "tool_results": [
+        {
+          "type": "tool_result",
+          "call_id": "call-25d280b040fc48ab8b248b440a174741",
+          "name": "reminder_draft",
+          "ok": true,
+          "code": "ok",
+          "attempts": 1,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "name": "reminder_ambiguous",
+      "passed": false,
+      "http_status": 200,
+      "run_status": "failed",
+      "model_requests": 1,
+      "tool_results": []
+    }
+  ]
+}

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .. import db
 from . import self_profile as sp
+from . import memory_workflow as workflow
 
 KIND_MEMORY = "memory"
 KIND_DB = "db"
@@ -44,6 +45,8 @@ def db_pool() -> list[dict]:
             "content": (block.get("content") or "").strip(),
             "visible_to": block.get("visible_to", "all"),
             "created_at": block.get("created_at", ""),
+            "inject": block.get("inject", False),
+            "persona_id": workflow.document(p.read_text(encoding="utf-8-sig"))[0].get("persona_id", ""),
         })
     return items
 
@@ -69,13 +72,15 @@ def overview(persona_id: str) -> dict:
     return {
         "persona_id": persona_id,
         "memories": [{**m, "picked": m["id"] in mem_on, "enabled": mem_on.get(m["id"], False)}
-                     for m in memory_pool()],
+                     for m in workflow.approved(persona_id)],
+        "legacy": [{**m, "review_status": "legacy", "picked": m["id"] in mem_on,
+                    "enabled": mem_on.get(m["id"], False)} for m in memory_pool()],
         "database": [{**d, "picked": d["ref_id"] in db_on, "enabled": db_on.get(d["ref_id"], False)}
-                     for d in db_pool()],
+                     for d in db_pool() if not d.get("persona_id") or d["persona_id"] == persona_id],
     }
 
 
-def injectable(persona_id: str, character_ids: list[str]) -> tuple[list[dict], set[str]]:
+def injectable(persona_id: str, character_ids: list[str], query: str = "", *, allow_embeddings: bool = True) -> tuple[list[dict], set[str]]:
     """返回 (要强制注入的条目, 要剔除的记忆 id 集合)。
 
     个人数据库条目走 `visible_to`（按在场角色过滤）；长期记忆不看角色，只按身份开关。
@@ -86,16 +91,28 @@ def injectable(persona_id: str, character_ids: list[str]) -> tuple[list[dict], s
     on_db = {p["ref_id"] for p in picks if p["kind"] == KIND_DB and p["enabled"]}
 
     items: list[dict] = []
+    candidates: list[dict] = []
+    approved = {m["id"]: m for m in workflow.approved(persona_id)}
     for m_id in on_ids:
+        if m_id.startswith("file:"):
+            row = approved.get(m_id)
+            if row and workflow.visible(row, persona_id, character_ids):
+                row = {**row, "title": "", "injection_reason": "core" if row.get("core") else "related"}
+                if row.get("core"):
+                    items.append(row)
+                else:
+                    candidates.append(row)
+            continue
         row = db.get_memory(m_id)
         if row is None:  # 记忆被删了：开关留着也没用，跳过
             continue
-        row.pop("vector", None)
-        items.append({**row, "title": ""})
+        # 旧库不会自动升级成已批准条目；保留旧记录供用户迁移审核。
     if on_db:
         root = sp.external_ai_layer_root()
         for entry in db_pool():
             if entry["ref_id"] not in on_db:
+                continue
+            if entry.get("persona_id") and entry["persona_id"] != persona_id:
                 continue
             path: Path = root / entry["ref_id"]
             try:
@@ -104,9 +121,23 @@ def injectable(persona_id: str, character_ids: list[str]) -> tuple[list[dict], s
                 continue
             if not sp.is_visible(block.get("visible_to", "all"), character_ids):
                 continue
+            if not block.get("inject"):
+                continue
             items.append({**entry, "id": f"db:{entry['ref_id']}", "created_at": entry.get("created_at", "")})
-    items.sort(key=lambda b: b.get("created_at") or "")
-    return items, off
+    if candidates:
+        from .memory_retrieval import rank
+        items.extend(rank(candidates, query) if allow_embeddings else rank(candidates, query, allow_embeddings=False))
+    items.sort(key=lambda b: b.get("created_at") or "", reverse=True)
+    items.sort(key=lambda b: (not bool(b.get("core")), -float(b.get("score", 0))))
+    # 每类最多 1600 字符，并共享 2400 字符正文预算；文件全文不变。
+    selected, sizes = [], {"db": 0, "memory": 0}
+    for item in items:
+        kind = "db" if item["id"].startswith("db:") else "memory"
+        size = len(item.get("text") or item.get("content") or "")
+        if sizes[kind] + size <= 1600 and sum(sizes.values()) + size <= 2400:
+            selected.append(item)
+            sizes[kind] += size
+    return selected, off
 
 
 def set_pick(persona_id: str, kind: str, ref_id: str, enabled: bool) -> dict:
@@ -115,8 +146,17 @@ def set_pick(persona_id: str, kind: str, ref_id: str, enabled: bool) -> dict:
     ref_id = (ref_id or "").strip()
     if not ref_id:
         raise ValueError("ref_id 不能为空")
-    if kind == KIND_MEMORY and db.get_memory(ref_id) is None:
-        raise LookupError("没有这条记忆")
-    if kind == KIND_DB and ref_id not in {d["ref_id"] for d in db_pool()}:
+    if kind == KIND_MEMORY:
+        if ref_id.startswith("file:"):
+            if ref_id not in {m["id"] for m in workflow.approved(persona_id)}:
+                raise LookupError("没有这条已批准记忆")
+            _, item = workflow.get(ref_id.removeprefix("file:"))
+            workflow.review(item["id"], persona_id, "save", {"inject": enabled}, item["revision"])
+        elif db.get_memory(ref_id) is None:
+            raise LookupError("没有这条记忆")
+        elif enabled:
+            raise ValueError("历史记忆请先转入待审核并批准，再用于对话")
+    if kind == KIND_DB and ref_id not in {d["ref_id"] for d in db_pool()
+                                        if not d.get("persona_id") or d["persona_id"] == persona_id}:
         raise LookupError("个人数据库 03 里没有这条已批准的条目")
     return db.set_persona_pick(persona_id, kind, ref_id, enabled)

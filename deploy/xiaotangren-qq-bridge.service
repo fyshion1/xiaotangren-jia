@@ -1,0 +1,22 @@
+[Unit]
+Description=Xiaotangren QQ bridge
+Wants=network-online.target
+After=network-online.target xiaotangren.service
+Requires=xiaotangren.service
+Before=napcat.service
+
+[Service]
+Type=simple
+User=fyshion
+WorkingDirectory=/opt/xiaotangren-jia/features/qq-bridge
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONPATH=/opt/xiaotangren-jia/packages/tool-runtime:/opt/xiaotangren-jia/features/qq-bridge
+ExecStart=/opt/xiaotangren-jia/backend/.venv/bin/python -m qqbridge run --characters auto
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

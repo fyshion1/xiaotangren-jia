@@ -14,10 +14,12 @@ export type ChatSession = {
   characterIds: string[] // 在场角色
   readOnly?: boolean
   memoryDisabled?: boolean
+  sandbox?: boolean
 }
 
 export type ChatMessage = {
   role: 'user' | 'assistant'
+  clientId?: string
   content: string
   // 图片：image = 显示用缩略图 URL；imageOrig = 原图 URL（原图被清理后为空，自动降级用缩略图）
   image?: string

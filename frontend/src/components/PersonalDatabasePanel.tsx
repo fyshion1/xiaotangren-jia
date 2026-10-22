@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import KnowledgeLibrary from './KnowledgeLibrary'
+import EmbeddingSettings from './EmbeddingSettings'
 import {
   archivePersonalDbFile, createPersonalDbFile, createSelfBlock, fetchPersonalDbFile,
   fetchPersonalDbHistory, fetchPersonalDbTree, movePersonalDbPath, renamePersonalDbFile,
   renamePersonalDbFolder, restorePersonalDbVersion, savePersonalDbFile, saveSelfBlock,
-  copyToAiLayer, approveAiLayer,
+  copyToAiLayer, approveAiLayer, summarizePersonalDb,
   type PersonalDbEntry,
 } from '../api/client'
 
@@ -61,6 +63,15 @@ export default function PersonalDatabasePanel({ personaId }: { personaId: string
 
   async function load() { setEntries(await fetchPersonalDbTree()) }
   useEffect(() => { void load() }, [])
+
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const path = (event as CustomEvent<{ path: string }>).detail?.path
+      if (path) void fetchPersonalDbFile(path).then(file => open(file)).catch(e => setMessage(String(e)))
+    }
+    window.addEventListener('personal-db-open', listener)
+    return () => window.removeEventListener('personal-db-open', listener)
+  }, [personaId])
 
   async function open(entry: PersonalDbEntry) {
     const file = await fetchPersonalDbFile(entry.path)
@@ -147,7 +158,9 @@ export default function PersonalDatabasePanel({ personaId }: { personaId: string
     if (!selected || selected.extension !== '.md') return
     const destination = window.prompt('AI 工作层目标路径', `02_AI工作层/待确认/${selected.name}`)
     if (!destination) return
-    await copyToAiLayer(selected.path, destination, readField(draft, 'title') || selected.name)
+    const saved = await savePersonalDbFile(selected.path, draft, selected.sha256)
+    setSelected({ ...selected, sha256: saved.sha256, content: draft })
+    await copyToAiLayer(selected.path, destination, readField(draft, 'title') || selected.name, personaId, saved.sha256)
     setMessage(`已复制到 ${destination}`); await load()
   }
 
@@ -155,8 +168,23 @@ export default function PersonalDatabasePanel({ personaId }: { personaId: string
     if (!selected || selected.extension !== '.md') return
     const destination = window.prompt('AI 注入层目标路径', `03_AI注入层/个人背景/${selected.name}`)
     if (!destination) return
-    await approveAiLayer(selected.path, destination)
+    const saved = await savePersonalDbFile(selected.path, draft, selected.sha256)
+    setSelected({ ...selected, sha256: saved.sha256, content: draft })
+    await approveAiLayer(selected.path, destination, personaId, saved.sha256)
     setMessage(`已批准并复制到 ${destination}`); await load()
+  }
+
+  async function summarize() {
+    if (!selected) return
+    setSaving(true); setMessage('AI 正在整理事实候选，01 源资料保留原样…')
+    try {
+      if (selected.editable && draft !== selected.content) {
+        setMessage('请先保存当前修改，再开始 AI 整理'); return
+      }
+      const created = await summarizePersonalDb(selected.path, personaId)
+      await load(); await open(created)
+      setMessage('已生成 02 待审核事实草稿；请核对后批准进入 03')
+    } catch (e) { setMessage(String(e)) } finally { setSaving(false) }
   }
 
   function renderNode(node: TreeNode, level = 0): JSX.Element {
@@ -176,13 +204,16 @@ export default function PersonalDatabasePanel({ personaId }: { personaId: string
     </div>
   }
 
-  return <section className="self-profile-panel personal-db-panel">
-    <div className="panel-header"><span className="eyebrow">数据库工作区</span><div className="db-actions">
+  return <section id="personal-database" className="self-profile-panel personal-db-panel">
+    <div className="panel-header"><b>个人数据库</b><div className="db-actions">
       <button className="btn sm" onClick={() => void createFile()}>新建</button>
       <button className="btn sm ghost" disabled={!selected && !selectedFolder} onClick={() => void rename()}>重命名</button>
       <button className="btn sm ghost" disabled={!selected && !selectedFolder} onClick={() => void move()}>移动</button>
       <button className="btn sm ghost" onClick={() => void load()}>刷新</button>
     </div></div>
+    <KnowledgeLibrary key={personaId} personaId={personaId} onOpen={path => { void fetchPersonalDbFile(path).then(file => open(file)).catch(e => setMessage(String(e))) }} />
+    <p className="m-3 text-[12px] text-[var(--text-3)]">现实资料：01 源资料 → AI 整理到 02 → 人工核对 → 批准进入 03。与关系记忆分别保存，共同服务于对话。</p>
+    <EmbeddingSettings />
     <div className="db-toolbar"><input className="input" placeholder="搜索文件" value={query} onChange={event => setQuery(event.target.value)} /><span className="fm-hint">Markdown 和 DOCX 可编辑，XLSX 只读预览</span></div>
     <div className="panel-body">
       <div className="block-list db-tree">{query ? searchResults.map(entry => <button key={entry.path} className="block-item" onClick={() => void open(entry)}><span className="block-title">{entry.path}</span></button>) : renderNode(tree)}</div>
@@ -197,11 +228,11 @@ export default function PersonalDatabasePanel({ personaId }: { personaId: string
         {selected.extension === '.xlsx' && selected.sheets && <div className="xlsx-preview">{selected.sheets.map(sheet => <details key={sheet.name}><summary>{sheet.name} · {sheet.rows} 行 × {sheet.columns} 列（预览前 100 行、30 列）</summary><pre>{JSON.stringify(sheet.preview, null, 2)}</pre></details>)}</div>}
         {selected.extension !== '.xlsx' && <textarea className="textarea block-textarea" value={draft} onChange={event => setDraft(event.target.value)} readOnly={!selected.editable} spellCheck={false} />}
         {selected.extension === '.docx' && <p className="fm-hint">保存会备份原 DOCX；网页编辑保留段落和表格结构，但段落内文字格式可能简化。</p>}
-        <div className="editor-footer"><span className="char-count">{message}</span><div className="db-actions">{selected.editable && <>
+        <div className="editor-footer"><span className="char-count">{message}</span><div className="db-actions">{selected.path.startsWith('01_源资料/') && ['.md', '.txt', '.docx'].includes(selected.extension) && <button className="btn sm" disabled={saving} onClick={() => void summarize()}>{saving ? '整理中…' : 'AI 整理事实到 02'}</button>}{selected.editable && <>
           <button className="btn sm ghost" title="历史版本" onClick={() => void showHistory()}>历史 · {history.length}</button>
           <button className="btn sm ghost" onClick={async () => { if (selected && window.confirm(`归档 ${selected.path}？`)) { await archivePersonalDbFile(selected.path); setSelected(null); await load() } }}>归档</button>
-          <button className="btn sm ghost" onClick={() => void copyToWorkLayer()} disabled={selected.extension !== '.md'}>复制到 AI 工作层</button>
-          <button className="btn sm ghost" onClick={() => void approveToInjectLayer()} disabled={selected.extension !== '.md'}>批准到 AI 注入层</button>
+          <button className="btn sm ghost" onClick={() => void copyToWorkLayer().catch(e => setMessage(String(e)))} disabled={saving || selected.extension !== '.md' || !selected.path.startsWith('01_源资料/')}>复制到 AI 工作层</button>
+          <button className="btn sm ghost" onClick={() => void approveToInjectLayer().catch(e => setMessage(String(e)))} disabled={saving || selected.extension !== '.md' || !selected.path.startsWith('02_AI工作层/')}>批准到 AI 注入层</button>
           <button className="btn sm ghost" onClick={() => void importToProfile()} disabled={selected.extension !== '.md'}>复制到我的档案</button>
           <button className="btn" disabled={saving} onClick={() => void save()}>{saving ? '保存中…' : '保存版本'}</button>
         </>}</div></div>

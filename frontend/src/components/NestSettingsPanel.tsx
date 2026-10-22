@@ -11,9 +11,12 @@
 // 边界：这里只编辑「值」。值的含义、怎么用、什么时候生效，都是功能自己的事
 // （QQ 桥每 30 秒拉一次，改完立刻生效，不用重启）。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchCharacters, fetchNestFeatureSettings, fetchNestFeatures, saveNestFeatureSettings, type NestFeature, type NestSettingField } from '../api/client'
 import type { CharacterProfile } from '../data/characters'
+import QqStickerCatalog from './QqStickerCatalog'
+import { QqSetupButton, QqContactSelect } from './QqAccountSetup'
+import QqAccountSelect from './QqAccountSelect'
 
 /** 只给能在前端配的功能显示这个面板（注册表里声明了 settings 的那些）。 */
 const CONFIGURABLE = (f: NestFeature) => !!(f.settings && f.settings.length > 0)
@@ -54,6 +57,7 @@ export default function NestSettingsPanel({
   onlyId,
   hideIds,
   bare = false,
+  scope = 'feature',
 }: {
   /** 共用模式：把清单传进来（功能 chip 行按它列）。单功能模式可以不给，组件自己去拉。 */
   features?: NestFeature[]
@@ -62,6 +66,8 @@ export default function NestSettingsPanel({
   /** 共用模式：这些功能已经把自己的设置嵌在自己面板里了，这里别再重复列一遍。 */
   hideIds?: string[]
   bare?: boolean
+  /** 全局页展示 QQ 娱乐与通知字段；独立活动预算由专用面板管理。 */
+  scope?: 'feature' | 'autonomy'
 }) {
   const [selfFeatures, setSelfFeatures] = useState<NestFeature[]>([])
   const [err, setErr] = useState('')
@@ -139,7 +145,14 @@ export default function NestSettingsPanel({
     setBusy(true)
     setErr('')
     try {
-      const saved = await saveNestFeatureSettings(feature.id, values)
+      // Global activity and QQ transport settings share legacy storage. Refresh
+      // hidden values before a scoped save so one page preserves the other.
+      const submitted = feature.id === 'qq_bridge'
+        ? { ...(await fetchNestFeatureSettings(feature.id)).values,
+            ...Object.fromEntries(schema.filter(field => field.key.startsWith('proactive.') === (scope === 'autonomy') && !['proactive.run_tokens', 'proactive.day_tokens'].includes(field.key))
+              .map(field => [field.key, values[field.key]])) }
+        : values
+      const saved = await saveNestFeatureSettings(feature.id, submitted)
       setValues(saved.values || {})
       setDirty(false)
       setNote(`已存（${saved.updated_at}）—— ${feature.name}下一轮就按这个来，不用重启`
@@ -186,6 +199,8 @@ export default function NestSettingsPanel({
   // 按 group 分组：同一组的字段放一起（顺序 = 声明顺序，前端不改动）。
   const groups: { name: string; fields: NestSettingField[] }[] = []
   for (const field of schema) {
+    if (feature.id === 'qq_bridge' && field.key.startsWith('proactive.') !== (scope === 'autonomy')) continue
+    if (feature.id === 'qq_bridge' && ['proactive.run_tokens', 'proactive.day_tokens'].includes(field.key)) continue
     const name = field.group || '配置'
     const bucket = groups.find((g) => g.name === name)
     if (bucket) bucket.fields.push(field)
@@ -197,6 +212,9 @@ export default function NestSettingsPanel({
     const v = shown(field, value)
     const common = { key: field.key }
     const control = () => {
+      if (feature.id === 'qq_bridge' && field.key === 'proactive.account_index') {
+        return <QqAccountSelect label="主动联系使用的 QQ 账号" value={Number(v ?? 0)} settings={values} onChange={onChange} />
+      }
       switch (field.type) {
         case 'bool':
           return (
@@ -222,6 +240,7 @@ export default function NestSettingsPanel({
           return (
             <select className="input" value={String(v ?? '')} onChange={(e) => onChange(e.target.value)}>
               <option value="">（留空 = 名册第一个人）</option>
+              {(field.options || []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               {characters.map((c) => <option key={c.id} value={c.id}>{c.emoji} {c.name}（{c.id}）</option>)}
             </select>
           )
@@ -229,7 +248,7 @@ export default function NestSettingsPanel({
           return <textarea className="input min-h-[64px] w-full" value={String(v ?? '')} onChange={(e) => onChange(e.target.value)} />
         case 'list':
           return (
-            <input className="input" value={asList(v).join('，')}
+            <input className="input" value={typeof v === 'string' ? v : asList(v).join('，')}
               onChange={(e) => onChange(e.target.value)}
               placeholder="逗号分隔（中英文逗号都行）" />
           )
@@ -237,7 +256,7 @@ export default function NestSettingsPanel({
           return <MediaListEditor field={field} value={asList(v)} onChange={onChange} />
         case 'accounts':
           return <AccountsEditor field={field} rows={Array.isArray(v) ? (v as Row[]) : []}
-            characters={characters} onChange={onChange} />
+            characters={characters} onChange={onChange} defaults={feature?.id === 'qq_bridge' ? values : undefined} />
         default:
           return (
             <input className="input" type={field.secret ? 'password' : 'text'}
@@ -328,6 +347,9 @@ export default function NestSettingsPanel({
         <button className="btn ghost sm" disabled={busy} onClick={() => void load(feature.id)}>重新读一次</button>
         {note && <span className="text-[11px] text-[var(--pink-deep)]">{note}</span>}
       </div>
+      {ready && feature.id === 'qq_bridge' && scope === 'feature' && <p className="mt-4 text-sm">
+        自主活动、预算和小工作室已移至 <a className="underline" href="#autonomous-activity">小窝设置 → 自主活动与沙盒</a>。
+      </p>}
       {/* 字段区已经在上面说过「没读到」了，别把同一句再说一遍；
           这条只管**读到了之后**出错的情况（存的时候失败）。 */}
       {ready && err && <p role="alert" className="mt-2 text-[12px] text-[var(--pink-deep)]">⚠ {err}</p>}
@@ -343,20 +365,33 @@ export default function NestSettingsPanel({
 }
 
 /** 多个账号的表格编辑器（QQ 桥那种「一个 QQ 号演一个小糖人」）。 */
-function AccountsEditor({
-  field, rows, characters, onChange,
+export function AccountsEditor({
+  field, rows, characters, onChange, defaults,
 }: {
   field: NestSettingField
   rows: Row[]
   characters: CharacterProfile[]
   onChange: (v: unknown) => void
+  defaults?: Values
 }) {
   const cols = field.fields || []
+  const latest = useRef(rows)
+  latest.current = rows
+  const [lists, setLists] = useState<Record<string, Record<string, {id: string; name: string}[]>>>({})
   const update = (index: number, key: string, value: unknown) => {
     const next = rows.map((row, i) => (i === index ? { ...row, [key]: value } : row))
     onChange(next)
   }
-  const add = () => onChange([...rows, Object.fromEntries(cols.map((c) => [c.key, c.default ?? (c.type === 'bool' ? true : '')]))])
+  const add = () => {
+    let existing = rows
+    if (!rows.length && defaults) existing = [{
+      name: '原来的 QQ 号', self_id: defaults['onebot.self_id'] || '',
+      persona: defaults['persona.character_id'] || '', ws_url: defaults['onebot.ws_url'] || '',
+      listen_port: defaults['onebot.listen_port'] || 3010, access_token: defaults['onebot.access_token'] || '',
+      groups: asList(defaults['allow.groups']), private: asList(defaults['allow.private']), enabled: true,
+    }]
+    onChange([...existing, { ...Object.fromEntries(cols.map(c => [c.key, c.default ?? (c.type === 'bool' ? true : '')])), groups: [], private: [] }])
+  }
   const drop = (index: number) => onChange(rows.filter((_, i) => i !== index))
 
   return (
@@ -371,7 +406,7 @@ function AccountsEditor({
           </thead>
           <tbody>
             {rows.map((row, index) => (
-              <tr key={index} className="border-t border-[var(--border)]">
+              <Fragment key={`${index}:${String(row.self_id || '')}`}><tr className="border-t border-[var(--border)]">
                 {cols.map((c) => (
                   <td key={c.key} className="px-1.5 py-1 align-middle">
                     {c.type === 'bool' ? (
@@ -380,14 +415,19 @@ function AccountsEditor({
                     ) : c.type === 'character' ? (
                       <select className="input py-1" value={String(row[c.key] ?? '')}
                         onChange={(e) => update(index, c.key, e.target.value)}>
-                        <option value="">（第一个人）</option>
+                        <option value="">默认：{characters[0]?.name || '名册第一个人'}</option>
+                        {(c.options || []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                         {characters.map((ch) => <option key={ch.id} value={ch.id}>{ch.emoji} {ch.name}</option>)}
                       </select>
                     ) : c.type === 'number' ? (
                       <input className="input py-1" type="number" value={String(row[c.key] ?? '')}
                         onChange={(e) => update(index, c.key, e.target.value === '' ? '' : Number(e.target.value))} />
+                    ) : c.type === 'list' && defaults && ['groups', 'private'].includes(c.key) ? (
+                      <QqContactSelect label={c.label} selected={asList(row[c.key])}
+                        items={lists[`${index}:${String(row.self_id || '')}`]?.[c.key]}
+                        onChange={v => update(index, c.key, v)} />
                     ) : c.type === 'list' ? (
-                      <input className="input py-1" value={asList(row[c.key]).join('，')}
+                      <input className="input py-1" value={typeof row[c.key] === 'string' ? String(row[c.key]) : asList(row[c.key]).join('，')}
                         onChange={(e) => update(index, c.key, e.target.value)} />
                     ) : (
                       <input className="input py-1" type={c.secret ? 'password' : 'text'}
@@ -400,6 +440,14 @@ function AccountsEditor({
                     onClick={() => drop(index)}>删</button>
                 </td>
               </tr>
+              {defaults && <tr><td colSpan={cols.length + 1} className="px-2">
+                  {defaults && <QqSetupButton row={row} onChange={patch => {
+                    const current = latest.current
+                    if (current[index]?.self_id !== row.self_id) return
+                    onChange(current.map((r, i) => i === index ? { ...r, ...patch } : r))
+                  }} onLists={v => setLists(old => ({ ...old, [`${index}:${String(row.self_id || '')}`]: v }))} />}
+              </td></tr>}
+              </Fragment>
             ))}
             {rows.length === 0 && (
               <tr><td colSpan={cols.length + 1} className="px-2 py-2 text-[11px] text-[var(--text-3)]">
@@ -413,6 +461,7 @@ function AccountsEditor({
         <button type="button" className="btn ghost sm" onClick={add}>＋ 再加一个 QQ 号</button>
         <span className="text-[11px] text-[var(--text-3)]">{field.desc && hint(field.desc)}</span>
       </div>
+      {defaults && <p className="mt-2 text-[11px] text-[var(--text-3)]">选 QQ → 自动配置连接并读取名单 → 勾选群和好友 → 保存。运行中的 QQ 桥约 30 秒内同步账号变更。自动配置会为所选账号调整冲突端口，其他账号保持运行；不发送消息。连接字段仍可手动修改。</p>}
     </div>
   )
 }
@@ -453,6 +502,7 @@ function MediaListEditor({
           onClick={() => { onChange([...value, draft.trim()]); setDraft('') }}>加</button>
       </div>
       {field.desc && <p className="mt-1 text-[11px] text-[var(--text-3)]">{hint(field.desc)}</p>}
+      {field.key === 'sticker.library' && <QqStickerCatalog />}
     </div>
   )
 }

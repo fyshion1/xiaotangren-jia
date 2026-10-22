@@ -265,6 +265,8 @@ class NestChatMemoryRecallTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        env = patch.dict('os.environ', {'PERSONAL_MEMORY_ROOT': str(Path(self.tmp.name) / 'memory')})
+        env.start(); self.addCleanup(env.stop)
         self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
         self.path.start()
         self.addCleanup(self.path.stop)
@@ -298,15 +300,20 @@ class NestChatMemoryRecallTests(unittest.TestCase):
         return self.captured["messages"][0]["content"]
 
     def _seed(self, game_id: str = ""):
-        db.add_memory("home", "家里养了一只叫团子的猫", fingerprint="h1", game_id=game_id)
-        db.add_memory("personal", "团子最喜欢睡在窗台上", char_id="dashiyin",
-                      fingerprint="p1", game_id=game_id)
+        from app.services import memory_workflow as work
+        for text, scope in [("家里养了一只叫团子的猫", "shared"), ("团子最喜欢睡在窗台上", "personal")]:
+            item = work.propose(text, db.get_active_persona_id(), ["dashiyin"], scope=scope, feature_id=game_id)
+            work.review(item['id'], item['persona_id'], 'approve', {'core': True}, item['revision'])
 
     def test_qq_bridge_recalls_shared_memories_by_default(self):
         self._seed()
         system = self._post("qq_bridge")
         self.assertIn("家里养了一只叫团子的猫", system)
         self.assertIn("团子最喜欢睡在窗台上", system)
+
+    def test_unpicked_memory_is_not_injected(self):
+        db.add_memory("home", "未挑选的猫咪记忆", fingerprint="unpicked")
+        self.assertNotIn("未挑选的猫咪记忆", self._post("qq_bridge"))
 
     def test_other_features_do_not_recall_by_default(self):
         self._seed()
@@ -376,6 +383,9 @@ class FeatureSettingsTests(unittest.TestCase):
         前端把「和群聊 / 私聊共享记忆」显示成勾上，勾上存的是 `isolate=False`；
         本体这边**照原样**收发 —— default 不翻、PUT 进来的也不翻。翻了就全反了。
         """
+        # Test the generic schema contract with a fixture; QQ no longer exposes memory isolation.
+        schema = patch.object(nest, '_settings_spec', return_value=[{'key':'memory.isolate','type':'bool','default':False,'invert':True}])
+        schema.start(); self.addCleanup(schema.stop)
         body = self.client.get("/api/nest/features/qq_bridge/settings").json()
         field = next(f for f in body["schema"] if f["key"] == "memory.isolate")
         self.assertTrue(field["invert"])
@@ -428,6 +438,21 @@ class FeatureSettingsTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["groups"], ["123", "456"])
         self.assertNotIn("塞进来的别的字段", rows[0])
+
+    def test_unconfigured_defaults_are_not_feature_overrides(self):
+        body = self.client.get("/api/nest/features/qq_bridge/settings").json()
+        self.assertIn("onebot.mode", body["values"])
+        self.assertNotIn("onebot.mode", body["overrides"])
+
+    def test_lightweight_constraints_are_explicit_overrides(self):
+        from types import SimpleNamespace
+        with patch.object(nest, "get_settings", return_value=SimpleNamespace(runtime_profile="lightweight")):
+            body = self.client.get("/api/nest/features/qq_bridge/settings").json()
+        self.assertEqual(body["overrides"]["onebot.mode"], "server")
+        self.assertFalse(body["overrides"]["voice.enabled"])
+        self.assertEqual(body["overrides"]["asr.engine"], "none")
+        self.assertNotIn("onebot.access_token", body["overrides"])
+        self.assertNotIn("allow.private", body["overrides"])
 
     def test_unknown_feature_is_404(self):
         self.assertEqual(self.client.get("/api/nest/features/不存在/settings").status_code, 404)
