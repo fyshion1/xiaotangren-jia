@@ -32,6 +32,7 @@ class MultimodalContextTests(unittest.TestCase):
             mock.start()
             self.addCleanup(mock.stop)
         chat.db.init_db()
+        chat.db.set_brain_default({'base_url': 'http://brain.test/v1', 'model': 'test', 'api_key': 'test-key'})
         folder = self.root / 'session' / 'orig'
         folder.mkdir(parents=True)
         buffer = io.BytesIO()

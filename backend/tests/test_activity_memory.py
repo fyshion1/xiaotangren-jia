@@ -23,6 +23,7 @@ class ActivityTests(unittest.TestCase):
         p = patch.dict('os.environ', {'PERSONAL_MEMORY_ROOT': str(Path(tmp.name) / 'memory')})
         p.start(); self.addCleanup(p.stop)
         db.init_db()
+        db.set_brain_default({'base_url': 'http://brain.test/v1', 'model': 'test', 'api_key': 'test-key'})
         app = FastAPI(); app.include_router(api.router)
         self.client = TestClient(app); self.addCleanup(self.client.close)
         self.base = dict(persona_id='dalaoda', source_feature_id='japanese_lab', event_id='q1',
@@ -189,7 +190,15 @@ class ActivityTests(unittest.TestCase):
         async def run():
             body = session_chat.SessionTurn(character_id='dashiyin', session_id='single-dashiyin',text='桌宠问题',request_id='desktop-001',auto_memory=False)
             first = asyncio.create_task(session_chat._session_turn(body, BackgroundTasks()))
-            await started.wait()
+            signal = asyncio.create_task(started.wait())
+            try:
+                done, _ = await asyncio.wait({first, signal}, timeout=2, return_when=asyncio.FIRST_COMPLETED)
+                if first in done:
+                    await first  # Surface setup/provider errors instead of hanging on the event.
+                self.assertTrue(started.is_set(), 'first turn did not reach the provider')
+            finally:
+                signal.cancel()
+                await asyncio.gather(signal, return_exceptions=True)
             user = db.append_message('single-dashiyin', 'user', '网页问题')
             web = session_chat.SessionTurn(feature_id='core',character_id='dashiyin',session_id='single-dashiyin',text='网页问题',saved_user_id=user['id'],
                                           request_id='web-0001',auto_memory=False,base_url='http://unused',model='test')
@@ -200,7 +209,8 @@ class ActivityTests(unittest.TestCase):
             replay = await session_chat._session_turn(web, BackgroundTasks())
             self.assertTrue(replay['replayed'])
             self.assertEqual(len(calls),2)
-        with patch.object(session_chat, '_feature',return_value={'base_url':'http://unused','model':'test'}), \
+        with patch.object(session_chat.agent_tools, 'available', return_value=False), \
+             patch.object(session_chat, '_feature',return_value={'base_url':'http://unused','model':'test'}), \
              patch.object(session_chat, '_to_openai_messages',side_effect=lambda rows,*a,**kw:[{'role':m.role,'content':m.content} for m in rows]), \
              patch.object(session_chat.openai,'stream_chat_retry', provider):
             asyncio.run(run())

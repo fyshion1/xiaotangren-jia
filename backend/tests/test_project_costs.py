@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from xiaotangren_tools import ToolContext, ToolExecutor, ToolPolicy, ToolRegistry
 
+from app import tool_feature
 from app.services import agent_tools, project_costs
 from app.routers import project_costs as gateway
 
@@ -19,7 +20,7 @@ class ProjectCostsToolsTests(unittest.TestCase):
             response = httpx.Response(200, json={'content': '骑车'})
             context = ToolContext('owner', 'owner', 'chat', 'daily-call')
             fixed = datetime(2026, 10, 20, 20, 15, tzinfo=timezone(timedelta(hours=8)))
-            with patch('xiaotangren_tools.project_tools.datetime') as clock, patch.object(project_costs, 'request', AsyncMock(return_value=response)) as request:
+            with patch.object(tool_feature.load('project_tools'), 'datetime') as clock, patch.object(project_costs, 'request', AsyncMock(return_value=response)) as request:
                 clock.now.return_value = fixed
                 await project_costs.daily_record(project_costs.DailyInput(kind='exercise', content='骑车'), context)
                 payload = json.loads(request.await_args.kwargs['content'])
