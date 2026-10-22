@@ -1,3 +1,4 @@
+import NetworkAccess from './NetworkAccess'
 // 小窝 · QQ 桥的专属面板。
 //
 // 为什么单独做一个面板：QQ 桥要连的是**外面一个网关**（SnowLuma，端口 3001）。
@@ -36,6 +37,8 @@ import {
   type NestGatewayStatus,
 } from '../api/client'
 import NestSettingsPanel from './NestSettingsPanel'
+import QqGatewaySetup from './QqGatewaySetup'
+import { useExpertMode } from '../lib/expertMode'
 
 const FEATURE_ID = 'qq_bridge'
 const GATEWAY_POLL_MS = 4000
@@ -46,12 +49,14 @@ function errText(e: unknown): string {
 }
 
 export default function QqBridgePanel() {
+  const expert = useExpertMode()
   const [gateway, setGateway] = useState<NestGatewayStatus | null>(null)
   const [gatewayBusy, setGatewayBusy] = useState(false)
   const [running, setRunning] = useState(false)
   const [bridgeBusy, setBridgeBusy] = useState(false)
   const [note, setNote] = useState('')
   const [log, setLog] = useState('')
+  const [settingsRevision, setSettingsRevision] = useState(0)
   const logRef = useRef<HTMLPreElement | null>(null)
 
   const refreshGateway = useCallback(async (): Promise<NestGatewayStatus | null> => {
@@ -131,7 +136,7 @@ export default function QqBridgePanel() {
       // 后端开完会自动把端口换给机器人号（填了网关密码的话），换没换成功要看它说的。
       const uin = (st.uin || '').trim()
       const want = (st.expected_uin || '').trim()
-      if (st.swap?.ok) {
+      if (st.swap?.ok && uin && (!want || uin === want)) {
         setNote(`网关开好了（${st.waited ?? '?'} 秒）：${st.swap.message}`
           + ' —— 接着把桥也起起来…')
       } else if (!uin) {
@@ -205,6 +210,8 @@ export default function QqBridgePanel() {
 
   return (
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
+      <NetworkAccess channel="qq_bridge"/>
+      <QqGatewaySetup onInstalled={() => { setSettingsRevision(v => v + 1); void refreshGateway() }} />
       {/* ---- 状态条 ---- */}
       <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <span className={`inline-block h-2.5 w-2.5 rounded-full ${online ? 'bg-emerald-500' : 'bg-amber-500'}`} />
@@ -261,7 +268,7 @@ export default function QqBridgePanel() {
                 ⏹ 停掉 QQ 桥
               </button>
             )}
-            {hasPassword && (
+            {hasPassword && expert.enabled && (
               <button className="btn ghost sm" disabled={gatewayBusy}
                 title="把占着 3001 端口的别的号摘下来，让配置里的机器人号顶上去"
                 onClick={() => void claimBot()}>
@@ -312,6 +319,10 @@ export default function QqBridgePanel() {
       {/* ---- 桥的日志 ---- */}
       <div className="mb-1 flex items-center justify-between">
         <span className="eyebrow">桥的日志</span>
+        <button className="btn ghost sm" onClick={() => {
+          const safe = log.replace(/(access[_-]?token|password|api[_-]?key)(["'\s:=]+)[^\s,}\]]+/gi, '$1$2[已隐藏]')
+          void navigator.clipboard.writeText(safe).then(() => setNote('已复制诊断日志，已隐藏可识别的密钥字段；分享前请检查聊天原文和 QQ 号码。')).catch(() => setNote('复制失败，请从下方手动选择日志。'))
+        }}>复制诊断信息</button>
         <button className="btn ghost sm" onClick={() => void refreshBridge()}>刷新</button>
       </div>
       <pre ref={logRef}
@@ -326,10 +337,10 @@ export default function QqBridgePanel() {
         <div className="mb-2 flex flex-wrap items-baseline gap-2">
           <span className="text-[14px] font-bold text-[var(--text)]">⚙ QQ 桥的设置</span>
           <span className="text-[11px] text-[var(--text-3)]">
-            白名单 / 演谁 / 音色 / 表情包 / 接入方式 —— 改完下一轮就用上，不用重启
+            {expert.enabled ? '白名单 / 演谁 / 音色 / 表情包 / 接入方式' : '绑定一个 QQ / 选择角色 / 聊天范围 / 声音和表情'}
           </span>
         </div>
-        <NestSettingsPanel onlyId={FEATURE_ID} bare />
+        <NestSettingsPanel key={`${settingsRevision}:${expert.enabled}`} onlyId={FEATURE_ID} bare />
       </div>
     </section>
   )

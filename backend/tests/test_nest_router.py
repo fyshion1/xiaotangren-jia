@@ -21,6 +21,13 @@ class NestRouterTests(unittest.TestCase):
         with db._tx() as conn:
             conn.executescript(db._SCHEMA)
             db._migrate(conn)
+        features_dir = Path(self.tmp.name) / "features"
+        for feature in nest.all_features():
+            if feature["folder"]:
+                (features_dir / feature["folder"]).mkdir(parents=True)
+        feature_patch = patch.object(nest, "FEATURES_DIR", features_dir)
+        feature_patch.start()
+        self.addCleanup(feature_patch.stop)
         app = FastAPI()
         app.include_router(nest.router, prefix="/api")
         self.client = TestClient(app)
@@ -28,6 +35,18 @@ class NestRouterTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_missing_features_hidden_and_installed_ordered(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(nest, "FEATURES_DIR", Path(directory)):
+            def ids():
+                return [f["id"] for f in self.client.get("/api/nest/features").json()["items"]]
+            self.assertEqual(ids(), ["gemini_sync"])
+            (Path(directory) / "qq-bridge").mkdir()
+            (Path(directory) / "desktop-pet").mkdir()
+            self.assertEqual(ids(), ["desktop_pet", "qq_bridge", "gemini_sync"])
+            (Path(directory) / "japanese-lab").mkdir()
+            self.assertIn("japanese_lab", ids())
+            self.assertNotIn("english_study", ids())
 
     def test_features_come_from_registry(self):
         payload = self.client.get("/api/nest/features").json()
@@ -138,9 +157,9 @@ class NestRouterTests(unittest.TestCase):
 
     def test_feed_push_list_and_status(self):
         pushed = self.client.post("/api/nest/feed", json={
-            "feature_id": "bilibili_scout", "kind": "video", "title": "一个插件推荐",
-            "url": "https://www.bilibili.com/video/BV1xx", "summary": "挺有用",
-            "cover": "https://i0.hdslb.com/x.jpg", "payload": {"bvid": "BV1xx", "score": 8},
+            "feature_id": "desktop_pet", "kind": "note", "title": "一个插件推荐",
+            "url": "https://example.com/note", "summary": "挺有用",
+            "cover": "https://example.com/cover.jpg", "payload": {"score": 8},
         }).json()
         self.assertTrue(pushed["registered"])
         item = pushed["item"]
@@ -157,7 +176,7 @@ class NestRouterTests(unittest.TestCase):
 
     def test_feed_same_url_updates_instead_of_duplicating(self):
         """同一个视频被小糖人刷到两次，应该更新那条而不是堆两条。"""
-        body = {"feature_id": "bilibili_scout", "title": "旧标题", "url": "https://b/bv1"}
+        body = {"feature_id": "desktop_pet", "title": "旧标题", "url": "https://example.com/note"}
         first = self.client.post("/api/nest/feed", json=body).json()["item"]
         second = self.client.post("/api/nest/feed", json={**body, "title": "新标题"}).json()["item"]
         self.assertEqual(first["id"], second["id"])
@@ -169,6 +188,17 @@ class NestRouterTests(unittest.TestCase):
             "feature_id": "my_own_thing", "title": "自定义功能推的"}).json()
         self.assertFalse(r["registered"])
         self.assertEqual(r["item"]["feature_id"], "my_own_thing")
+
+    def test_retired_bilibili_feed_is_removed_without_deleting_other_sources(self):
+        db.add_feed_item('bilibili_scout', '旧推荐')
+        kept = db.add_feed_item('qq_bridge', '保留动态')
+        with db._tx() as conn:
+            db._migrate(conn)
+            db._migrate(conn)
+        self.assertEqual([item['id'] for item in db.list_feed_items()], [kept['id']])
+        response = self.client.post('/api/nest/feed', json={'feature_id': 'bilibili_scout', 'title': '新推荐'})
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual([item['id'] for item in db.list_feed_items()], [kept['id']])
 
     def test_feed_delete(self):
         item = self.client.post("/api/nest/feed", json={
@@ -354,6 +384,9 @@ class FeatureSettingsTests(unittest.TestCase):
         self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
         self.path.start()
         self.addCleanup(self.path.stop)
+        # This suite exercises the complete schema; basic-mode limits have a separate suite.
+        mode = patch('app.expert_mode.enabled', return_value=True)
+        mode.start(); self.addCleanup(mode.stop)
         db.DATA_DIR.mkdir(parents=True, exist_ok=True)
         with db._tx() as conn:
             conn.executescript(db._SCHEMA)
@@ -372,7 +405,7 @@ class FeatureSettingsTests(unittest.TestCase):
         body = r.json()
         keys = {f["key"] for f in body["schema"]}
         self.assertIn("allow.groups", keys)
-        self.assertIn("tools.allow", keys)
+        self.assertNotIn("tools.allow", keys)  # Tools use the central expert-mode configuration.
         # 没存过 → 值就是声明里的默认值。
         self.assertFalse(body["configured"])
         self.assertEqual(body["values"]["allow.groups"], [])

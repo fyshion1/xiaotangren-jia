@@ -16,6 +16,8 @@
 SEED_CHARACTERS: list[dict] = [
     {
         "id": "dashiyin",
+        "portrait": "/characters/dashiyin-portrait.webp",
+        "avatar": "/characters/dashiyin-avatar.webp",
         "name": "大诗音",
         "jp": "かほるずき しおん",
         "alias": "年纪最大的姐姐 · 烘焙担当",
@@ -66,6 +68,8 @@ SEED_CHARACTERS: list[dict] = [
     },
     {
         "id": "xiaoshiyin",
+        "portrait": "/characters/xiaoshiyin-portrait.webp",
+        "avatar": "/characters/xiaoshiyin-avatar.webp",
         "name": "小诗音",
         "jp": "コシオン",
         "alias": "战术副官 · 同桌纪律委员",
@@ -114,6 +118,8 @@ SEED_CHARACTERS: list[dict] = [
     },
     {
         "id": "xiaobai",
+        "portrait": "/characters/xiaobai-portrait.webp",
+        "avatar": "/characters/xiaobai-avatar.webp",
         "name": "小白",
         "jp": "シロ",
         "alias": "治愈系 · 猫猫少女",

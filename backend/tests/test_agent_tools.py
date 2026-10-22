@@ -10,14 +10,14 @@ import httpx
 from app import db
 from app.routers import session_chat, tools
 from app.services import agent_tools
-from app.services import project_costs
+from app.services import project_costs, knowledge
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def decision(path="note.txt"):
+def decision(query="笔记"):
     return {"tool_calls": [{"id": "call-model", "function": {
-        "name": "local_read", "arguments": json.dumps({"path": path})}}]}
+        "name": "knowledge_search", "arguments": json.dumps({"query": query})}}]}
 
 
 class AgentToolAPITests(unittest.TestCase):
@@ -51,11 +51,14 @@ class AgentToolAPITests(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         db.init_db()
-        self.sandbox = self.root / "sandbox"
-        self.sandbox.mkdir()
-        (self.sandbox / "note.txt").write_text("PRIVATE-FILE-CONTENT", encoding="utf-8")
-        self.config = agent_tools.ToolSettings(enabled=True, root=str(self.sandbox))
-        self.model = AsyncMock(side_effect=[decision(), {"content": "已读取文本", "finish_reason": "stop"}])
+        db.set_settings({"expert_mode_v1": '{"enabled":true}'})
+        db.set_brain_default({"base_url":"http://unused", "model":"test", "api_key":"SECRET"})
+        self.config = agent_tools.ToolSettings(enabled=True, allowed_names=['knowledge_search', 'web_search'])
+        p = patch.object(knowledge, 'search', return_value={'items': [{'text': 'PRIVATE-KNOWLEDGE-CONTENT'}]})
+        p.start(); self.addCleanup(p.stop)
+        p = patch.object(agent_tools.web_search, 'available', return_value=True)
+        p.start(); self.addCleanup(p.stop)
+        self.model = AsyncMock(side_effect=[decision(), {"content": "已查询资料", "finish_reason": "stop"}])
         p = patch.object(agent_tools.openai, "complete_chat_full", self.model)
         p.start()
         self.addCleanup(p.stop)
@@ -72,11 +75,11 @@ class AgentToolAPITests(unittest.TestCase):
         self.addCleanup(self.client.close)
 
     def enable(self):
-        result = self.client.put('/api/tools/config', json=self.config.model_dump())
+        result = self.client.put('/api/tools/config', headers={'X-Exploration-Dashboard':'1'}, json=self.config.model_dump())
         self.assertEqual(result.status_code, 200, result.text)
 
     def body(self, **changes):
-        return {"character_id": "dashiyin", "session_id": "single-dashiyin", "text": "读取 note.txt",
+        return {"character_id": "dashiyin", "session_id": "single-dashiyin", "text": "查询我的笔记",
                 "request_id": "test-agent-0001", "auto_memory": False, **changes}
 
     def test_config_defaults_validation_and_fail_closed_legacy_settings(self):
@@ -84,8 +87,8 @@ class AgentToolAPITests(unittest.TestCase):
         self.assertFalse(initial['config']['enabled'])
         self.assertEqual(len(initial['capabilities']), len(agent_tools.CAPABILITIES))
         self.assertFalse((self.root / 'tool-sandbox').exists())
-        for changes in ({'allowed_names': ['shell']}, {'timeout_seconds': 999}, {'owner_persona_id': 'missing'}, {'root': '\x00'}):
-            result = self.client.put('/api/tools/config', json={**self.config.model_dump(), **changes})
+        for changes in ({'allowed_names': ['shell']}, {'timeout_seconds': 999}, {'owner_persona_id': 'missing'}, {'allowed_names': ['local_read']}):
+            result = self.client.put('/api/tools/config', headers={'X-Exploration-Dashboard':'1'}, json={**self.config.model_dump(), **changes})
             self.assertEqual(result.status_code, 422, result.text)
         db.set_settings({agent_tools.SETTING_KEY: '{"enabled":true,"allowed_names":["shell"]}'})
         self.assertFalse(agent_tools.settings().enabled)
@@ -97,7 +100,7 @@ class AgentToolAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('event: tool_start', response.text)
         self.assertIn('event: tool_result', response.text)
-        self.assertIn('PRIVATE-FILE-CONTENT', response.text)
+        self.assertIn('PRIVATE-KNOWLEDGE-CONTENT', response.text)
         self.assertIn('event: done', response.text)
         self.assertEqual(self.model.await_count, 2)
         again = self.client.post('/api/chat/session/web-stream', json=body)
@@ -106,7 +109,7 @@ class AgentToolAPITests(unittest.TestCase):
         runs = self.client.get('/api/tools/runs', params={'session_id': 'single-dashiyin'}).json()['items']
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]['status'], 'completed')
-        self.assertNotIn('PRIVATE-FILE-CONTENT', json.dumps(runs))
+        self.assertNotIn('PRIVATE-KNOWLEDGE-CONTENT', json.dumps(runs))
         self.assertNotIn('SECRET', json.dumps(runs))
         self.assertNotIn('note.txt', json.dumps(runs))
 
@@ -119,7 +122,7 @@ class AgentToolAPITests(unittest.TestCase):
 
         from xiaotangren_tools import web_search
         with patch.object(agent_tools, 'web_search', web_search), \
-             patch.object(agent_tools, 'ToolExecutor') as executor_factory:
+             patch('xiaotangren_tools.integration.ToolExecutor') as executor_factory:
             from xiaotangren_tools import ToolExecutor as RealExecutor
             executor = RealExecutor
             executor_factory.side_effect = lambda *a, **kw: executor(*a, **kw)
@@ -144,7 +147,7 @@ class AgentToolAPITests(unittest.TestCase):
         self.model.side_effect = [decision(), {'content': '完成'}]
         asyncio.run(file_run())
         file_runs = self.client.get('/api/tools/runs', params={'session_id': 'file-session'}).json()['items']
-        self.assertNotIn('PRIVATE-FILE-CONTENT', json.dumps(file_runs))
+        self.assertNotIn('PRIVATE-KNOWLEDGE-CONTENT', json.dumps(file_runs))
 
     def test_lyrics_search_is_available_with_web_and_journaled_for_inspection(self):
         self.enable()
@@ -213,9 +216,10 @@ class AgentToolAPITests(unittest.TestCase):
         self.assertFalse(agent_tools.available('desktop_pet', 'dalaoda'))
         self.assertFalse(agent_tools.available('qq_bridge', 'dalaoda'))
 
-    def test_denied_file_result_reaches_model(self):
+    def test_denied_knowledge_result_reaches_model(self):
         self.enable()
-        self.model.side_effect = [decision('../secret'), {"content": "无法访问越界文件"}]
+        self.model.side_effect = [decision(), {"content": "无法查询资料"}]
+        knowledge.search.side_effect = ValueError('资料不可访问')
         response = self.client.post('/api/chat/session/turn', json=self.body())
         self.assertEqual(response.status_code, 200, response.text)
         history = self.model.await_args_list[1].args[0]
@@ -234,7 +238,7 @@ class AgentToolAPITests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/chat/session/turn', json=self.body()).status_code, 200)
         self.assertEqual(len(db.list_messages('single-dashiyin')), 2)
 
-    def test_cancelled_run_settles_without_saving_file_contents(self):
+    def test_cancelled_run_settles_without_saving_private_contents(self):
         self.enable()
 
         async def run():

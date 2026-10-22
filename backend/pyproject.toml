@@ -11,9 +11,6 @@ dependencies = [
     "ormsgpack>=1.7,<2",
     "async-timeout>=4,<6",
     "pydantic>=2.7",
-    # Installed into the runner's interpreter; features import the standalone SDK,
-    # never app.*. Executing tools remains the feature process's responsibility.
-    "xiaotangren-tool-runtime==0.1.0",
     "pydantic-settings>=2.3",
     "python-multipart>=0.0.9",
     "edge-tts>=7.2",
@@ -40,10 +37,13 @@ dev = [
 local-voice = [
     "sherpa-onnx>=1.13.8",
     "pilk>=0.2.4",
+    "imageio-ffmpeg>=0.6,<1",
 ]
-
-[tool.uv.sources]
-xiaotangren-tool-runtime = { path = "../packages/tool-runtime", editable = true }
+qq-asr = [
+    "sherpa-onnx>=1.13.8",
+    "pilk>=0.2.4",
+    "imageio-ffmpeg>=0.6,<1",
+]
 
 [tool.ruff]
 line-length = 100

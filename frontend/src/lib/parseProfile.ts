@@ -31,17 +31,17 @@ export const PROFILE_FIELD_LABELS: { label: string; key: FieldKey }[] = [
   { label: '瞳色', key: 'eyeColor' },
   { label: '发型', key: 'hairstyle' },
   { label: '发色', key: 'hairColor' },
-  { label: '胸部', key: 'bust' },
-  { label: '臀部', key: 'hip' },
+  { label: '胸围', key: 'bust' },
+  { label: '臀围', key: 'hip' },
   { label: '服装', key: 'clothing' },
   { label: '职业', key: 'occupation' },
   { label: '关系', key: 'relationships' },
   { label: '特殊特征', key: 'specialFeatures' },
   { label: '体重', key: 'weight' },
-  { label: '三围', key: 'measurements' },
+  { label: '身体尺寸', key: 'measurements' },
   { label: '秘密', key: 'secret' },
-  { label: '弱点', key: 'weakPoint' },
-  { label: '私密小愿望', key: 'privateWish' },
+  { label: '注意事项', key: 'weakPoint' },
+  { label: '个人愿望', key: 'privateWish' },
 ]
 
 export const LABEL_OF: Record<string, string> = Object.fromEntries(
@@ -79,17 +79,17 @@ const LABEL_MAP: Record<string, FieldKey> = (() => {
   add('eyeColor', '瞳色')
   add('hairstyle', '发型')
   add('hairColor', '发色')
-  add('bust', '胸部')
-  add('hip', '臀部')
+  add('bust', '胸围', '胸部')
+  add('hip', '臀围', '臀部')
   add('clothing', '服装', '衣着')
   add('occupation', '职业')
   add('relationships', '关系')
   add('specialFeatures', '特殊特征')
   add('weight', '体重')
-  add('measurements', '三围')
+  add('measurements', '身体尺寸', '三围')
   add('secret', '秘密')
-  add('weakPoint', '弱点')
-  add('privateWish', '私密小愿望', '小愿望')
+  add('weakPoint', '注意事项', '弱点')
+  add('privateWish', '个人愿望', '私密小愿望', '小愿望')
   return map
 })()
 

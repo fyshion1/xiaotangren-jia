@@ -1,9 +1,11 @@
 import { useTavernMode } from '../lib/tavernMode'
 import UiIcon from '../visual/UiIcon'
-import { useRef } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { ChatSession } from '../data/chats'
 import type { CharacterProfile } from '../data/characters'
 import Avatar from './Avatar'
+
+const WorldbookPanel = lazy(() => import('./WorldbookPanel'))
 
 type Props = {
   sessions: ChatSession[]
@@ -24,6 +26,15 @@ type Props = {
 export default function SessionList({ sessions, activeId, onSelect, onImport, characters = [], onOpenNest, onDeleteImported, cardDisplayMode, onCardDisplayModeChange }: Props) {
   const [tavernMode] = useTavernMode()
   const fileRef = useRef<HTMLInputElement>(null)
+  const worldbookRef = useRef<HTMLDialogElement>(null)
+  const [worldbookOpen, setWorldbookOpen] = useState(false)
+  useEffect(() => {
+    if (!tavernMode) setWorldbookOpen(false)
+  }, [tavernMode])
+  useEffect(() => {
+    if (worldbookOpen && tavernMode) worldbookRef.current?.showModal()
+    else worldbookRef.current?.close()
+  }, [worldbookOpen, tavernMode])
 
   // 单聊用对方头像（QQ 式）；群聊没有单一角色，保留 emoji 图标。
   const faceOf = (s: ChatSession) => {
@@ -88,6 +99,10 @@ export default function SessionList({ sessions, activeId, onSelect, onImport, ch
       </div>
 
       <div className="border-t border-[var(--border)] p-2">
+        {tavernMode && <button type="button" className="session-item w-full" onClick={() => setWorldbookOpen(true)}>
+          <span className="session-emoji"><UiIcon name="book"/></span>
+          <span className="text-[13px] text-[var(--text-2)]">共用世界书</span>
+        </button>}
         {onOpenNest && (
           <button
             className="session-item w-full"
@@ -118,6 +133,16 @@ export default function SessionList({ sessions, activeId, onSelect, onImport, ch
           }}
         />}
       </div>
+      {tavernMode && worldbookOpen && <dialog ref={worldbookRef} aria-label="共用世界书"
+        onClose={() => setWorldbookOpen(false)}
+        className="m-auto max-h-[85dvh] w-[min(56rem,94vw)] overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-[var(--text)] backdrop:bg-black/40">
+        <div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">共用世界书</h2>
+          <button type="button" className="btn ghost sm" onClick={() => setWorldbookOpen(false)} aria-label="关闭共用世界书">关闭</button>
+        </div>
+        <Suspense fallback={<p role="status">加载世界书…</p>}>
+          <WorldbookPanel owner="" ownerLabel="家 · 共用世界书" bare />
+        </Suspense>
+      </dialog>}
     </div>
   )
 }

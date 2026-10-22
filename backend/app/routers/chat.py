@@ -1,7 +1,6 @@
 """聊天 SSE 路由。
 
-前端传入显式的模型来源（base_url/api_key/model），后端只做代理转发 + SSE 封装。
-不在后端持久化任何可切换的 key —— 符合「前端自己填、后端无状态」的诉求。
+模型来源统一读取小窝大脑；旧客户端传来的模型覆盖字段不再生效。
 
 事件：token（正文增量）/ done / error（带上游真实错误信息）。
 """
@@ -10,15 +9,26 @@ import json
 from typing import Literal
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import db
 from ..providers import openai
 from ..services.prompt import build_system_prompt
+from ..services import reply_suggestions
 
 router = APIRouter()
+
+
+def _brain_route(vision: bool = False) -> dict:
+    brain = db.get_brain_default()
+    cfg = {"base_url": brain.get("base_url", ""), "api_key": brain.get("api_key", ""),
+           "model": brain.get("model", "")}
+    if vision:
+        for field in ("base_url", "api_key", "model"):
+            cfg[field] = brain.get("vision_" + field) or cfg[field]
+    return cfg
 
 
 class ChatMessage(BaseModel):
@@ -42,6 +52,7 @@ class ChatRequest(BaseModel):
     # 是否走无审查通道：为真时组装引擎额外追加「无审查专属」越狱块（§7）。
     uncensored: bool = False
     card_display_mode: Literal['chat', 'html'] | None = None
+    reply_suggestions: bool = False
 
 
 def _role_of(role: str) -> str:
@@ -136,16 +147,16 @@ async def chat_preview(req: ChatRequest) -> dict:
 
     零 token 消耗，用来核对自我档案 / 世界书 / 记忆到底进没进提示词。
     """
-    from ..config import get_settings
-
-    settings = get_settings()
+    cfg = _brain_route(any(m.images for m in req.messages))
     messages = _to_openai_messages(
         req.messages, req.character_ids, req.uncensored, _resolve_persona(req.persona_id)
     )
     apply_card_display_mode(messages, req.character_ids, req.card_display_mode)
+    if req.reply_suggestions:
+        reply_suggestions.add_instructions(messages)
     return {
-        "model": req.model or (settings.model_vision if any(m.images for m in req.messages) else settings.model_chat),
-        "base_url": req.base_url or settings.model_base_url,
+        "model": cfg["model"],
+        "base_url": cfg["base_url"],
         "max_tokens": req.max_tokens if req.max_tokens and req.max_tokens > 0 else None,
         "messages": messages,
         "system": messages[0]["content"] if messages else "",
@@ -154,22 +165,22 @@ async def chat_preview(req: ChatRequest) -> dict:
 
 @router.post("/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
-    from ..config import get_settings
-
-    settings = get_settings()
-    base_url = req.base_url or settings.model_base_url
-    api_key = req.api_key or settings.model_api_key
-    model = req.model or (settings.model_vision if any(m.images for m in req.messages) else settings.model_chat)
+    cfg = _brain_route(any(m.images for m in req.messages))
+    if not cfg["base_url"] or not cfg["model"]:
+        raise HTTPException(409, "请先在糖人小窝配置大脑 API")
+    base_url, api_key, model = cfg["base_url"], cfg["api_key"], cfg["model"]
     messages = _to_openai_messages(
         req.messages, req.character_ids, req.uncensored, _resolve_persona(req.persona_id)
     )
     apply_card_display_mode(messages, req.character_ids, req.card_display_mode)
+    if req.reply_suggestions:
+        reply_suggestions.add_instructions(messages)
     max_tokens = req.max_tokens if req.max_tokens and req.max_tokens > 0 else None
 
     async def gen() -> AsyncIterator[str]:
         from ..services.conversation_runtime import transient_stream
         yield _sse("context", context_debug(messages, model))
-        async for event in transient_stream(messages, model, base_url, api_key, max_tokens=max_tokens, source="chat"):
+        async for event in transient_stream(messages, model, base_url, api_key, max_tokens=max_tokens, source="chat", suggestions_enabled=req.reply_suggestions):
             kind = event.pop('type')
             yield _sse(kind, event)
 

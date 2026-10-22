@@ -44,6 +44,19 @@ class IntentRouterTests(unittest.TestCase):
         # A later request must not be dropped after a casual opening.
         self.assertTrue(router.classify('你好' * 700 + '，半小时后叫我').needs_tools)
 
+    def test_live_greeting_regression_and_mixed_reminder(self):
+        # Live greeting scored .642 with .0806 margin: do not spend a model
+        # turn continuing the previous song request. Mixed reminders stay routed.
+        prototypes = [[.642, (1 - .642**2)**.5] if label == 'chat'
+                      else [.5614, (1 - .5614**2)**.5] for label in router._LABELS]
+        with patch.object(router.embedding, 'embed_texts', side_effect=[prototypes, [[1., 0.]]]):
+            self.assertFalse(router.classify('小糖人晚上好呀，请用一句简短的话回应我。').needs_tools)
+        router._cache.clear()
+        prototypes = [[.704, (1 - .704**2)**.5] if label == 'chat'
+                      else [.7028, (1 - .7028**2)**.5] for label in router._LABELS]
+        with patch.object(router.embedding, 'embed_texts', side_effect=[prototypes, [[1., 0.]]]):
+            self.assertTrue(router.classify('小糖人晚上好呀，过半小时记得叫我喝水').needs_tools)
+
     def test_missing_model_cooldown_no_repeated_load(self):
         with patch.object(router.embedding, 'embed_texts', side_effect=EmbeddingError('missing')) as embed:
             for _ in range(2):

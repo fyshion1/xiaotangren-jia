@@ -158,11 +158,10 @@ export default function HomeView({
     }
   }, [lightbox])
 
-  const onCreate = async () => {
+  const onCreate = () => {
     if (!onCreateProfile) return
-    const created = await onCreateProfile(emptyProfile())
-    setActiveId(created.id)
-    setEditing(created) // 新建即进编辑，省一步点击
+    setSaveError('')
+    setEditing({ ...emptyProfile(), id: '' })
   }
 
   const onDelete = async (p: CharacterProfile) => {
@@ -290,7 +289,17 @@ export default function HomeView({
           onClose={() => setEditing(null)}
           onSave={async (next) => {
             setSaveError('')
-            try { await onSaveChar(next); setEditing(null) } catch (e) { setSaveError(String(e)); throw e }
+            try {
+              if (space && !editing.id && onCreateProfile) {
+                const name = next.name.trim()
+                if (!name) throw new Error('请先填写身份名字')
+                const created = await onCreateProfile({ ...next, name })
+                setActiveId(created.id)
+              } else {
+                await onSaveChar(next)
+              }
+              setEditing(null)
+            } catch (e) { setSaveError(String(e)); throw e }
           }}
         />
       )}

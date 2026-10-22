@@ -24,7 +24,7 @@ export type ChatMessage = {
   // 图片：image = 显示用缩略图 URL；imageOrig = 原图 URL（原图被清理后为空，自动降级用缩略图）
   image?: string
   imageOrig?: string
-  imageSource?: 'upload' | 'generated' | 'video'
+  imageSource?: 'upload' | 'generated' | 'video' | 'qq' | 'sticker'
   // 视频帧：从上传视频抽出的帧 URL 列表（《项目要求》媒体-视频一节）；
   // 抽帧结果只保存在内存里，不落库 —— 刷新后回退为只显示 image（第一帧）。
   frames?: string[]

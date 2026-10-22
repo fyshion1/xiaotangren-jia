@@ -247,7 +247,7 @@ function WordDetail({
     ].filter(Boolean).join('，')
     const imgs = await generateImages({ prompt, session_id: 'english-vocab', n: 1 })
     const first = imgs[0]
-    if (!first) throw new Error('生图返回为空 —— 看下「模型设置」里选的引擎通不通')
+    if (!first) throw new Error('生图返回为空，请检查后端生图引擎配置')
     await attachImage(first.orig, first.thumb)
   })
 

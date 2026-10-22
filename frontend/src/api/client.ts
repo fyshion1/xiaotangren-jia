@@ -660,6 +660,7 @@ export type PromptPreviewBody = {
   persona_id: string
   uncensored: boolean
   card_display_mode?: 'chat' | 'html'
+  reply_suggestions?: boolean
 }
 
 /** 只组装、不调用模型（零 token 消耗）：核对自我档案 / 世界书 / 记忆进没进提示词。 */

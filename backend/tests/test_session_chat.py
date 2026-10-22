@@ -22,12 +22,15 @@ class SessionChatTests(unittest.TestCase):
         env = patch.dict('os.environ', {'PERSONAL_MEMORY_ROOT': str(Path(tmp.name) / 'memory')})
         env.start(); self.addCleanup(env.stop)
         db.init_db()
+        db.set_brain_default({'base_url': 'http://brain.test/v1', 'model': 'brain-model', 'api_key': 'BRAIN-KEY'})
         self.char = 'dashiyin'
         self.calls = []
-        self.fail = False
+        self.routes = []
+        self.provider_fail = False
         async def stream(messages, model, base_url, api_key, **kwargs):
             self.calls.append(messages)
-            if self.fail:
+            self.routes.append((model, base_url, api_key))
+            if self.provider_fail:
                 yield {'type': 'error', 'message': 'private upstream detail'}
             else:
                 yield {'type': 'text', 'text': '**大诗音**：我在，记得你说过的事。'}
@@ -44,7 +47,7 @@ class SessionChatTests(unittest.TestCase):
         for target, value in [('_effective_config', lambda _: {'base_url': 'http://unused', 'model': 'test', 'api_key': 'SECRET'}),
                               ('_to_openai_messages', prompt), ('_turn_lock', asyncio.Lock())]:
             p = patch.object(chat, target, value); p.start(); self.addCleanup(p.stop)
-        for obj, name, value in [(chat.openai, 'stream_chat_retry', stream), (chat.memory_extract, 'extract', self.memory)]:
+        for obj, name, value in [(chat.agent_tools, 'available', lambda *args, **kwargs: False), (chat.openai, 'stream_chat_retry', stream), (chat.memory_extract, 'extract', self.memory)]:
             p = patch.object(obj, name, value); p.start(); self.addCleanup(p.stop)
         from app.routers.qq_bridge import router as qq_router
         app = FastAPI(); app.include_router(chat.router, prefix='/api'); app.include_router(qq_router, prefix='/api')
@@ -54,6 +57,74 @@ class SessionChatTests(unittest.TestCase):
         body = {'character_id': self.char, 'mode': 'single', 'session_id': f'single-{self.char}',
                 'text': '记住我喜欢草莓', 'request_id': 'request-0001'}
         return self.client.post('/api/chat/session/turn', json={**body, **overrides})
+
+    def test_web_reply_suggestions_share_generation_and_replay(self):
+        import json
+        from app.services import reply_suggestions
+        async def stream(messages, *args, **kwargs):
+            self.calls.append(messages)
+            raw = '回复正文' + reply_suggestions.START + '["那明天呢", "好呀", "好呀"]' + reply_suggestions.END
+            for char in raw:
+                yield {'type': 'text', 'text': char}
+            yield {'type': 'done', 'finish_reason': 'stop'}
+        body = {'character_id': self.char, 'session_id': f'single-{self.char}', 'text': '明天一起散步吗',
+                'request_id': 'suggestion-001', 'reply_suggestions': True, 'auto_memory': False}
+        with patch.object(chat.openai, 'stream_chat_retry', stream), patch.object(chat.agent_tools, 'available', return_value=False):
+            response = self.client.post('/api/chat/session/web-stream', json=body)
+            self.assertEqual(response.status_code, 200)
+            tokens = [json.loads(block.split('data: ', 1)[1])['text'] for block in response.text.split('\n\n') if block.startswith('event: token')]
+            self.assertEqual(''.join(tokens), '回复正文')
+            done = json.loads(next(block.split('data: ', 1)[1] for block in response.text.split('\n\n') if block.startswith('event: done')))
+            self.assertEqual(done['reply_suggestions'], ['那明天呢', '好呀'])
+            self.assertEqual(done['assistant']['content'], '回复正文')
+            again = self.client.post('/api/chat/session/web-stream', json=body)
+            self.assertIn('那明天呢', again.text)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn(reply_suggestions.START, self.calls[0][0]['content'])
+        self.assertFalse(any(reply_suggestions.START in row['content'] for row in db.list_messages(f'single-{self.char}')))
+
+    def test_collapsed_suggestions_do_not_add_prompt_or_call_again(self):
+        body = {'character_id': self.char, 'session_id': f'single-{self.char}', 'text': '你好',
+                'request_id': 'suggestion-off', 'reply_suggestions': False, 'auto_memory': False}
+        self.client.post('/api/chat/session/web-stream', json=body)
+        self.assertEqual(len(self.calls), 1)
+        self.assertFalse(any('<reply_suggestions>' in str(message['content']) for message in self.calls[0]))
+
+    def test_tool_answer_extracts_candidates_without_fallback_request(self):
+        from types import SimpleNamespace
+        result = SimpleNamespace(content='工具回复<reply_suggestions>["再查一下"]</reply_suggestions>', finish_reason='stop')
+        generate = AsyncMock(return_value=result)
+        with patch.object(chat.agent_tools, 'available', return_value=True), patch.object(chat.agent_tools, 'generate', generate):
+            response = self.turn(feature_id='core', reply_suggestions=True, auto_memory=False)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['assistant']['content'], '工具回复')
+        self.assertEqual(response.json()['reply_suggestions'], ['再查一下'])
+        generate.assert_awaited_once()
+        self.assertEqual(self.calls, [])
+
+    def test_core_ignores_browser_overrides_and_uses_latest_brain(self):
+        response = self.turn(feature_id='core', model='stale-browser-model', base_url='http://stale.test', api_key='OLD', auto_memory=False)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.routes[-1], ('brain-model', 'http://brain.test/v1', 'BRAIN-KEY'))
+        db.set_brain_default({'base_url': 'http://new-brain.test/v1', 'model': 'new-brain', 'api_key': 'NEW'})
+        response = self.turn(feature_id='core', request_id='request-new-brain', auto_memory=False)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.routes[-1], ('new-brain', 'http://new-brain.test/v1', 'NEW'))
+
+    def test_core_without_brain_does_not_fall_back_to_env_or_browser(self):
+        db.set_brain_default({'base_url': '', 'model': '', 'api_key': ''})
+        response = self.turn(feature_id='core', base_url='http://stale.test', model='old', api_key='OLD')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.routes, [])
+
+    def test_brain_vision_route_and_prompt_preview_ignore_browser(self):
+        from app.routers.chat import _brain_route, ChatRequest, chat_preview
+        db.set_brain_default({'vision_base_url': 'http://vision.test/v1', 'vision_model': 'vision-model', 'vision_api_key': 'VISION'})
+        self.assertEqual(_brain_route(True), {'base_url': 'http://vision.test/v1', 'model': 'vision-model', 'api_key': 'VISION'})
+        with patch('app.routers.chat._to_openai_messages', return_value=[]):
+            result = asyncio.run(chat_preview(ChatRequest(messages=[], model='old', base_url='http://old.test')))
+        self.assertEqual(result['model'], 'brain-model')
+        self.assertEqual(result['base_url'], 'http://brain.test/v1')
 
     def test_imported_card_chat_mode_reaches_the_model(self):
         db.upsert_character(self.char, {**db.get_character(self.char), 'imported': True})
@@ -92,12 +163,12 @@ class SessionChatTests(unittest.TestCase):
         self.assertEqual(state.json()['items'][-1]['id'], first.json()['assistant']['id'])
 
     def test_failed_turn_retry_keeps_one_user_message(self):
-        self.fail = True
+        self.provider_fail = True
         failed = self.turn()
         self.assertEqual(failed.status_code, 502)
         self.assertNotIn('private upstream', failed.text)
         self.assertEqual(len(db.list_messages(f'single-{self.char}')), 1)
-        self.fail = False
+        self.provider_fail = False
         self.assertEqual(self.turn().status_code, 200)
         self.assertEqual(len(db.list_messages(f'single-{self.char}')), 2)
         self.assertEqual(self.turn(text='另一句话').status_code, 409)
@@ -270,7 +341,7 @@ class SessionChatTests(unittest.TestCase):
         again = self.client.post('/api/chat/session/stream', json=body)
         self.assertTrue(json.loads(again.text)['result']['replayed'])
         self.assertEqual(len(self.calls), 1)
-        self.fail = True
+        self.provider_fail = True
         failed = self.client.post('/api/chat/session/stream', json={**body, 'request_id': 'stream-002'})
         self.assertEqual(json.loads(failed.text)['type'], 'error')
         self.assertNotIn('private upstream', failed.text)
@@ -319,7 +390,7 @@ class SessionChatTests(unittest.TestCase):
                 self.assertNotIn('delivered', stages)
 
     def test_failure_is_diagnosed_once_and_not_retried(self):
-        self.fail = True
+        self.provider_fail = True
         result = self.turn(auto_memory=False)
         self.assertEqual(result.status_code, 502)
         self.assertEqual(len(self.calls), 1)

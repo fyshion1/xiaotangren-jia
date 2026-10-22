@@ -49,13 +49,40 @@ class DraftInput(BaseModel):
 
 class Decision(BaseModel):
     action: str
+    expected_persona: str = Field(default='', max_length=100)
+
+
+class CaptureInput(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    body: str = Field(min_length=1, max_length=service.MAX_CAPTURE_CHARS)
+    category: str = Field(default='未分类', max_length=80)
+    source: str = Field(default='', max_length=2000)
+    expected_persona: str = Field(default='', max_length=100)
+
+
+def checked_actor(expected):
+    persona = actor()
+    if expected and expected != persona:
+        raise HTTPException(409, '当前身份已变化，请刷新后重新操作')
+    return persona
 
 
 @router.get('')
 def overview():
     persona = actor()
     return {'persona_id': persona, 'sources': call(service.scan),
-            'documents': call(service.documents, persona), 'proposals': call(service.proposals, persona)}
+            'documents': call(service.documents, persona), 'proposals': call(service.proposals, persona),
+            'captures': call(service.captures, persona)}
+
+
+@router.post('/captures')
+def capture(body: CaptureInput):
+    return call(service.capture, checked_actor(body.expected_persona), **body.model_dump(exclude={'expected_persona'}))
+
+
+@router.post('/captures/{capture_id}')
+def settle_capture(capture_id: str, body: Decision):
+    return call(service.settle_capture, checked_actor(body.expected_persona), capture_id, body.action)
 
 
 @router.post('/import')

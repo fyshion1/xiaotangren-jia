@@ -281,10 +281,10 @@ export default function CardImportDialog({ file, route, onClose, onImported }: P
       onError: (msg, payload) => {
         if (!alive) return
         const zh = String(payload?.aboutZh ?? raw)
-        const detail = zh.trim() ? '模型说着说着停了' : msg
+        const detail = zh.trim() ? `译文未完成，已保留收到的部分：${msg}` : msg
         setAboutZh(zh)
         setTransNote(detail)
-        setTransState(zh.trim() ? 'done' : 'failed')
+        setTransState('failed')
         setAiWarnings((w) => [...w, msg.startsWith('中文译文没翻成') ? msg : `中文译文没翻成（${msg}）—— 不影响导入，界面继续看原文。`])
       },
     }).finally(() => {
@@ -341,7 +341,6 @@ export default function CardImportDialog({ file, route, onClose, onImported }: P
     runTranslate(about)
   }
 
-  const aboutText = about.trim()
   const card = preview ? { ...preview.profile, ...extracted } : undefined
   const greetingText = ((preview?.profile.greeting as string) || '').trim()
   const greetingHtml = (preview?.profile.greetingHtml as string) || ''
@@ -596,6 +595,7 @@ export default function CardImportDialog({ file, route, onClose, onImported }: P
                 <textarea
                   className="input mt-1 h-40 resize-y font-[inherit] leading-relaxed"
                   value={about}
+                  maxLength={20000}
                   onChange={(e) => {
                     touched.current.add('about')
                     setAbout(e.target.value)
@@ -604,7 +604,7 @@ export default function CardImportDialog({ file, route, onClose, onImported }: P
               )}
               <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] leading-snug text-[var(--text-3)]">
                 <span>
-                  {aboutText.length} 字。卡里怎么写的就怎么进来 —— 原作的内容不动
+                  {about.length} / 20000 字。按原卡读取，超限会提示截断
                   {aboutZh.trim() ? '；译文只给界面看，喂模型用的永远是原文' : ''}。
                 </span>
                 {zhStale && (

@@ -18,6 +18,8 @@
 ```
 features/
 ├── README.md                 # 本文件（本体仓库收录的唯一文件）
+├── tools/                    # 可选工具运行包与工具适配（独立项目）
+├── autonomous-activity/      # 自主活动与沙盒（独立专家插件仓库）
 ├── desktop-pet/             # Electron 桌面聊天（独立 git 仓库）
 ├── project-costs/           # 项目实付费用、账单导入与人工确认对账（独立 git 仓库）
 ├── dont-starve-together/     # 饥荒联机（独立 git 仓库）
@@ -36,6 +38,12 @@ git init dont-starve-together   # 或 git clone <远端> 进来
 本体仓库的 `.gitignore` 已经写死 `/features/*`（只放行本 README），所以不用担心误提交。
 
 ## 功能怎么接大脑
+
+工具插件（`features/tools`）也是可信本机插件：本体只保留配置与加载接口，不自带工具执行或第三方联网实现。工具中心按插件抽屉展示，联网排第一。
+
+自主活动与沙盒是可信本机插件的另一个例外：实现、界面和沙盒资源全部位于独立项目，
+由本体的通用插件宿主注入本机 SDK，在独立后台进程运行。未安装或未开启专家模式时不开放。
+它与下面仅通过 HTTP 接入的外设不同，需与宿主版本配套；见[专家模式说明](../docs/guides/expert-mode.md)。
 
 2026-10-19 已接入 [共享活动契约](../docs/integrations/feature-memory-api.md)：来源与可见范围分离，新功能通过事件入口加入统一当天经历；统一来源管理在个人记忆库。实现与边界见 [总体方案施工结果](../docs/plans/shared-memory-features-plan.md#六施工结果2026-10-19)。下文带 `feature_id` 隔离的说明描述旧协议，不能作为新 features 必须隔离的要求。
 

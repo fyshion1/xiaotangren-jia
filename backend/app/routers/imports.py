@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import zipfile
 
@@ -169,18 +170,30 @@ async def _openai_events(
         yield {"type": "error", "message": f"连接中途断了（{type(exc).__name__}: {exc}）", "exception": True}
 
 
-async def _with_ping(gen):
+async def _with_ping(gen, interval: float = 15):
     """正文事件 + 每 15 秒一条心跳（模型很久不出字时，别让中间层以为连接死了）。"""
     agen = gen.__aiter__()
-    while True:
-        try:
-            item = await asyncio.wait_for(agen.__anext__(), timeout=15)
-        except StopAsyncIteration:
-            return
-        except TimeoutError:
-            yield "event: ping\ndata: {}\n\n"
-            continue
-        yield item
+    pending = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(agen.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                yield "event: ping\ndata: {}\n\n"
+                continue
+            try:
+                item = pending.result()
+            except StopAsyncIteration:
+                return
+            pending = None
+            yield item
+    finally:
+        if pending is not None:
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                await pending
+        await agen.aclose()
 
 
 @router.post("/tavern-card/extract/stream")
@@ -273,8 +286,10 @@ async def translate_tavern_card_stream(
         ]
         buf: list[str] = []
         failure = ""
+        finish_reason = ""
         async for ev in _openai_events(
-            messages, mdl, url, key, max_tokens=4096, temperature=0.2, stage="translate"
+            messages, mdl, url, key,
+            max_tokens=min(16384, max(4096, len(text) * 2)), temperature=0.2, stage="translate"
         ):
             kind = ev.get("type")
             if kind == "text":
@@ -285,7 +300,17 @@ async def translate_tavern_card_stream(
             elif kind == "error":
                 failure = ev.get("message", "") or "上游没回话"
                 break
+            elif kind == "done":
+                finish_reason = ev.get("finish_reason") or ""
         about_zh = card_import.clean_translation("".join(buf))
+        if not failure and finish_reason == "length":
+            failure = "译文达到上游输出长度限制，当前仅保留部分译文"
+        elif not failure and finish_reason in {"content_filter", "refusal"}:
+            failure = "上游内容过滤或拒绝翻译，当前译文可能不完整"
+        elif not failure and not about_zh:
+            failure = "上游返回了空译文"
+        elif not failure and card_import.untranslated_passages(text, about_zh):
+            failure = "模型保留了大量未翻译的英文原句，当前译文不完整；可重试或切换聊天模型"
         if failure:
             message = f"中文译文没翻成（{failure}）—— 不影响导入，界面继续看原文。"
             yield _sse("error", {"message": message, "aboutZh": about_zh, "skipped": False})
@@ -332,6 +357,8 @@ async def preview_tavern_card(
     # Keep original markup separately: the legacy lightweight preview drops CSS/scripts.
     profile["greetingSource"] = card.get("first_mes", "")
     profile["tavernRegexScripts"] = card.get("display_rules", [])
+    # Retain all original sections even when the merged 20k prompt is truncated.
+    profile["tavernSource"] = card.get("original_card", {})
 
     # 立绘：卡图本身就是立绘 + 头像。落盘走附件管道（正文页 / 会话列表都能自取）。
     if raw[:8] == b"\x89PNG\r\n\x1a\n" or raw[:3] == b"GIF":
@@ -425,10 +452,13 @@ async def translate_tavern_card(
     try:
         reply = await openai.complete_chat_with_retry(
             messages, model=mdl, base_url=url, api_key=key, attempts=3,
-            max_tokens=4096, temperature=0.2)
+            max_tokens=min(16384, max(4096, len(text) * 2)), temperature=0.2)
     except Exception as exc:  # noqa: BLE001
         return {"aboutZh": "", "warnings": [f"中文译文没翻成（{exc}）—— 不影响导入，界面继续看原文。"]}
-    return {"aboutZh": card_import.clean_translation(reply), "warnings": []}
+    translated = card_import.clean_translation(reply)
+    if not translated or card_import.untranslated_passages(text, translated):
+        return {"aboutZh": translated, "warnings": ["中文译文没翻成（空译文或保留了大量英文原句）—— 可重试或切换聊天模型。"]}
+    return {"aboutZh": translated, "warnings": []}
 
 
 @router.post("/tavern-card/commit")
@@ -441,6 +471,8 @@ async def commit_tavern_card(body: CardFieldIn) -> dict:
     if not (body.name or "").strip():
         raise HTTPException(400, "角色得有名字")
     fields = dict(body.fields or {})
+    if len(fields.get("about") or "") > card_import.ABOUT_LIMIT:
+        raise HTTPException(400, "角色介绍最多 20000 字，请缩短后再导入；原卡可单独保留。")
     fields["name"] = body.name.strip()
     fields["imported"] = True
     # 带格式的预览按**最终**的 about / greeting 重算：用户在预览里改过字，预览要跟着改。

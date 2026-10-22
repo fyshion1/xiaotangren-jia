@@ -261,6 +261,7 @@ def _tx() -> Iterator[sqlite3.Connection]:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """老库补列（幂等）。新库走 _SCHEMA 已有这些列，这里只兜底。"""
+    conn.execute("DELETE FROM feature_feed WHERE feature_id = 'bilibili_scout'")
     message_cols = {r['name'] for r in conn.execute('PRAGMA table_info(messages)')}
     if 'frames' not in message_cols:
         conn.execute("ALTER TABLE messages ADD COLUMN frames TEXT NOT NULL DEFAULT '[]'")
@@ -384,6 +385,17 @@ def init_db() -> None:
             "INSERT INTO characters (id, data) VALUES (?, ?) ON CONFLICT(id) DO NOTHING",
             [(c["id"], json.dumps(c, ensure_ascii=False)) for c in SEED_CHARACTERS],
         )
+        # 旧部署只补缺失图片键；显式清空或自定义的图片属于用户编辑，保持原样。
+        for seed in SEED_CHARACTERS:
+            row = conn.execute("SELECT data FROM characters WHERE id = ?", (seed["id"],)).fetchone()
+            if row is None:
+                continue
+            data = json.loads(row["data"])
+            missing = {key: seed[key] for key in ("avatar", "portrait") if key in seed and key not in data}
+            if missing:
+                data.update(missing)
+                conn.execute("UPDATE characters SET data = ? WHERE id = ?",
+                             (json.dumps(data, ensure_ascii=False), seed["id"]))
         # 大老大先从 characters 抬出来（老库升级路径），再补种 profiles。
         _migrate_dalaoda(conn)
         # 个人档案（§22）同样逐条补种，且尊重删除墓碑：用户删掉的档案不会被种子复活。

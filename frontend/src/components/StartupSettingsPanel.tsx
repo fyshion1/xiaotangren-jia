@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
+import { useExpertMode } from '../lib/expertMode'
 
-type StartupSettings = { backend: boolean; frontend: boolean; qq_bridge: boolean; desktop_pet: boolean }
+type StartupSettings = { backend: boolean; frontend: boolean; qq_bridge: boolean; desktop_pet: boolean; autonomous_activity: boolean }
 
 const options: { key: keyof StartupSettings; label: string; detail: string }[] = [
   { key: 'backend', label: '后端大脑', detail: '聊天、记忆和功能连接所需的基础服务。' },
   { key: 'frontend', label: '前端页面', detail: '提供电脑和局域网可访问的小窝页面。' },
   { key: 'qq_bridge', label: 'QQ 桥与网关', detail: '按已有账号配置连接 QQ；需要后端。' },
+  { key: 'autonomous_activity', label: '自主活动插件', detail: '仅已安装且专家模式开启时启动；活动仍需要自行启用。' },
   { key: 'desktop_pet', label: '桌宠', detail: '启动桌面人物与聊天气泡；需要后端。' },
 ]
 
@@ -17,6 +19,7 @@ async function request(url: string, init?: RequestInit) {
 }
 
 export default function StartupSettingsPanel() {
+  const expert = useExpertMode()
   const [settings, setSettings] = useState<StartupSettings | null>(null)
   const [managed, setManaged] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -33,8 +36,8 @@ export default function StartupSettingsPanel() {
     setSettings(current => {
       if (!current) return current
       const next = { ...current, [key]: enabled }
-      if (key === 'backend' && !enabled) { next.qq_bridge = false; next.desktop_pet = false }
-      if ((key === 'qq_bridge' || key === 'desktop_pet') && enabled) next.backend = true
+      if (key === 'backend' && !enabled) { next.qq_bridge = false; next.desktop_pet = false; next.autonomous_activity = false }
+      if ((key === 'qq_bridge' || key === 'desktop_pet' || key === 'autonomous_activity') && enabled) next.backend = true
       return next
     })
     setNotice('')
@@ -51,11 +54,11 @@ export default function StartupSettingsPanel() {
   }
   return <section className="space-y-4" aria-label="启动与退出">
     <div className="nest-room-heading"><div><h2>启动与退出</h2>
-      <p>勾选下次双击 BAT 时启动的服务，初次默认全部开启。保存不会改变当前运行状态。</p>
+      <p>勾选下次双击 BAT 时启动的服务。普通模式自动启动已安装的常规服务；自主活动插件需单独勾选。保存不会改变当前运行状态。</p>
     </div></div>
     <p className="text-sm">关闭总启动窗口，会一起关闭后端、前端、QQ 桥、网关、桌宠，以及从小窝启动的其他功能。</p>
     {!managed && <p role="status" className="text-sm">当前后端未由总启动器管理。下次使用 start.bat 启动后，关闭窗口即可统一退出。</p>}
-    {settings && <div className="divide-y divide-[var(--border)]">{options.map(option =>
+    {settings && <div className="divide-y divide-[var(--border)]">{options.filter(option => option.key !== 'autonomous_activity' || expert.autonomy_installed).map(option =>
       <label key={option.key} className="flex cursor-pointer items-start gap-3 py-3">
         <input type="checkbox" className="mt-1" checked={settings[option.key]} disabled={busy}
           onChange={e => change(option.key, e.target.checked)} />

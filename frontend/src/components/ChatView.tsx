@@ -1,3 +1,5 @@
+import { useExpertMode } from '../lib/expertMode'
+import NetworkAccess from './NetworkAccess'
 import { useTavernMode } from '../lib/tavernMode'
 import KnowledgeText from './KnowledgeText'
 import {useDesignChoice} from '../visual/designChoices'
@@ -6,9 +8,10 @@ import UiIcon from '../visual/UiIcon'
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import type { ChatMessage } from '../data/chats'
-import { buildSessions, personaSessionId, personasAsCast, suggestionsFor, MAIN_PERSONA_ID, SELF_CHARACTER_ID } from '../data/chats'
+import { buildSessions, personaSessionId, personasAsCast, MAIN_PERSONA_ID, SELF_CHARACTER_ID } from '../data/chats'
 import { activeFormId, listForms } from '../lib/forms'
 import SessionList from './SessionList'
+import ChatAttachmentImage from './ChatAttachmentImage'
 import CardImportDialog from './CardImportDialog'
 import CardChatMessage from './CardChatMessage'
 import StatusSidebar from './StatusSidebar'
@@ -36,13 +39,13 @@ import { proposeMemory } from '../api/memoryWorkflow'
 import { mergeStoredMessages } from '../lib/messageMerge'
 import { streamSSE } from '../api/stream'
 import { starImage } from '../api/gallery'
-import { fetchSettings, saveSettings } from '../api/client'
+import { fetchSettings, saveSettings, fetchNestBrainDefault } from '../api/client'
 import { ownerOf } from '../lib/owner'
 import VoiceCallPanel from './VoiceCallPanel'
 import ToolCenter, { ToolActivity, ToolDialog, ToolEntry } from './ToolCenter'
 import type { AgentEvent } from '../api/tools'
 
-// 模型通道（§7）：常规 = 商业 API；无审查 = 另配的中转 / 本地无审查模型。
+// 提示词通道：模型来源始终使用小窝大脑。
 export type Channel = 'normal' | 'uncensored'
 
 export type ModelConfig = {
@@ -50,6 +53,8 @@ export type ModelConfig = {
   apiKey: string
   chatModel: string
   visionModel: string
+  visionBaseUrl?: string
+  visionApiKey?: string
   imageModel: string
   imageBaseUrl: string
   maxTokens: number // 单条回复 token 上限，0 = 不限制
@@ -72,10 +77,10 @@ export type ModelConfig = {
 export const DEFAULT_VISION_PROMPT = '（这是一张发给你的图片）请看图回答。'
 
 const DEFAULT_CONFIG: ModelConfig = {
-  baseUrl: 'https://vsllm.cc/v1',
+  baseUrl: '',
   apiKey: '',
-  chatModel: 'gemini-3.8-flash',
-  visionModel: 'gemini-3.8-flash',
+  chatModel: '',
+  visionModel: '',
   imageModel: '',
   imageBaseUrl: '',
   maxTokens: 6000,
@@ -98,9 +103,9 @@ export function resolveRoute(c: ModelConfig) {
       model: (on && c.uncensoredChatModel) || c.chatModel,
     },
     vision: {
-      baseUrl: (on && c.uncensoredBaseUrl) || c.baseUrl,
-      apiKey: (on && c.uncensoredApiKey) || c.apiKey,
-      model: (on && c.uncensoredVisionModel) || c.visionModel,
+      baseUrl: c.visionBaseUrl || c.baseUrl,
+      apiKey: c.visionApiKey || c.apiKey,
+      model: c.visionModel,
     },
   }
 }
@@ -109,52 +114,16 @@ export function resolveRoute(c: ModelConfig) {
 const NAME_MARKER = /^\s*(\*\*([^*\n]+?)\*\*|【([^】\n]+?)】)\s*[:：]?/
 
 const STORAGE_KEY = 'xiaotangren.config'
-const API_PROFILES_KEY = 'xiaotangren.api-profiles'
-type ApiProfile = { id: string; name: string; config: ModelConfig }
-const loadApiProfiles = (): ApiProfile[] => { try { return JSON.parse(localStorage.getItem(API_PROFILES_KEY) || '[]') } catch { return [] } }
-
 // 每页条数（§15.2：启动预载最近 30 条，向上滚再按游标拉）
 const PAGE_SIZE = 30
 
 function loadConfig(): ModelConfig {
+  // Ignore retired browser API profiles, URLs, keys and model names.
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const prev = JSON.parse(raw)
-      // 中转可以随时换（vsllm / moyuu / 以后别的），所以只清理「旧模型名」：本地若还存着
-      // 已下线的模型，只把「命中陈旧」的那条通道清回默认，保留另一条通道已配好的值。
-      const staleModel = (m?: string) => m === 'gemini-3.6-flash'
-      const cleaned = { ...DEFAULT_CONFIG, ...prev } as ModelConfig
-      // 旧版默认 800 会截断多人回复；仅迁移一次，之后用户仍可自行设回。
-      if (!prev.replyLengthVersion && prev.maxTokens === 800) cleaned.maxTokens = DEFAULT_CONFIG.maxTokens
-      cleaned.replyLengthVersion = 1
-      if (!prev.replyLengthVersion) localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...cleaned, replyLengthVersion: 1 }))
-      // 老配置里没有「注入条数」（§27）这个字段：补上默认值，别让旧用户吃到 undefined。
-      if (typeof prev.historyLimit !== 'number' || !Number.isFinite(prev.historyLimit)) {
-        cleaned.historyLimit = DEFAULT_CONFIG.historyLimit
-      }
-      if (staleModel(prev.chatModel) || staleModel(prev.visionModel)) {
-        // 常规通道命中陈旧 → 清回默认，但保留无审查通道与通道选择
-        cleaned.baseUrl = DEFAULT_CONFIG.baseUrl
-        cleaned.chatModel = DEFAULT_CONFIG.chatModel
-        cleaned.visionModel = DEFAULT_CONFIG.visionModel
-        cleaned.imageBaseUrl = ''
-        cleaned.imageModel = ''
-      }
-      if (staleModel(prev.uncensoredChatModel) || staleModel(prev.uncensoredVisionModel)) {
-        cleaned.uncensoredBaseUrl = ''
-        cleaned.uncensoredChatModel = ''
-        cleaned.uncensoredVisionModel = ''
-      }
-      return cleaned
-    }
-  } catch {
-    /* ignore */
-  }
-  return DEFAULT_CONFIG
+    const previous = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+    return { ...DEFAULT_CONFIG, channel: previous.channel === 'uncensored' ? 'uncensored' : 'normal' }
+  } catch { return { ...DEFAULT_CONFIG } }
 }
-
-
 
 // ---- 平滑流式：把后端按「块」吐字缓存下来，再按固定节拍逐字/双字渲染，做出「流水」打字机 ----
 function createSmartStream(onChunk: (t: string) => void, emitEveryMs = 24) {
@@ -204,15 +173,6 @@ function RememberButton({ done, onClick }: { done: boolean; onClick: () => void 
     >
       {done ? '🧠 待审核' : '🧠 收入候选'}
     </button>
-  )
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="eyebrow mb-0.5 block">{label}</span>
-      {children}
-    </label>
   )
 }
 
@@ -381,7 +341,7 @@ type VoiceOption = { id: string; name: string }
 type EngineOption = { id: string; name: string; desc?: string; available: boolean }
 
 // 手机端底部 Tab（桌面端不用）。§28 起「设置」也是一栏 —— 电脑端聊天顶栏右边那一排
-// 功能（成员 / 提示词 / 通话 / 自动记忆 / 画廊 / 删除 / 记忆 / 生成 / 模型设置 / 通道）
+// 功能（成员 / 提示词 / 通话 / 自动记忆 / 画廊 / 删除 / 记忆 / 生成 / 通道）
 // 全部搬进这一栏，手机顶栏不再单独开抽屉。
 type MobileTab = 'sessions' | 'chat' | 'settings' | 'status'
 
@@ -389,6 +349,7 @@ type MobileTab = 'sessions' | 'chat' | 'settings' | 'status'
 // 参照图里 QQ 那排是细线图标；emoji 直接渲染在不同系统上胖瘦差太多、
 // 跟旁边的线性图标不是一套。所以表情这颗手写 SVG，其余继续用 emoji（本来就是彩色的）。
 export default function ChatView({ characters, personas = [], activePersona, initialSessionId, initialMobileTab, onOpenProfile, onOpenSelf, onOpenNest, onSwitchForm, onTitleChange, onRefreshCharacters, onDeleteImportedCard }: Props) {
+  const expert = useExpertMode()
   const [tavernMode] = useTavernMode()
   const [cardDisplayMode, setCardDisplayMode] = useState<'chat' | 'html'>(() => localStorage.getItem('xtr.card-display-mode') === 'html' ? 'html' : 'chat')
   const changeCardDisplayMode = (mode: 'chat' | 'html') => {
@@ -433,12 +394,13 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   useEffect(() => {
     let cancelled = false
     setLifeSessions([])
+    if (!expert.enabled || !expert.autonomy_installed) return
     const refresh = () => { void fetch('/api/exploration-projects/conversations?persona=' + encodeURIComponent(activePersonaId))
       .then(r => r.ok ? r.json() : Promise.reject()).then(v => { if (!cancelled) setLifeSessions(v.items) }).catch(() => {}) }
     refresh()
     const timer = window.setInterval(refresh, 15000)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [activePersonaId])
+  }, [activePersonaId, expert.enabled, expert.autonomy_installed])
   const sessions = useMemo(() => [...buildSessions(visibleCharacters, [], roster).filter(s => tavernMode || !visibleCharacters.find(c => s.kind === 'single' && c.id === s.characterIds[0])?.imported), ...lifeSessions], [visibleCharacters, roster, lifeSessions, tavernMode])
   const [activeId, setActiveId] = useState<string>(initialSessionId ?? sessions[0]?.id ?? 'group')
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0]
@@ -479,7 +441,18 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   useEffect(() => () => { streamController.current?.abort() }, [sessionKey])
   const [voiceCallOpen, setVoiceCallOpen] = useState(false)
   const [config, setConfig] = useState<ModelConfig>(loadConfig)
-  // 当前通道解析出的实际上游（留空字段回退常规通道）——渲染期算一次，各处复用
+  useEffect(() => {
+    let live = true
+    void fetchNestBrainDefault().then(({ config: brain }) => {
+      if (!brain || typeof brain !== 'object') throw new Error('小窝大脑配置响应无效')
+      if (live) setConfig(current => ({ ...current, baseUrl: brain.base_url || '', apiKey: brain.api_key || '',
+        chatModel: brain.model || '', visionModel: brain.vision_model || '',
+        visionBaseUrl: brain.vision_base_url || brain.base_url || '',
+        visionApiKey: brain.vision_api_key || brain.api_key || '' }))
+    }).catch(() => { if (live) setErrorText('无法读取小窝大脑配置，请检查后端连接。') })
+    return () => { live = false }
+  }, [])
+  // 所有上游来自小窝大脑；通道开关只控制提示词，不切换另一份模型来源。
   const route = resolveRoute(config)
 
   /**
@@ -500,13 +473,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     },
     [config.historyLimit],
   )
-  const [showSettings, setShowSettings] = useState(false)
-  const [apiProfiles, setApiProfiles] = useState<ApiProfile[]>(loadApiProfiles)
-  const [profileName, setProfileName] = useState('')
-  const saveProfile = () => { if (!profileName.trim()) return; const next = [...apiProfiles, { id: crypto.randomUUID(), name: profileName.trim(), config }]; setApiProfiles(next); localStorage.setItem(API_PROFILES_KEY, JSON.stringify(next)); setProfileName('') }
-  const activateProfile = (p: ApiProfile) => saveConfig(p.config)
-  const [showKey, setShowKey] = useState(false)
-  const [showUncensoredKey, setShowUncensoredKey] = useState(false)
   const [errorText, setErrorText] = useState('')
   const [waitNotice, setWaitNotice] = useState('')
   // 轻提示（占位功能如实说明「规划中」，不弹假功能）
@@ -573,6 +539,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   )
   const [autoSpeak] = useState(false)
   const [suggestionsEnabled, setSuggestionsEnabled] = useState(() => {try {return localStorage.getItem('xtr.visual.suggestions-enabled') !== 'false'} catch {return true}})
+  const [replySuggestions, setReplySuggestions] = useState<Record<string, string[]>>({})
   const [playingKey, setPlayingKey] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const playTokenRef = useRef(0)
@@ -793,7 +760,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
   const saveConfig = useCallback((c: ModelConfig) => {
     setConfig(c)
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(c))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ channel: c.channel }))
   }, [])
 
   const push = useCallback((id: string, msg: ChatMessage) => {
@@ -1057,6 +1024,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       setToolEvents(prev => ({ ...prev, [sid]: [] }))
       setStreaming(true)
       setWaitNotice('')
+      setReplySuggestions(prev => ({ ...prev, [sid]: [] }))
       push(sid, { role: 'assistant', content: '' })
       const acc = { value: '' }
       const q = createSmartStream((t) => {
@@ -1075,9 +1043,10 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         base_url: body.base_url, api_key: body.api_key, model: body.model,
         uncensored: body.uncensored, max_tokens: body.max_tokens, auto_memory: autoMemory,
         card_display_mode: tavernMode ? cardDisplayMode : undefined,
+        reply_suggestions: suggestionsEnabled,
         memory_model: localStorage.getItem('xtr.memoryModel') || '',
         history_end_id: body.history_end_id || '',
-      } : { ...body, card_display_mode: tavernMode ? cardDisplayMode : undefined }
+      } : { ...body, card_display_mode: tavernMode ? cardDisplayMode : undefined, reply_suggestions: suggestionsEnabled }
       await streamSSE(
         unified ? '/api/chat/session/web-stream' : endpoint,
         requestBody,
@@ -1101,6 +1070,12 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         },
         (context) => setSentContexts((prev) => ({ ...prev, [sid]: context })),
         { signal: controller.signal, onEvent: (type, payload) => {
+          if (type === 'done') {
+            const choices = Array.isArray(payload.reply_suggestions) ? payload.reply_suggestions
+              .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+              .map(value => value.trim().slice(0, 60)) : []
+            setReplySuggestions(prev => ({ ...prev, [sid]: [...new Set(choices)].slice(0, 3) }))
+          }
           if (type === 'status' && typeof payload.text === 'string') setWaitNotice(payload.text)
           if (type === 'token') setWaitNotice('正在接收回复…')
           if (type.startsWith('tool_') || type.startsWith('agent_')) {
@@ -1110,7 +1085,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       )
       if (streamController.current === controller) streamController.current = null
     },
-    [push, appendAssistantToken, appendAssistantError, finalizeAssistant, persistLast, autoSpeak, autoMemory, autoExtract, speakText, active, tavernMode, cardDisplayMode],
+    [push, appendAssistantToken, appendAssistantError, finalizeAssistant, persistLast, autoSpeak, autoMemory, autoExtract, speakText, active, tavernMode, cardDisplayMode, suggestionsEnabled],
   )
 
   type PendingMedia = { file: File; url: string; frames: string[]; analyzing: boolean; error?: string }
@@ -1527,7 +1502,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     [onDeleteImportedCard, activeId],
   )
 
-  const suggestions = active ? suggestionsFor(active) : []
+  const suggestions = active ? replySuggestions[sessionKey] || [] : []
   useEffect(() => { onTitleChange?.(active?.name || '信息') }, [active?.name, onTitleChange])
 
   if (!active) return null
@@ -1617,7 +1592,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           {active.kind === 'single' && !active.sandbox && !active.readOnly && <button type="button" aria-label="语音通话" title="和她语音通话" disabled={streaming} onClick={openVoiceCall} className="shrink-0 rounded-full p-2 text-[var(--pink-deep)] disabled:opacity-40"><UiIcon name="phone" size={20}/></button>}
           <div className="chat-primary-actions" aria-label="常用聊天功能">
             <button type="button" title={active.kind==='group' ? '改群聊成员' : '查看当前成员'} aria-label="成员" onClick={() => active.kind==='group' ? setRosterOpen(true) : setNotice('当前成员：'+activeCharacters.map(c=>c.name).join('、'))}><UiIcon name="characters" size={17}/><span>成员</span>{active.kind==='group'&&<small>{active.characterIds.length}</small>}</button>
-            <button type="button" aria-label="模型设置" disabled={active.sandbox} title={active.sandbox ? "请到小窝设置中的自主活动与沙盒配置独立钱包" : undefined} aria-expanded={showSettings} onClick={() => setShowSettings(v=>!v)}><UiIcon name="settings" size={17}/><span>模型设置</span></button>
             <button type="button" aria-label="提示词" disabled={active.sandbox} title="查看当前提示词，不消耗 token" onClick={() => setPromptOpen(true)}><UiIcon name="search" size={17}/><span>提示词</span></button>
             <button type="button" aria-label="无审查" disabled={active.sandbox} title={config.channel==='uncensored'?'无审查通道已启用；点击切回常规':'点击切换到无审查通道'} aria-pressed={config.channel==='uncensored'} onClick={() => saveConfig({...config,channel:config.channel==='uncensored'?'normal':'uncensored'})}><UiIcon name={config.channel==='uncensored'?'unlock':'lock'} size={17}/><span>无审查</span></button>
           </div>
@@ -1663,198 +1637,6 @@ export default function ChatView({ characters, personas = [], activePersona, ini
 
           </div></details>
         </header>
-
-        {showSettings && (
-          <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
-            <div className="mb-3 rounded-xl border border-[var(--border)] p-3"><div className="mb-2 text-[12px] font-semibold">API 快速切换</div><div className="flex flex-wrap gap-2">{apiProfiles.map(p => <button className="btn ghost sm" key={p.id} onClick={() => activateProfile(p)}>{p.name}</button>)}<input className="input max-w-[220px]" placeholder="新配置名称" value={profileName} onChange={e => setProfileName(e.target.value)} /><button className="btn sm" disabled={!profileName.trim()} onClick={saveProfile}>保存当前配置</button></div></div>
-            <div className="eyebrow mb-1.5">模型来源（存入本地浏览器，不下发）</div>
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-              <Field label="Base URL（OpenAI 兼容 /v1）">
-                <input className="input" value={config.baseUrl} onChange={(e) => setConfig({ ...config, baseUrl: e.target.value })} placeholder="https://api.openai.com/v1" />
-              </Field>
-              <Field label="API Key（点右侧眼睛看明文）">
-                <div className="flex items-center gap-1">
-                  <input
-                    className="input"
-                    type={showKey ? 'text' : 'password'}
-                    value={config.apiKey}
-                    onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
-                    placeholder="留空 = 用服务端 .env 里的 key"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowKey((v) => !v)}
-                    title={showKey ? '隐藏' : '显示明文'}
-                    className="shrink-0 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-2 py-1.5 text-[13px] text-[var(--text-2)] hover:border-[var(--pink)]"
-                  >
-                    {showKey ? '🙈' : '👁'}
-                  </button>
-                </div>
-              </Field>
-              <Field label="聊天模型（chat）">
-                <input className="input" value={config.chatModel} onChange={(e) => setConfig({ ...config, chatModel: e.target.value })} placeholder="gpt-4o-mini" />
-              </Field>
-              <Field label="看图模型（vision）">
-                <input className="input" value={config.visionModel} onChange={(e) => setConfig({ ...config, visionModel: e.target.value })} placeholder="gpt-4o-mini" />
-              </Field>
-              <Field label="生图模型（image，留空 = 未配置）">
-                <input className="input" value={config.imageModel} onChange={(e) => setConfig({ ...config, imageModel: e.target.value })} placeholder="如 flux / dall-e-3" />
-              </Field>
-              <Field label="生图地址（留空 = 同 Base URL）">
-                <input className="input" value={config.imageBaseUrl} onChange={(e) => setConfig({ ...config, imageBaseUrl: e.target.value })} placeholder="https://xxx/v1" />
-              </Field>
-              <Field label="单条回复最高 token（0 = 不限制）">
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  step={64}
-                  value={config.maxTokens}
-                  onChange={(e) => {
-                    const n = Number(e.target.value)
-                    setConfig({ ...config, maxTokens: Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0 })
-                  }}
-                  placeholder="800"
-                />
-              </Field>
-              <div className="text-[11px] leading-snug text-[var(--text-3)] md:col-span-2">
-                限制模型单次最多回复多少 token，可让群聊各位都别一回一大段；0 = 不设上限。
-              </div>
-              <Field label="注入的最近消息条数（§27）">
-                <div className="flex items-center gap-1.5">
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    step={5}
-                    value={config.historyLimit}
-                    onChange={(e) => {
-                      const n = Number(e.target.value)
-                      setConfig({ ...config, historyLimit: Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0 })
-                    }}
-                    placeholder="20"
-                  />
-                  {[
-                    [10, '10'],
-                    [20, '20'],
-                    [50, '50'],
-                    [0, '不限制'],
-                  ].map(([v, text]) => (
-                    <button
-                      key={String(v)}
-                      type="button"
-                      onClick={() => setConfig({ ...config, historyLimit: Number(v) })}
-                      className={`shrink-0 rounded-lg border px-2 py-1.5 text-[12px] transition ${
-                        config.historyLimit === v
-                          ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
-                          : 'border-[var(--border-strong)] text-[var(--text-2)] hover:border-[var(--pink)]'
-                      }`}
-                    >
-                      {text}
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <div className="text-[11px] leading-snug text-[var(--text-3)] md:col-span-2">
-                每次发给模型的只有<strong>最近这几条</strong>聊天记录（越少越省 token，但她也越容易忘掉早些说过的话）；
-                0 = 把已载入的全发过去。只截断发出去的副本 —— 界面上的聊天记录一条不少。
-                看图的轮次不带历史，这项对它无效。
-              </div>
-              <div className="md:col-span-2">
-                <Field label="看图提示词（发图时附在图片前的那句话）">
-                  <textarea
-                    className="textarea"
-                    rows={2}
-                    value={config.visionPrompt ?? DEFAULT_VISION_PROMPT}
-                    onChange={(e) => setConfig({ ...config, visionPrompt: e.target.value })}
-                    placeholder={DEFAULT_VISION_PROMPT}
-                  />
-                </Field>
-                <div className="mt-1 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setConfig({ ...config, visionPrompt: DEFAULT_VISION_PROMPT })}
-                    className="text-[11px] text-[var(--text-3)] hover:text-[var(--pink-deep)]"
-                  >
-                    ↺ 恢复默认
-                  </button>
-                  <span className="text-[11px] text-[var(--text-3)]">
-                    留空 = 用默认那句。粘图（Ctrl+V）与 <UiIcon name="gallery"/> 按钮都走这里。
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* 无审查通道（§7）：与常规通道各自独立；留空字段自动沿用常规通道 */}
-            <div className="mt-3 border-t border-[var(--border)] pt-3">
-              <div className="mb-1.5 flex items-center gap-2">
-                <span className="eyebrow"><UiIcon name="unlock"/> 无审查通道</span>
-                <span className="text-[11px] text-[var(--text-3)]">留空 = 沿用上面常规通道的值</span>
-              </div>
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                <Field label="Base URL（无审查 · 留空 = 同常规）">
-                  <input
-                    className="input"
-                    value={config.uncensoredBaseUrl}
-                    onChange={(e) => setConfig({ ...config, uncensoredBaseUrl: e.target.value })}
-                    placeholder="https://xxx/v1（中转 / 本地 Ollama）"
-                  />
-                </Field>
-                <Field label="API Key（无审查 · 留空 = 同常规）">
-                  <div className="flex items-center gap-1">
-                    <input
-                      className="input"
-                      type={showUncensoredKey ? 'text' : 'password'}
-                      value={config.uncensoredApiKey}
-                      onChange={(e) => setConfig({ ...config, uncensoredApiKey: e.target.value })}
-                      placeholder="留空 = 用常规通道的 key"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowUncensoredKey((v) => !v)}
-                      title={showUncensoredKey ? '隐藏' : '显示明文'}
-                      className="shrink-0 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-2 py-1.5 text-[13px] text-[var(--text-2)] hover:border-[var(--pink)]"
-                    >
-                      {showUncensoredKey ? '🙈' : '👁'}
-                    </button>
-                  </div>
-                </Field>
-                <Field label="聊天模型（无审查 · 留空 = 同常规）">
-                  <input
-                    className="input"
-                    value={config.uncensoredChatModel}
-                    onChange={(e) => setConfig({ ...config, uncensoredChatModel: e.target.value })}
-                    placeholder="如 grok-4.7 / 本地 abliterated 模型"
-                  />
-                </Field>
-                <Field label="看图模型（无审查 · 留空 = 同常规）">
-                  <input
-                    className="input"
-                    value={config.uncensoredVisionModel}
-                    onChange={(e) => setConfig({ ...config, uncensoredVisionModel: e.target.value })}
-                    placeholder="留空 = 同上"
-                  />
-                </Field>
-                <div className="text-[11px] leading-snug text-[var(--text-3)] md:col-span-2">
-                  顶部「常规 / <UiIcon name="unlock"/> 无审查」切换当前生效的通道。无审查通道可另配第三方无审查中转或本地模型；
-                  越狱提示词在右栏「越狱规则」里，无审查通道会额外追加专属预设。
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-2 flex justify-end">
-              <button
-                onClick={() => {
-                  saveConfig(config)
-                  setShowSettings(false)
-                }}
-                className="btn sm mr-2"
-              >
-                保存并关闭
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* 错误横幅：模型没反应 / 上游报错时，直接显示原因，方便排查 */}
         {errorText && (
@@ -2183,7 +1965,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                           onClick={() => m.imageOrig && setLightbox(m.imageOrig)}
                           title={m.imageOrig ? '点开看原图' : '原图已清理，仅存缩略图'}
                         >
-                          <img src={m.image} alt="图片" className="max-h-48 rounded-lg" />
+                          <ChatAttachmentImage image={m.image} imageOrig={m.imageOrig} imageSource={m.imageSource} />
                         </button>
                         <button
                           type="button"
@@ -2291,7 +2073,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
         </div>
 
         {/* 收起即停用候选；后续生成请求必须由 suggestionsEnabled 控制。 */}
-        {!active?.sandbox && !active?.readOnly && !active?.memoryDisabled && <ToolEntry personaId={activePersonaId} onOpen={() => setToolCenterOpen(true)} />}
+        {!active?.sandbox && !active?.readOnly && !active?.memoryDisabled && <><NetworkAccess channel="core"/>{expert.enabled && <ToolEntry personaId={activePersonaId} onOpen={() => setToolCenterOpen(true)} />}</>}
         <ToolActivity events={toolEvents[sessionKey] || []} />
         {streaming && <div className="tool-entry-bar" role="status"><span>{waitNotice || '正在处理本轮消息…'}</span><button type="button" onClick={() => streamController.current?.abort()}>停止本轮</button></div>}
         {!active?.sandbox && !active?.readOnly && <section className="reply-suggestions composer-suggestions" aria-label="候选回复" data-enabled={suggestionsEnabled}>
@@ -2361,7 +2143,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       </section>
 
       {/* 手机端「设置」栏（§28）：电脑端聊天顶栏右边那一排功能（成员 / 提示词 / 通话 /
-          自动记忆 / 画廊 / 删除 / 记忆 / 生成 / 模型设置 / 通道）整块搬进来。
+          自动记忆 / 画廊 / 删除 / 记忆 / 生成 / 通道）整块搬进来。
           只加 md:hidden —— 桌面端顶栏已有同样一套，不重复铺。 */}
       <section className={`flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--bg-soft)] md:hidden ${tabCls('settings')}`}>
         <div className="mobile-settings overflow-y-auto px-4 py-4">
@@ -2419,18 +2201,10 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               >
                 <span className="text-[16px]"><UiIcon name="memory"/></span>记忆
               </button>
-
-              <button
-                className={`status-action ${showSettings ? 'on' : ''}`}
-                disabled={active.sandbox} onClick={() => { setShowSettings(true); setMobileTab('chat') }}
-                title="模型设置：Base URL / Key / 模型 / 单条回复上限 / 看图提示词"
-              >
-                <span className="text-[16px]"><UiIcon name="settings"/></span>模型设置
-              </button>
             </div>
           </div>
 
-          {/* 通道切换（§7）：常规 = 商业 API；无审查 = 另配的无审查中转/本地模型 */}
+          {/* 通道切换（§7）：仅切换提示词预设，模型来源统一使用小窝大脑 */}
           <div className="mobile-settings-card mt-3">
             <span className="eyebrow">通道</span>
             <div className="flex gap-1.5">
@@ -2438,7 +2212,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 <button
                   key={ch}
                   onClick={() => saveConfig({ ...config, channel: ch })}
-                  title={ch === 'normal' ? '常规通道（商业 API）' : '无审查通道（中转 / 本地无审查模型）'}
+                  title={ch === 'normal' ? '常规提示词' : '无审查提示词（沿用小窝大脑）'}
                   className={`flex-1 rounded-lg border px-2 py-1.5 text-[12px] transition ${
                     config.channel === ch
                       ? 'border-[var(--pink)] bg-[var(--pink)] text-white'
@@ -2483,7 +2257,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       </aside>
 
       {/* 音色选择浮层：先选引擎，后选音色 */}
-      {toolCenterOpen && <ToolDialog onClose={() => setToolCenterOpen(false)}><ToolCenter personaId={activePersonaId} sessionId={sessionKey} onExample={text => { setInput(text); setToolCenterOpen(false) }} /></ToolDialog>}
+      {expert.enabled && toolCenterOpen && <ToolDialog onClose={() => setToolCenterOpen(false)}><ToolCenter personaId={activePersonaId} sessionId={sessionKey} onExample={text => { setInput(text); setToolCenterOpen(false) }} /></ToolDialog>}
       {voiceCallOpen && active?.kind === 'single' && <VoiceCallPanel
         key={`${sessionKey}:voice`}
         name={activeCharacters[0]?.name || '小糖人'}
@@ -2660,6 +2434,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           baseUrl={buildOutbound(messages).some((m) => m.images.length) ? route.vision.baseUrl : route.chat.baseUrl}
           maxTokens={config.maxTokens || null}
           cardDisplayMode={tavernMode ? cardDisplayMode : undefined}
+          replySuggestions={suggestionsEnabled}
           messages={buildOutbound(messages)}
           uncensored={config.channel === 'uncensored'}
         />

@@ -9,6 +9,7 @@
 """
 
 import base64
+import asyncio
 import json
 import struct
 import tempfile
@@ -89,6 +90,30 @@ def png_with_card(card: dict, keyword: str = "chara", style: str = "text") -> by
 
 
 # ---- 读卡 ----
+
+
+class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
+    async def test_heartbeat_does_not_cancel_slow_model(self):
+        async def slow():
+            await asyncio.sleep(0.04)
+            yield 'model result'
+        stream = imports._with_ping(slow(), interval=0.005)
+        chunks = [chunk async for chunk in stream]
+        self.assertTrue(any('event: ping' in chunk for chunk in chunks))
+        self.assertEqual(chunks[-1], 'model result')
+
+    async def test_closing_stream_cancels_pending_model(self):
+        closed = asyncio.Event()
+        async def slow():
+            try:
+                await asyncio.sleep(30)
+                yield 'unexpected'
+            finally:
+                closed.set()
+        stream = imports._with_ping(slow(), interval=0.005)
+        self.assertIn('event: ping', await anext(stream))
+        await stream.aclose()
+        self.assertTrue(closed.is_set())
 
 
 class ReadCardTests(unittest.TestCase):
@@ -180,7 +205,7 @@ class BuildAboutTests(unittest.TestCase):
     def test_blank_card_yields_nothing(self):
         about, warnings = card_import.build_about({"description": "", "personality": "  "})
         self.assertEqual(about, "")
-        self.assertEqual(warnings, [])
+        self.assertTrue(any("未找到角色介绍" in w for w in warnings))
 
     def test_overlong_section_is_truncated_and_reported(self):
         """超长只截断 + 如实提醒（回原卡看全文），不悄悄改写内容。"""
@@ -189,7 +214,38 @@ class BuildAboutTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("已截断", warnings[0])
         self.assertTrue(about.endswith("…"))
-        self.assertEqual(about.count("字"), card_import.SECTION_LIMIT)
+        self.assertEqual(len(about), 20000)
+
+    def test_description_over_old_limit_is_preserved(self):
+        body = '人设' * 9000
+        about, warnings = card_import.build_about({'description': body})
+        self.assertIn(body, about)
+        self.assertEqual(warnings, [])
+
+    def test_combined_sections_share_twenty_thousand_character_budget(self):
+        about, warnings = card_import.build_about({
+            'description': '甲' * 14000, 'personality': '乙' * 14000,
+        })
+        self.assertEqual(len(about), 20000)
+        self.assertIn('甲' * 14000, about)
+        self.assertEqual(len(warnings), 1)
+
+    def test_lore_and_other_setting_fields_fill_missing_description(self):
+        card = card_import.read_card(json.dumps({'spec': 'chara_card_v3', 'data': {
+            'name': 'Hidden', 'description': '', 'system_prompt': '系统人设',
+            'extensions': {'depth_prompt': {'prompt': '深度人设'}},
+            'character_book': {'entries': [
+                {'comment': '外貌', 'content': '银发蓝眼', 'enabled': True},
+                {'content': '禁用内容', 'enabled': False},
+            ]},
+        }}).encode(), 'card.json')
+        about, warnings = card_import.build_about(card)
+        self.assertIn('系统人设', about)
+        self.assertIn('深度人设', about)
+        self.assertIn('银发蓝眼', about)
+        self.assertNotIn('禁用内容', about)
+        self.assertIn('银发蓝眼', card_import.card_text_for_extract(card))
+        self.assertEqual(warnings, [])
 
 
 # ---- 抽词条解析 ----
@@ -487,6 +543,16 @@ class TavernCardRouterTests(unittest.TestCase):
         res = self.client.post("/api/imports/tavern-card/commit", json={"name": "   ", "fields": {}})
         self.assertEqual(res.status_code, 400)
 
+    def test_commit_enforces_twenty_thousand_character_budget(self):
+        ok = self.client.post('/api/imports/tavern-card/commit', json={
+            'name': 'Long', 'fields': {'about': '字' * 20000},
+        })
+        self.assertEqual(ok.status_code, 200)
+        too_long = self.client.post('/api/imports/tavern-card/commit', json={
+            'name': 'Too long', 'fields': {'about': '字' * 20001},
+        })
+        self.assertEqual(too_long.status_code, 400)
+
     def test_commit_forces_imported_flag(self):
         """前端漏传 imported 也得是导入卡 —— 否则她就变成「删不掉的自家角色」了。"""
         saved = self.client.post("/api/imports/tavern-card/commit", json={"name": "x", "fields": {}}).json()
@@ -735,6 +801,43 @@ class TavernCardRouterTests(unittest.TestCase):
         events = self._stream("/api/imports/tavern-card/translate/stream", fake,
                               json={"text": "A student at Otonokizaka."})
         self.assertEqual(events[-1], ("done", {"aboutZh": "音乃木坂学院的学生。", "skipped": False, "reason": ""}))
+
+    def test_translation_output_limit_preserves_partial_and_reports_error(self):
+        async def fake(*args, **kwargs):
+            yield {'type': 'text', 'text': '部分译文'}
+            yield {'type': 'done', 'finish_reason': 'length'}
+        events = self._stream('/api/imports/tavern-card/translate/stream', fake,
+                              json={'text': 'A long English character description.'})
+        self.assertEqual(events[-1][0], 'error')
+        self.assertEqual(events[-1][1]['aboutZh'], '部分译文')
+        self.assertIn('输出长度限制', events[-1][1]['message'])
+
+    def test_long_translation_has_larger_output_budget(self):
+        async def fake(*args, **kwargs):
+            self.assertGreater(kwargs['max_tokens'], 4096)
+            yield {'type': 'text', 'text': '完整译文'}
+            yield {'type': 'done', 'finish_reason': 'stop'}
+        events = self._stream('/api/imports/tavern-card/translate/stream', fake,
+                              json={'text': 'English description. ' * 500})
+        self.assertEqual(events[-1][0], 'done')
+
+    def test_empty_translation_is_failure(self):
+        async def fake(*args, **kwargs):
+            yield {'type': 'done', 'finish_reason': 'stop'}
+        events = self._stream('/api/imports/tavern-card/translate/stream', fake,
+                              json={'text': 'English description.'})
+        self.assertEqual(events[-1][0], 'error')
+        self.assertIn('空译文', events[-1][1]['message'])
+
+    def test_copied_english_is_not_reported_as_complete_translation(self):
+        source = 'This character has silver hair and blue eyes and lives in a city surrounded by mountains. ' * 12
+        async def fake(*args, **kwargs):
+            yield {'type': 'text', 'text': source + '（银发蓝眼）'}
+            yield {'type': 'done', 'finish_reason': 'stop'}
+        events = self._stream('/api/imports/tavern-card/translate/stream', fake,
+                              json={'text': source})
+        self.assertEqual(events[-1][0], 'error')
+        self.assertIn('未翻译的英文', events[-1][1]['message'])
 
     def test_translate_stream_skips_chinese_text(self):
         async def fake(*args, **kwargs):  # pragma: no cover

@@ -26,14 +26,16 @@ from app.routers import system
 
 class StartupSettingsTests(unittest.TestCase):
     def setUp(self):
+        mode = patch("app.expert_mode.enabled", return_value=True)
+        mode.start(); self.addCleanup(mode.stop)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         setting_patch = patch.object(prefs, "SETTINGS_PATH", Path(folder.name) / "launcher.json")
         setting_patch.start()
         self.addCleanup(setting_patch.stop)
 
-    def test_first_boot_all_on_and_saved_choices_survive(self):
-        self.assertTrue(all(prefs.load_startup().model_dump().values()))
+    def test_expert_first_boot_all_regular_services_on_and_choices_survive(self):
+        self.assertEqual(prefs.load_startup().model_dump(), {"backend": True, "frontend": True, "qq_bridge": True, "desktop_pet": True, "autonomous_activity": False})
         settings = prefs.StartupSettings(qq_bridge=False, desktop_pet=False)
         prefs.save_startup(settings)
         self.assertEqual(prefs.load_startup(), settings)
@@ -45,7 +47,7 @@ class StartupSettingsTests(unittest.TestCase):
 
     def test_invalid_dependencies_or_boolean_rejected(self):
         with self.assertRaises(ValidationError):
-            prefs.StartupSettings(backend=False)
+            prefs.StartupSettings(backend=False, qq_bridge=True)
         with self.assertRaises(ValidationError):
             prefs.StartupSettings(qq_bridge="false")
 
@@ -53,11 +55,11 @@ class StartupSettingsTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(system.router, prefix="/api")
         with TestClient(app) as client, patch("subprocess.Popen") as popen:
-            choices = {"backend": True, "frontend": False, "qq_bridge": False, "desktop_pet": True}
+            choices = {"backend": True, "frontend": False, "qq_bridge": False, "desktop_pet": True, "autonomous_activity": False}
             response = client.put("/api/system/startup", json=choices)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(client.get("/api/system/startup").json()["settings"], choices)
-            self.assertEqual(client.put("/api/system/startup", json={"backend": False}).status_code, 422)
+            self.assertEqual(client.put("/api/system/startup", json={"backend": False, "qq_bridge": True}).status_code, 422)
         popen.assert_not_called()
 
     def test_disabled_services_not_started(self):

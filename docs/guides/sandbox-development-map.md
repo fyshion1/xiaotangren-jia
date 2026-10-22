@@ -1,6 +1,6 @@
 # 沙盒开发地图
 
-核对日期：2026-10-20。这是定位入口，符号与当前代码可交叉核验；不需要每次全文重读。路径以项目根目录为基准，表中的服务文件位于 `backend/app/services/`。
+核对日期：2026-10-23。自主活动与沙盒现为独立专家插件，见[专家模式说明](expert-mode.md)。表中的服务文件现位于 `features/autonomous-activity/autonomous_activity/services/`；路由位于该插件的 `routers/`，界面位于插件 `ui/src/`。旧的本体路径仅用于识别迁移前的符号，模板和 Dockerfile 已移到插件 `sandbox/`。
 
 ## 先理解三条路径
 

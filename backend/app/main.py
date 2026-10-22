@@ -46,7 +46,7 @@ from .routers import (
 from .services import attachments
 from .services import self_profile as sp
 from .services import memory_workflow as workflow_service
-from .services import exploration_autonomy
+from . import optional_plugins
 
 settings = get_settings()
 
@@ -70,8 +70,6 @@ async def lifespan(_: FastAPI):
     if settings.runtime_profile == "full":
         harvest.start()
     reminder_service.start()
-    if settings.runtime_profile == "full":
-        exploration_autonomy.start()
     try:
         yield
     finally:
@@ -79,7 +77,6 @@ async def lifespan(_: FastAPI):
         await memory_batch.stop()
         harvest.stop()
         await reminder_service.stop()
-        await exploration_autonomy.stop()
 
 
 app = FastAPI(title="小糖人之家 后端", version="0.1.0", lifespan=lifespan)
@@ -108,8 +105,9 @@ from .routers import tools as tools_router
 app.include_router(tools_router.router, prefix="/api")
 from .routers import project_costs as project_costs_router
 app.include_router(project_costs_router.router, prefix="/api")
-from .routers import exploration_projects as exploration_projects_router
-app.include_router(exploration_projects_router.router, prefix="/api")
+from .routers import expert
+app.include_router(expert.router, prefix="/api")
+optional_plugins.mount(app)
 from .routers import reminders as reminders_router
 app.include_router(reminders_router.router, prefix="/api")
 app.include_router(images.router, prefix="/api")

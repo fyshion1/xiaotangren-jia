@@ -22,9 +22,11 @@ try {
   browser = await chromium.launch({ headless: true, executablePath: process.argv[2] || process.env.CHROME_PATH || undefined })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
   const errors = [], writes = [], life = []
-  page.on('pageerror', e => errors.push(e.message))
+  page.on('pageerror', e => { errors.push(e.message); console.error(e.message) })
   await page.route('**/api/**', async route => {
     const req = route.request(), u = new URL(req.url()), path = u.pathname
+    if (path === '/api/expert') return route.fulfill({json:{enabled:true,autonomy_installed:true}})
+    if (path === '/api/nest/api-config') return route.fulfill({json:{configured:true,config:{base_url:'http://fixture/v1',model:'fixture',api_key:'',vision_model:'fixture'}}})
     if (req.method() === 'POST') writes.push({ path, body: req.postDataJSON() })
     if (path === '/api/exploration-projects/conversations') return route.fulfill({ json: { items: [{
       id: 'sandbox-dashiyin', kind: 'single', name: '大诗音 · 沙盒生活', emoji: '🌱', subtitle: '持续生活 · 独立钱包', characterIds: ['dashiyin'], sandbox: true,

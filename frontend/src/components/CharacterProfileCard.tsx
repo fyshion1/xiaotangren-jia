@@ -1,4 +1,6 @@
 import { profileSignature } from '../lib/profileDisplay'
+import { useTavernMode } from '../lib/tavernMode'
+import { isPrivateProfileField } from '../lib/profilePrivacy'
 import { useEffect, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import { insertTavernCardGreeting } from '../api/cardImport'
@@ -63,7 +65,9 @@ function ModelFallback({ emoji, title, detail }: { emoji: string; title: string;
 }
 
 export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchForm, onOpenPortrait, extra }: Props) {
+  const [tavernMode] = useTavernMode()
   const [showPriv, setShowPriv] = useState(false)
+  useEffect(() => { setShowPriv(false) }, [tavernMode, p.id])
   // 立绘显示方式（§19）：静态 / Live2D 占位 / 3D 占位。用左上角标签里的下拉切换，
   // 不再是「点整张图循环」（那样每次点图都会误切，而且没有提示当前是哪个）。
   const [portraitMode, setPortraitMode] = useState<'image' | 'live2d' | 'vrm'>('image')
@@ -158,11 +162,14 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
   }, [portrait])
 
   const priv: [string, string][] = [
+    ['体型', view.bodyType],
+    ['胸围', view.bust],
+    ['臀围', view.hip],
     ['体重', view.weight],
-    ['三围', view.measurements],
+    ['身体尺寸', view.measurements],
     ['秘密', view.secret],
-    ['弱点', view.weakPoint],
-    ['私密小愿望', view.privateWish],
+    ['注意事项', view.weakPoint],
+    ['个人愿望', view.privateWish],
   ]
 
   const MODES = [
@@ -378,32 +385,30 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
           {!view.hiddenFields?.includes('personality') && <Attr k="性格"><Chips items={view.personality} /></Attr>}
           {!view.hiddenFields?.includes('likes') && <Attr k="喜好"><Chips items={view.likes} /></Attr>}
           {!view.hiddenFields?.includes('dislikes') && <Attr k="讨厌"><Chips items={view.dislikes} /></Attr>}
-          {!view.hiddenFields?.includes('bodyType') && <Attr k="体型">{view.bodyType}</Attr>}
           {!view.hiddenFields?.includes('eyeColor') && <Attr k="瞳色">{view.eyeColor}</Attr>}
           {!view.hiddenFields?.includes('hairstyle') && <Attr k="发型">{view.hairstyle}</Attr>}
           {!view.hiddenFields?.includes('hairColor') && <Attr k="发色">{view.hairColor}</Attr>}
-          {!view.hiddenFields?.includes('bust') && <Attr k="胸部">{view.bust}</Attr>}
-          {!view.hiddenFields?.includes('hip') && <Attr k="臀部">{view.hip}</Attr>}
           {!view.hiddenFields?.includes('clothing') && <Attr k="服装">{view.clothing}</Attr>}
           {!view.hiddenFields?.includes('relationships') && <Attr k="关系">{view.relationships}</Attr>}
           {!view.hiddenFields?.includes('specialFeatures') && <Attr k="特殊特征">{view.specialFeatures}</Attr>}
           {!view.hiddenFields?.includes('catchphrase') && <Attr k="口头禅">{view.catchphrase}</Attr>}
-          {(view.customFields || []).filter(f => f.label && !view.hiddenFields?.includes(`custom:${f.label}`)).map((f,i) => <Attr key={i} k={f.label}>{f.value}</Attr>)}
+          {(view.customFields || []).filter(f => f.label && !isPrivateProfileField('', f.label) && !view.hiddenFields?.includes(`custom:${f.label}`)).map((f,i) => <Attr key={i} k={f.label}>{f.value}</Attr>)}
         </div>
 
         {/* 个人隐私词条 */}
-        <div className="mt-4">
+        {tavernMode && <div className="mt-4">
           <div className="mb-1.5 flex items-center gap-2">
             <span className="eyebrow">个人隐私词条</span>
             <span className="rounded-full bg-[var(--pink-soft)] px-2 py-0.5 text-[11px] text-[var(--pink-deep)]">私密</span>
           </div>
           {showPriv ? (
             <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3">
-              {priv.filter(([k]) => !view.hiddenFields?.includes(({体重:'weight',三围:'measurements',秘密:'secret',弱点:'weakPoint',私密小愿望:'privateWish'} as Record<string,string>)[k])).map(([k, v]) => (
+              {priv.filter(([k]) => !view.hiddenFields?.includes(({体型:'bodyType',胸围:'bust',臀围:'hip',体重:'weight',身体尺寸:'measurements',秘密:'secret',注意事项:'weakPoint',个人愿望:'privateWish'} as Record<string,string>)[k])).map(([k, v]) => (
                 <Attr key={k} k={k} priv>
-                  {!view.hiddenFields?.includes(({体重:'weight',三围:'measurements',秘密:'secret',弱点:'weakPoint',私密小愿望:'privateWish'} as Record<string,string>)[k]) && v}
+                  {v}
                 </Attr>
               ))}
+              {(view.customFields || []).filter(f => f.label && isPrivateProfileField('', f.label) && !view.hiddenFields?.includes(`custom:${f.label}`)).map((f,i) => <Attr key={`custom:${i}`} k={f.label} priv>{f.value}</Attr>)}
             </div>
           ) : (
             <button
@@ -413,7 +418,7 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
               🔒 点开查看私密词条
             </button>
           )}
-        </div>
+        </div>}
 
         {/* CTA */}
         <div className="mt-6 flex flex-wrap items-center gap-3">

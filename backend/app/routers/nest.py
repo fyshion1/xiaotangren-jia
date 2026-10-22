@@ -26,7 +26,7 @@ import signal
 import subprocess
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -127,7 +127,17 @@ def _effective_config(feature_id: str) -> dict:
 @router.get("/features")
 async def list_features() -> dict:
     """功能的唯一清单（来自代码注册表）。前端小窝按它渲染入口列表 + 设置表单。"""
-    return {"items": all_features(), "contract_version": "0.2.2"}
+    items = [feature for feature in all_features()
+             if (feature["folder"] and (FEATURES_DIR / feature["folder"]).is_dir())
+             or feature["id"] == "gemini_sync"]
+    from ..expert_mode import enabled, plugin_installed
+    if not enabled():
+        items = [feature for feature in items if feature['id'] != 'tools']
+    if not enabled() or not plugin_installed():
+        items = [feature for feature in items if feature['id'] != 'autonomous_activity']
+    priority = {"desktop_pet": 0, "qq_bridge": 1}
+    items.sort(key=lambda feature: priority.get(feature["id"], 2))
+    return {"items": items, "contract_version": "0.2.2"}
 
 
 @router.get("/api-config")
@@ -778,6 +788,8 @@ class FeedItemIn(BaseModel):
 @router.post("/feed")
 async def push_feed_item(body: FeedItemIn) -> dict:
     """功能推一条动态。同一功能下 url 相同 → 覆盖更新（同一个视频别重复堆）。"""
+    if body.feature_id == 'bilibili_scout':
+        raise HTTPException(410, '小窝动态已移除 B 站推荐')
     if not get_feature(body.feature_id):
         # 未知功能照样收（用户可能接自己写的），但要让调用方知道没登记。
         return {"item": db.add_feed_item(
@@ -928,6 +940,15 @@ def _settings_payload(feature_id: str) -> dict:
         else:
             out[key] = field.get("default")
     overrides = dict(data)
+    if feature_id == 'qq_bridge':
+        # Legacy process-local grants cannot bypass the shared tool policy.
+        overrides.update({'tools.enabled': False, 'tools.allow': []})
+        from .. import expert_mode
+        if not expert_mode.enabled():
+            from ..services import qq_basic_settings as basic
+            out = basic.effective(out)
+            overrides.update(out)
+            spec = [field for field in spec if field['key'] in basic.BASIC_KEYS]
     if feature_id == "qq_bridge" and get_settings().runtime_profile == "lightweight":
         constrained = {"accounts": [], "onebot.mode": "server",
                        "onebot.listen_port": 3010,
@@ -966,6 +987,14 @@ async def put_feature_settings(feature_id: str, body: SettingsIn) -> dict:
     by_key = {f["key"]: f for f in spec}
     if len(body.values) > 200:
         raise HTTPException(413, "字段太多了")
+    if feature_id == 'qq_bridge':
+        from .. import expert_mode
+        if not expert_mode.enabled():
+            from ..services.qq_basic_settings import BASIC_KEYS
+            if set(body.values) - BASIC_KEYS:
+                raise HTTPException(403, '非专家模式仅支持基础 QQ 聊天设置')
+            if 'accounts' in body.values and (not isinstance(body.values['accounts'], list) or len(body.values['accounts']) != 1):
+                raise HTTPException(400, '非专家模式只能绑定一个 QQ 账号')
     clean: dict = {}
     unknown: list[str] = []
     for key, value in (body.values or {}).items():
@@ -977,6 +1006,11 @@ async def put_feature_settings(feature_id: str, body: SettingsIn) -> dict:
     if feature_id == 'qq_bridge' and isinstance(clean.get('sticker.library'), list):
         from ..services.qq_stickers import deduplicate
         clean['sticker.library'] = await asyncio.to_thread(deduplicate, clean['sticker.library'])
+    if feature_id == 'qq_bridge':
+        from .. import expert_mode
+        if not expert_mode.enabled():
+            from ..services import qq_basic_settings
+            clean = qq_basic_settings.merge(clean)
     db.set_feature_settings(feature_id, clean)
     return {**_settings_payload(feature_id), "ignored": unknown}
 
@@ -1057,6 +1091,12 @@ async def run_feature(feature_id: str, body: RunIn) -> dict:
     焊死几百秒 —— 表现就是「点了自检整个小窝都卡死了」，连别的请求（日志、状态轮询）都进不来。
     同一功能的按钮也串行化（一把锁）：连点两下不会起两个进程。
     """
+    if feature_id == 'autonomous_activity':
+        from ..expert_mode import require_expert
+        require_expert()
+    if feature_id == 'qq_bridge':
+        from ..services.qq_basic_settings import require_ready
+        require_ready()
     if get_settings().runtime_profile == "lightweight" and feature_id != "qq_bridge":
         raise HTTPException(503, "轻量模式仅运行 QQ 桥，其他功能请在原生主机运行")
     info = _runner(feature_id)
@@ -1071,7 +1111,9 @@ async def run_feature(feature_id: str, body: RunIn) -> dict:
             fp.flush()
             proc = subprocess.Popen(  # noqa: S603 - argv 全部由注册表白名单拼出
                 argv, cwd=str(info["cwd"]), stdout=fp, stderr=subprocess.STDOUT,
-                env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
+                env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
+                     **({"PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+                        if info['runner'].get('host_plugin') else {})},
                 creationflags=_CREATE_NEW_GROUP,
             )
         _procs[proc.pid] = proc
@@ -1156,16 +1198,46 @@ def _stop_one(proc: subprocess.Popen, grace: float = 5.0) -> bool:
     return graceful and proc.poll() is not None
 
 
-def _running_pid(feature_id: str) -> int:
+def _feature_process(feature_id: str):
+    """Validate saved identity before controlling a process after a core restart."""
+    import psutil
     row = db.latest_feature_run(feature_id)
     if not row or not row.get("pid") or row.get("stopped_at"):
-        return 0
-    pid = int(row["pid"])
+        return None
+    runner = runner_of(feature_id)
+    if not runner:
+        return None
     try:
-        import psutil  # type: ignore
-        return pid if psutil.pid_exists(pid) else 0
-    except ImportError:
-        return pid
+        process = psutil.Process(int(row['pid']))
+        expected = (FEATURES_DIR / runner['folder']).resolve()
+        started = datetime.fromisoformat(row['started_at']).replace(tzinfo=timezone.utc).timestamp()
+        if (runner['module'] not in process.cmdline() or Path(process.cwd()).resolve() != expected
+                or abs(process.create_time() - started) > 10):
+            return None
+        return process
+    except (psutil.Error, OSError, ValueError, KeyError):
+        return None
+
+
+def _running_pid(feature_id: str) -> int:
+    process = _feature_process(feature_id)
+    return process.pid if process else 0
+
+
+def _stop_tree(process):
+    import psutil
+    try:
+        targets = [*reversed(process.children(recursive=True)), process]
+    except psutil.NoSuchProcess:
+        return
+    for target in targets:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            target.terminate()
+    _, alive = psutil.wait_procs(targets, timeout=3)
+    for target in alive:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            target.kill()
+    psutil.wait_procs(alive, timeout=2)
 
 
 def _tail(log: Path, lines: int = 400) -> str:
@@ -1209,12 +1281,9 @@ async def stop_feature(feature_id: str) -> dict:
     if proc is not None:
         graceful = await asyncio.to_thread(_stop_one, proc)
     else:
-        # 后端重启前起的进程，手里没有 Popen —— 只能直接停。
-        try:
-            import psutil  # type: ignore
-            psutil.Process(pid).terminate()
-        except Exception:  # noqa: BLE001 - 进程可能刚好自己退了
-            pass
+        process = _feature_process(feature_id)
+        if process is not None:
+            await asyncio.to_thread(_stop_tree, process)
     for _ in range(20):  # 最多再等 2 秒让它真消失
         if not _pid_alive(pid):
             break
@@ -1250,7 +1319,17 @@ def _gateway_spec(feature_id: str) -> dict:
             override = str((field or {}).get("default") or "").strip()
     except Exception:  # noqa: BLE001 - 读设置失败不该把「开网关」整个打死
         override = ""
-    return {**gw, "folder": override or gw["folder"]}
+    result = {**gw, "folder": override or gw["folder"]}
+    if feature_id == 'qq_bridge':
+        from .. import expert_mode
+        if not expert_mode.enabled():
+            from ..services.qq_basic_settings import effective, local_ws
+            from urllib.parse import urlsplit
+            connection = effective((db.get_feature_settings(feature_id) or {}).get('data') or {})
+            url = connection.get('onebot.ws_url', '')
+            if local_ws(url):
+                result['port'] = urlsplit(url).port
+    return result
 
 
 def _setting(feature_id: str, key: str, default: Any = "") -> Any:
@@ -1259,6 +1338,11 @@ def _setting(feature_id: str, key: str, default: Any = "") -> Any:
         field = next((f for f in (_settings_spec(feature_id) or []) if f.get("key") == key), None)
         fallback = (field or {}).get("default", default)
         saved = (db.get_feature_settings(feature_id) or {}).get("data") or {}
+        if feature_id == 'qq_bridge':
+            from .. import expert_mode
+            if not expert_mode.enabled():
+                from ..services.qq_basic_settings import effective
+                saved = effective(saved)
         return saved.get(key, fallback)
     except Exception:  # noqa: BLE001 - 读设置失败一律走兜底，别把调用方打死
         return default

@@ -31,6 +31,7 @@ class ReminderTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         db.init_db()
+        db.set_settings({"expert_mode_v1": '{"enabled":true}'})
         self.owner = db.get_active_persona_id() or 'dalaoda'
         self.context = ToolContext(self.owner, self.owner, 'single-dashiyin')
         app = FastAPI()

@@ -26,7 +26,7 @@ _cache: dict[tuple[str, str], list[list[float]]] = {}
 _lock = threading.Lock()
 _retry_after: dict[tuple[str, str], float] = {}
 # Explicit requests bypass loading; rules supplement rather than replace semantics.
-_EXPLICIT = re.compile(r"文件|目录|路径|沙箱|本地|工具|读取|列出|搜索|查一下|查询|打开|新闻|联网|提醒|记账|费用|预算|记录|吃了|运动|跑步|骑车|local_|歌词|知识库|记忆库|搜|查", re.I)
+_EXPLICIT = re.compile(r"文件|目录|路径|沙箱|本地|工具|读取|列出|搜索|查一下|查询|打开|新闻|联网|提醒|记账|费用|预算|记录|吃了|运动|跑步|骑车|local_|歌词|知识库|记忆库|收录|保存|收藏|记下来|搜|查", re.I)
 _FOLLOWUP = re.compile(r"刚才|刚刚|上一[条首次]|那个版本|再读|继续找|接着找|读完|全文|整首|没找到|没拿到|再试")
 
 
@@ -89,7 +89,7 @@ def classify(text: str) -> Decision:
             top = ordered[0]
             margin = scores[top] - scores[ordered[1]]
             # Conservative provisional thresholds; similarity is not calibrated confidence.
-            decisions.append(result(top != "chat" or scores[top] < .68 or margin < .08,
+            decisions.append(result(top != "chat" or scores[top] < .60 or margin < .08,
                                     top, "local_embedding", scores[top], margin))
         selected = next((d for d in decisions if d.needs_tools), decisions[0])
         return result(selected.needs_tools, selected.intent, selected.method, selected.score, selected.margin)

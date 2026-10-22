@@ -2,25 +2,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-import uuid
 from datetime import datetime, timedelta, timezone
 
-from pydantic import Field
-from xiaotangren_tools import Arguments, Tool, ToolContext, ToolDenied
 
 from .. import db
 
 SHANGHAI = timezone(timedelta(hours=8))
 log = logging.getLogger(__name__)
 _task: asyncio.Task | None = None
-
-
-class ReminderInput(Arguments):
-    title: str = Field(min_length=1, max_length=200, description='提醒内容')
-    due_at: str = Field(max_length=64, description='明确的北京时间，ISO 8601，必须带 +08:00。例如 2026-10-20T15:00:00+08:00。不明确时先追问用户。')
 
 
 def initialize():
@@ -53,36 +44,6 @@ def validate(title: str, due_at: str, now: float | None = None) -> tuple[str, fl
     if not now + 5 <= stamp <= now + 366 * 86400:
         raise ValueError('提醒时间需在 5 秒后至未来一年内')
     return title, stamp
-
-
-def draft(args: ReminderInput, context: ToolContext) -> str:
-    try:
-        title, due = validate(args.title, args.due_at)
-    except ValueError as exc:
-        raise ToolDenied(str(exc)) from None
-    initialize()
-    now = time.time()
-    with db._tx() as conn:
-        conn.execute('BEGIN IMMEDIATE')
-        existing = conn.execute('SELECT * FROM reminders WHERE persona_id=? AND title=? AND due_at=? ORDER BY created_at DESC LIMIT 1',
-                                (context.actor_id, title, due)).fetchone()
-        if existing:
-            row = dict(existing)
-        else:
-            rid = 'rem-' + uuid.uuid4().hex
-            conn.execute('''INSERT INTO reminders
-                (id,persona_id,session_id,title,due_at,status,created_at,updated_at,expires_at)
-                VALUES(?,?,?,?,?,'draft',?,?,?)''',
-                (rid, context.actor_id, context.conversation_id, title, due, now, now, min(now + 86400, due)))
-            row = dict(conn.execute('SELECT * FROM reminders WHERE id=?', (rid,)).fetchone())
-    return json.dumps({'id': row['id'], 'status': row['status'], 'title': row['title'],
-                       'due_at': datetime.fromtimestamp(row['due_at'], SHANGHAI).isoformat(),
-                       'message': '如 status=draft，仅为待确认草稿，用户须在工具中心确认后才会提醒；如为其他状态，说明相同提醒已存在，请如实报告其状态，不要声称新建成功。'}, ensure_ascii=False)
-
-
-def tool() -> Tool:
-    return Tool('reminder_draft', '为用户明确要求的提醒生成待确认草稿，不会直接生效。不明确的日期或时间先追问；采用北京时间。不能确认、取消或推送任务。',
-                ReminderInput, draft, risk='proposal')
 
 
 def tick(now: float | None = None):
@@ -171,3 +132,10 @@ async def stop():
         _task.cancel()
         await asyncio.gather(_task, return_exceptions=True)
         _task = None
+
+
+def __getattr__(name):
+    if name in ('ReminderInput', 'draft', 'tool'):
+        from .. import tool_feature
+        return getattr(tool_feature.load('reminder_tools'), name)
+    raise AttributeError(name)

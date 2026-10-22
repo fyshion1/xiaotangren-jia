@@ -44,6 +44,10 @@ async def choices():
     """Use the bridge's enabled-row order, never the settings table row index."""
     from ..routers.nest import _setting
     def read():
+        from .. import expert_mode
+        if not expert_mode.enabled():
+            from ..routers.nest import _settings_payload
+            return _settings_payload('qq_bridge')['values']['accounts']
         rows = [r for r in (_setting('qq_bridge', 'accounts', []) or []) if isinstance(r, dict) and r.get('enabled', True)]
         if not rows:
             rows = [{'self_id': _setting('qq_bridge', 'onebot.self_id', ''), 'name': '默认账号'}]

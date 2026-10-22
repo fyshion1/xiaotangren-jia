@@ -334,8 +334,7 @@ export default function ImageGenOverlay({
 
         {genEngine === 'thirdparty' && !config.imageModel && (
           <p className="mt-2 rounded-lg bg-[var(--pink-soft)] px-3 py-2 text-[12px] leading-snug text-[var(--pink-deep)]">
-            ⚠ 第三方通道还没配生图模型。请点 ⚙ 模型设置填一个支持 /images/generations
-            的中转地址 + 模型名（生图中转可以单独填，不必和聊天中转一样）。
+            第三方生图使用后端统一配置，请确认已配置支持 /images/generations 的服务和模型。
           </p>
         )}
         <div className="mt-3 flex justify-end gap-2.5">

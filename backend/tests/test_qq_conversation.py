@@ -200,7 +200,7 @@ class QqConversationTests(unittest.TestCase):
         asyncio.run(run('{"actions":[{"type":"text","speaker":"dashiyin","text":"半句'))
 
     def test_agent_plan_uses_trusted_config_and_counts_nested_requests(self):
-        from app.services import exploration_projects as projects, exploration_workspace as workspace, exploration_budget as budget
+        from autonomous_activity.services import exploration_projects as projects, exploration_workspace as workspace, exploration_budget as budget
         project = projects.propose(self.session['persona_id'], 'dashiyin', '工作室实验', '试试小工具')
         request = projects.request_more(project, self.session['persona_id'], 'dashiyin', '想调用agent')
         with patch.object(workspace, 'capability', return_value={'available': True, 'agent_available': True}):
@@ -225,7 +225,7 @@ class QqConversationTests(unittest.TestCase):
         self.assertNotIn('PRIVATE-CHAT-NOT-FOR-AGENT', json.dumps(self.provider.await_args.args[0]))
 
     def test_project_request_is_persisted_without_a_grant_or_qq_send(self):
-        from app.services import exploration_projects as projects
+        from autonomous_activity.services import exploration_projects as projects
         self.provider.return_value = json.dumps({'intent': 'project', 'title': '鱼鱼观察日记', 'body': '看看AI同人创作'})
         response = self.client.post('/api/qq-bridge/proactive', json={'session': self.session, 'run_id': 'project-run'})
         self.assertEqual(response.status_code, 200, response.text)
@@ -238,7 +238,7 @@ class QqConversationTests(unittest.TestCase):
         self.assertEqual(db.list_messages(self.sid), [])
 
     def test_approved_project_can_write_only_its_workspace(self):
-        from app.services import exploration_projects as projects, exploration_workspace as workspace
+        from autonomous_activity.services import exploration_projects as projects, exploration_workspace as workspace
         project = projects.propose(self.session['persona_id'], 'dashiyin', '小作品', '写个日记')
         request = projects.request_more(project, self.session['persona_id'], 'dashiyin', '想继续')
         projects.approve(request, 12000, 2, ['document'])
@@ -249,7 +249,7 @@ class QqConversationTests(unittest.TestCase):
         self.assertEqual(projects.listing()[0]['grants'][0]['charged'], 130)
 
     def test_public_planner_cannot_see_or_create_private_projects(self):
-        from app.services import exploration_projects as projects
+        from autonomous_activity.services import exploration_projects as projects
         projects.propose(self.session['persona_id'], 'dashiyin', 'PRIVATE-PROJECT', 'PRIVATE-GOAL')
         db.set_feature_settings('qq_bridge', {'proactive.qzone': True})
         self.provider.return_value = json.dumps({'intent': 'project', 'title': '不应创建', 'body': '不应创建'})
@@ -259,7 +259,7 @@ class QqConversationTests(unittest.TestCase):
         self.assertEqual(len(projects.listing()), 1)
 
     def test_project_web_read_has_no_private_chat_and_shares_only_actual_source(self):
-        from app.services import exploration_projects as projects, exploration_web as web
+        from autonomous_activity.services import exploration_projects as projects, exploration_web as web
         self.inbound(text='PRIVATE-CHAT-NOT-FOR-WORKSPACE')
         project = projects.propose(self.session['persona_id'], 'dashiyin', '同人观察', '找点公开创作')
         request = projects.request_more(project, self.session['persona_id'], 'dashiyin', '想继续')
@@ -312,7 +312,8 @@ class QqConversationTests(unittest.TestCase):
         self.assertEqual(len(db.list_messages(self.sid)), 1)
 
     def test_exploration_document_is_a_draft_and_continues_with_shared_budget(self):
-        from app.services import exploration_budget as budget, activity_memory
+        from autonomous_activity.services import exploration_budget as budget
+        from app.services import activity_memory
         self.provider.side_effect = [json.dumps({'intent': 'document', 'title': '想要一个烘焙收藏夹',
             'body': '需求：按甜点分类收藏。边界：只写草稿，不安装插件。'}), json.dumps({'intent': 'skip'})]
         payload = {'session': self.session, 'run_id': 'draft-run'}
@@ -330,7 +331,7 @@ class QqConversationTests(unittest.TestCase):
         self.assertEqual(db.list_messages(self.sid), [])
 
     def test_exploration_consultant_uses_same_model_and_total_budget(self):
-        from app.services import exploration_budget as budget
+        from autonomous_activity.services import exploration_budget as budget
         self.provider.side_effect = [json.dumps({'intent': 'consult', 'question': '怎么整理烘焙收藏夹的需求？'}),
                                      '先列出分类和去重需求。', json.dumps({'intent': 'skip'})]
         first = self.client.post('/api/qq-bridge/proactive', json={'session': self.session, 'run_id': 'consult-run'})
@@ -386,7 +387,8 @@ class QqConversationTests(unittest.TestCase):
         self.assertEqual(result.status_code, 502)
 
     def test_paused_memory_source_retains_draft_then_syncs_without_duplicates(self):
-        from app.services import activity_memory, exploration_budget as budget
+        from autonomous_activity.services import exploration_budget as budget
+        from app.services import activity_memory
         activity_memory.set_policy(self.session['persona_id'], 'qq_bridge', {'receive': False})
         self.provider.return_value = json.dumps({'intent': 'document', 'title': '小想法', 'body': '想做一个分类表，暂不实现。'})
         result = self.client.post('/api/qq-bridge/proactive', json={'session': self.session, 'run_id': 'pending-draft'})
@@ -462,6 +464,10 @@ class QqConversationTests(unittest.TestCase):
         p = patch.dict('os.environ', {'PERSONAL_MEMORY_ROOT': str(root / 'memory')})
         p.start(); self.addCleanup(p.stop)
         db.init_db()
+        from app.optional_plugins import load
+        if __import__("app.expert_mode", fromlist=["plugin_installed"]).plugin_installed():
+            load()
+        db.set_settings({"expert_mode_v1": '{"enabled":true}'})
         self.session = conv.context('dashiyin')
         self.sid = self.session['session_id']
         image = io.BytesIO(); Image.new('RGB', (16, 16), 'red').save(image, 'PNG')
@@ -487,6 +493,9 @@ class QqConversationTests(unittest.TestCase):
         p = patch('app.routers.session_chat.memory_extract.extract', self.extract)
         p.start(); self.addCleanup(p.stop)
         app = FastAPI(); app.include_router(qq_bridge.router, prefix='/api')
+        from app import optional_plugins
+        if optional_plugins.expert_mode.plugin_installed():
+            optional_plugins.mount(app)
         self.client = TestClient(app); self.addCleanup(self.client.close)
 
     def inbound(self, rid='in-1', text='在吗', media=None, session=None):
@@ -584,6 +593,15 @@ class QqConversationTests(unittest.TestCase):
                   for part in m['content'] if part['type'] == 'image_url']
         self.assertEqual(len(images), 1)
         self.assertTrue(all(p['image_url']['url'].startswith('data:image/') for p in images))
+
+    def test_current_greeting_is_last_after_history_and_tool_data(self):
+        self.inbound('old-song', '帮我查整首歌词')
+        current = self.inbound('new-greeting', '小糖人晚上好')
+        asyncio.run(conv.reply(self.session, current['message_ids'], tool_context='本轮无需工具'))
+        prompt = self.provider.await_args.args[0]
+        self.assertEqual(prompt[-1]['content'], '【本轮要回复的新消息（按顺序）】\n小糖人晚上好')
+        self.assertIn('不是待办队列', prompt[0]['content'])
+        self.assertNotIn('查整首歌词', prompt[-1]['content'])
 
     def test_unknown_sticker_never_turns_into_random_image(self):
         raw = json.dumps({'actions': [{'type': 'text', 'text': '好呀'},

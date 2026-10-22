@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { decideKnowledge, importKnowledge, indexKnowledge, loadKnowledge, proposeKnowledge, readKnowledge, searchKnowledge, type KnowledgeHit } from '../api/knowledge'
+import { captureKnowledge, decideCapture, decideKnowledge, importKnowledge, indexKnowledge, loadKnowledge, proposeKnowledge, readKnowledge, searchKnowledge, type KnowledgeHit } from '../api/knowledge'
 import { fetchToolConfig, saveToolConfig } from '../api/tools'
 import './knowledge.css'
 
@@ -20,6 +20,10 @@ export default function KnowledgeLibrary({ personaId, onOpen }: { personaId: str
   const [kind, setKind] = useState('待核实')
   const [anchor, setAnchor] = useState('')
   const [preview, setPreview] = useState('')
+  const [captureTitle, setCaptureTitle] = useState('')
+  const [captureBody, setCaptureBody] = useState('')
+  const [captureCategory, setCaptureCategory] = useState('未分类')
+  const [captureSource, setCaptureSource] = useState('')
   const generation = useRef(0)
   async function reload() {
     const token = generation.current
@@ -32,6 +36,7 @@ export default function KnowledgeLibrary({ personaId, onOpen }: { personaId: str
   useEffect(() => {
     generation.current++
     setData(null); setHits([]); setTarget(''); setPreview(''); setBody(''); setAnchor(''); setNotice(''); setSelected([])
+    setCaptureTitle(''); setCaptureBody(''); setCaptureCategory('未分类'); setCaptureSource('')
     void reload().catch(e => setNotice(String(e)))
     const interval = window.setInterval(() => { void reload().catch(() => {}) }, 15000)
     return () => { generation.current++; window.clearInterval(interval) }
@@ -41,8 +46,8 @@ export default function KnowledgeLibrary({ personaId, onOpen }: { personaId: str
     try { await fn() } catch (error) { setNotice(String(error)) } finally { setBusy(false) }
   }
   return <details className="knowledge-library" open>
-    <summary><b>知识资料 · 历史陪读</b><span>{data?.documents.length ?? 0} 份正文 · {data?.proposals.length ?? 0} 条待确认补充</span></summary>
-    <p>查原笔记、比较同期历史，把讨论补回知识正文。原 Word 保留，持续补充写入工作层 Markdown。</p>
+    <summary><b>知识资料 · 通用资料库</b><span>{data?.documents.length ?? 0} 份正文 · {(data?.proposals.length ?? 0) + (data?.captures?.length ?? 0)} 条待确认草稿</span></summary>
+    <p>收录文章、歌词、代码、食谱和各种文本笔记。原文保留，确认后加入个人知识检索；历史笔记仍可按年代查询。</p>
     <div className="knowledge-actions">
       <button className="btn sm ghost" disabled={busy} onClick={() => void task(reload)}>刷新资料与草案</button>
       <button className="btn sm ghost" disabled={busy || !data?.documents.length} onClick={() => void task(async () => {
@@ -60,6 +65,38 @@ export default function KnowledgeLibrary({ personaId, onOpen }: { personaId: str
         setNotice('已开启知识查询与补充草案工具。聊天中的补充在此处确认后写回。')
       })}>允许小糖人查资料、提补充</button>
     </div>
+    <details><summary>收录新资料（粘贴文本）</summary>
+      <form className="knowledge-draft" onSubmit={e => { e.preventDefault(); void task(async () => {
+        const token = generation.current
+        const result = await captureKnowledge(captureTitle, captureBody, captureCategory, captureSource, personaId)
+        if (token !== generation.current) return
+        setCaptureBody(''); await reload()
+        setNotice(`已生成收录草稿：${result.title}。请核对原文并确认后入库。`)
+      }) }}>
+        <p>保留换行和缩进，每份最多 20 万字符。这里只生成草稿；来源未知可留空。图片、音视频和扫描 PDF 需先转成文本。</p>
+        <label>资料标题<input className="input" value={captureTitle} maxLength={160} required onChange={e => setCaptureTitle(e.target.value)} /></label>
+        <label>资料分类<input className="input" value={captureCategory} maxLength={80} onChange={e => setCaptureCategory(e.target.value)} placeholder="如歌词、文章、代码，也可以自定义" /></label>
+        <label>资料来源（可选）<input className="input" value={captureSource} maxLength={2000} onChange={e => setCaptureSource(e.target.value)} placeholder="链接、作者、版本或自己的笔记" /></label>
+        <label>资料原文<textarea className="textarea" rows={10} value={captureBody} maxLength={200000} required onChange={e => setCaptureBody(e.target.value)} /></label>
+        <small>{captureBody.length.toLocaleString()} / 200,000 字符</small>
+        <button className="btn sm" disabled={busy || !data || !captureTitle.trim() || !captureBody.trim()}>生成收录草稿</button>
+      </form>
+    </details>
+    {data?.captures?.map(draft => <article className="knowledge-proposal" key={draft.id}>
+      <b>待收录：{draft.title} · {draft.category}</b><small>{draft.created_at} · {draft.body.length.toLocaleString()} 字符</small>
+      <p>来源：{draft.source || '未提供'}。确认后保存为独立资料，不追加到其他文档。</p>
+      <details><summary>预览完整原文</summary><pre className="knowledge-preview">{draft.body}</pre></details>
+      <div className="knowledge-actions">
+        <button className="btn sm" disabled={busy || !data} onClick={() => void task(async () => {
+          const token = generation.current
+          const result = await decideCapture(draft.id, 'confirm', personaId)
+          if (token !== generation.current) return
+          await reload(); setHits([]); setNotice('已收录独立资料，原文已保存并可检索；语义向量可按需补齐。')
+          if (result.path) onOpen(result.path)
+        })}>确认收录</button>
+        <button className="btn sm ghost" disabled={busy} onClick={() => void task(async () => { await decideCapture(draft.id, 'reject', personaId); await reload() })}>放弃收录</button>
+      </div>
+    </article>)}
     <details><summary>导入历史原笔记</summary>
       <p>重复导入保留已有工作正文；Word 后续变更会提示，不会覆盖聊天补充。</p>
       <div className="knowledge-sources">{data?.sources.map(source => <label key={source.path}>
@@ -94,7 +131,8 @@ export default function KnowledgeLibrary({ personaId, onOpen }: { personaId: str
         <button className="btn sm ghost" onClick={() => { setTarget(hit.doc_id); setAnchor(''); setPreview(''); setBody('') }}>向此文档补充想法</button></div>
     </article>)}</div>
     <details><summary>已导入的知识正文</summary>{data?.documents.map(doc => <div className="knowledge-document" key={doc.id}>
-      <button className="btn sm ghost" onClick={() => onOpen(doc.path)}>{doc.title}</button><small>{doc.chunks} 个片段{doc.source_changed ? ' · 源 Word 已变化，工作正文未被覆盖' : ''}</small>
+      <button className="btn sm ghost" onClick={() => onOpen(doc.path)}>{doc.title}</button><small>{doc.category ? `${doc.category} · ` : ''}{doc.chunks} 个片段{doc.source_changed ? ' · 源资料已变化，工作正文未被覆盖' : ''}</small>
+      {doc.source_note && <small>来源：{doc.source_note}</small>}
       {!!doc.related_versions?.length && <small>另有 {doc.related_versions.length} 份同名版本，保留各自出处</small>}
     </div>)}</details>
     {target && <div className="knowledge-draft">

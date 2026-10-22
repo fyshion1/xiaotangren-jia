@@ -1,6 +1,6 @@
 // 小窝 · 功能动态流（§9.6）。
 //
-// 独立功能（B站小糖人刷到的视频、QQ 里聊到的…）通过 `POST /api/nest/feed` 把**给人看的产出**
+// 独立功能通过 `POST /api/nest/feed` 把**给人看的产出**
 // 推进来，这里渲染成卡片。后端只当中转站，不解释 payload —— 卡片长什么样由 `kind` 决定：
 //   video → 封面 + 标题 + 一句推荐语 + 外链
 //   其余  → 标题 + 简述（note 等）
@@ -22,8 +22,7 @@ const STATUS_LABEL: Record<NestFeedItem['status'], string> = {
 function FeedCard({ item, onChanged }: { item: NestFeedItem; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [coverFailed, setCoverFailed] = useState(false)
-  const cover = item.cover.replace(/^http:\/\/((?:[a-z0-9-]+\.)*hdslb\.com)(?=\/)/i, 'https://$1')
-    .replace(/^\/\//, 'https://')
+  const cover = item.cover.replace(/^\/\//, 'https://')
   useEffect(() => setCoverFailed(false), [cover])
 
   const act = async (fn: () => Promise<void>) => {
@@ -133,11 +132,6 @@ export default function NestFeedPanel({ features, bare = false }: { features: Ne
         <div className="space-y-2.5">{items.map((i) => <FeedCard key={i.id} item={i} onChanged={load} />)}</div>
       )}
 
-      {/* 「一起看」占位（§9.6.3）：只留位置和接口口子，实时逐帧 token 太贵，不做。 */}
-      <div className="mt-3 rounded-2xl border border-dashed border-[var(--border-strong)] px-4 py-3 text-[12px] text-[var(--text-3)]">
-        👀 <b>一起看</b>（占位）—— 想「和小糖人同步看视频」的话，走的是同一条 <code>/api/nest/chat</code> 带图口子
-        （帧以 data URL 传，≤8 张）。实时逐帧目前不做，太贵。
-      </div>
     </section>
   )
 }

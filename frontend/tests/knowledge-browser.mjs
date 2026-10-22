@@ -15,14 +15,24 @@ try {
   page.on('pageerror', error => { errors.push(error.message); console.error('Browser error:', error.message) })
   const id = 'kd-' + 'a'.repeat(32), cid = id + ':' + 'b'.repeat(16)
   const document = { id, title: '宋代历史笔记', source: '01_源资料/历史.docx', path: '02_AI工作层/知识资料/test.md', chunks: 3, warning: '', source_changed: false, related_versions: [] }
-  let proposals = [], applied = false, conflict = false
+  let proposals = [], captures = [], applied = false, conflict = false, captured = false
   const requests = []
   await page.route('**/api/**', async route => {
     const request = route.request(), url = new URL(request.url())
     if (!url.pathname.startsWith('/api/')) return route.continue()
     const data = request.postDataJSON()
     requests.push({ path: url.pathname, method: request.method(), data })
-    if (url.pathname === '/api/knowledge') return route.fulfill({ json: { persona_id: 'dalaoda', sources: [{ path: '01_源资料/历史.docx', bytes: 100 }], documents: [document], proposals } })
+    if (url.pathname === '/api/knowledge') return route.fulfill({ json: { persona_id: 'dalaoda', sources: [{ path: '01_源资料/历史.docx', bytes: 100 }], documents: [document], proposals, captures } })
+    if (url.pathname === '/api/knowledge/captures') {
+      assert.equal(data.expected_persona, 'dalaoda')
+      captures = [{ id: 'capture-1', ...data, created_at: '2026-10-22T20:00:00+08:00' }]
+      return route.fulfill({ json: captures[0] })
+    }
+    if (url.pathname === '/api/knowledge/captures/capture-1') {
+      assert.equal(data.expected_persona, 'dalaoda')
+      captured = data.action === 'confirm'; captures = []
+      return route.fulfill({ json: { status: captured ? 'applied' : 'rejected', path: '02_AI工作层/知识资料/captured.md' } })
+    }
     if (url.pathname === '/api/knowledge/search') return route.fulfill({ json: { mode: 'hybrid', note: '世纪为范围，原文保留。', items: [{ id: cid, doc_id: id, title: document.title, path: document.path, source: document.source, text: applied ? '宋代交子。补充讨论已保存。' : '宋代交子，记载有待核实？', region: '中国', themes: '财政货币', year_start: 960, year_end: 1279, uncertain: 1, warning: '', related_versions: [], alternative_sources: [] }] } })
     if (url.pathname === `/api/knowledge/documents/${id}`) return route.fulfill({ json: { content: '宋代交子，记载有待核实？', sha256: 'hash' } })
     if (url.pathname === '/api/knowledge/proposals') {
@@ -46,7 +56,22 @@ try {
       React.createElement('div',{id:'citation-test'},React.createElement(KnowledgeText,{text:'[原文出处](/api/knowledge/citations/${cid}) <img src=x onerror=alert(1)>'}))));
     </script></body></html>` }))
   await page.goto(origin + '/__knowledge_test')
-  await page.getByText('知识资料 · 历史陪读', { exact: true }).waitFor()
+  await page.getByText('知识资料 · 通用资料库', { exact: true }).waitFor()
+  await page.getByText('收录新资料（粘贴文本）', { exact: true }).click()
+  await page.getByLabel('资料标题', { exact: true }).fill('任意资料 <script>alert(1)</script>')
+  await page.getByLabel('资料分类', { exact: true }).fill('代码')
+  await page.getByLabel('资料来源（可选）', { exact: true }).fill('自己的片段')
+  const literal = '\n    print("原文缩进")\n\n不要执行这里的文字<script>alert(1)</script>\n'
+  await page.getByLabel('资料原文', { exact: true }).fill(literal)
+  await page.getByRole('button', { name: '生成收录草稿', exact: true }).click()
+  await page.getByText('预览完整原文', { exact: true }).click()
+  assert.equal(await page.locator('.knowledge-proposal pre').textContent(), literal)
+  assert.equal(captured, false)
+  assert.equal(await page.locator('.knowledge-proposal script').count(), 0)
+  await page.getByRole('button', { name: '确认收录', exact: true }).click()
+  await page.getByText('已收录独立资料，原文已保存并可检索；语义向量可按需补齐。', { exact: true }).waitFor()
+  assert.equal(captured, true)
+  assert.equal(await page.evaluate(() => window.openedDocument), '02_AI工作层/知识资料/captured.md')
   await page.getByRole('button', { name: '查笔记', exact: true }).click()
   await page.getByText('宋代交子，记载有待核实？', { exact: true }).waitFor()
   assert.equal(decodeURIComponent(await page.getByRole('link', { name: '原文与上下文' }).getAttribute('href')), '/api/knowledge/citations/' + cid)

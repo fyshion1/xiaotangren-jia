@@ -17,6 +17,8 @@ import type { CharacterProfile } from '../data/characters'
 import QqStickerCatalog from './QqStickerCatalog'
 import { QqSetupButton, QqContactSelect } from './QqAccountSetup'
 import QqAccountSelect from './QqAccountSelect'
+import QqBasicSettings from './QqBasicSettings'
+import { useExpertMode } from '../lib/expertMode'
 
 /** 只给能在前端配的功能显示这个面板（注册表里声明了 settings 的那些）。 */
 const CONFIGURABLE = (f: NestFeature) => !!(f.settings && f.settings.length > 0)
@@ -70,6 +72,7 @@ export default function NestSettingsPanel({
   scope?: 'feature' | 'autonomy'
 }) {
   const [selfFeatures, setSelfFeatures] = useState<NestFeature[]>([])
+  const expert = useExpertMode()
   const [err, setErr] = useState('')
 
   // 单功能模式可能没人递清单过来 —— 自己去拉一份（拉不到要说出来，不能装作「没有可配的」）。
@@ -133,7 +136,7 @@ export default function NestSettingsPanel({
     }
   }, [])
 
-  useEffect(() => { if (feature) void load(feature.id) }, [feature?.id, load])
+  useEffect(() => { if (feature) void load(feature.id) }, [feature?.id, load, expert.enabled])
 
   const set = (key: string, value: unknown) => {
     setValues((v) => ({ ...v, [key]: value }))
@@ -185,6 +188,9 @@ export default function NestSettingsPanel({
   }
   if (configurable.length === 0) return null
   if (!feature) return null
+  if (feature.id === 'qq_bridge' && !expert.enabled) {
+    return expert.loaded ? <QqBasicSettings /> : <p>正在读取设置模式…</p>
+  }
 
   // `loadedId` 是**渲染闸门**：屏上这份字段得确实是这个功能的，才准画。
   // 两个理由，都不是洁癖：
@@ -347,9 +353,6 @@ export default function NestSettingsPanel({
         <button className="btn ghost sm" disabled={busy} onClick={() => void load(feature.id)}>重新读一次</button>
         {note && <span className="text-[11px] text-[var(--pink-deep)]">{note}</span>}
       </div>
-      {ready && feature.id === 'qq_bridge' && scope === 'feature' && <p className="mt-4 text-sm">
-        自主活动、预算和小工作室已移至 <a className="underline" href="#autonomous-activity">小窝设置 → 自主活动与沙盒</a>。
-      </p>}
       {/* 字段区已经在上面说过「没读到」了，别把同一句再说一遍；
           这条只管**读到了之后**出错的情况（存的时候失败）。 */}
       {ready && err && <p role="alert" className="mt-2 text-[12px] text-[var(--pink-deep)]">⚠ {err}</p>}

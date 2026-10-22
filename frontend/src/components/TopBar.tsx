@@ -4,6 +4,7 @@ import TopbarAccent from '../visual/TopbarAccent'
 import AppearanceSwitcher from '../visual/AppearanceSwitcher'
 import UiIcon from '../visual/UiIcon'
 import BrandIdentity from '../visual/BrandIdentity'
+import { useTavernMode } from '../lib/tavernMode'
 type View = 'home' | 'chat' | 'nest' | 'space'
 
 type Props = {
@@ -26,6 +27,7 @@ const NAV: { v: View; label: string; short: string; en: string }[] = [
 ]
 
 export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {
+  const [tavernMode] = useTavernMode()
   const topbarChoice=useDesignChoice('topbar')
   return (
     // shrink-0（§19.24）：顶栏是列式 flex 的第一项，不写的话会被内容区挤扁。
@@ -56,7 +58,6 @@ export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {
             ))}
           </nav>
           <AppearanceSwitcher/>
-          <BrainHealthDot/>
           <button aria-label={theme === 'light' ? '切换夜间' : '切换日间'}
             onClick={onToggleTheme}
             className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-2.5 py-1.5 text-[13px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)] sm:px-3.5"
@@ -64,6 +65,7 @@ export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {
             <UiIcon name={theme === 'light' ? 'moon' : 'sun'}/>
             <span className="hidden sm:inline">{theme === 'light' ? '夜间' : '日间'}</span>
           </button>
+          {tavernMode && <BrainHealthDot/>}
         </div>
       </div>
     </header>

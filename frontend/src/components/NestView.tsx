@@ -7,7 +7,7 @@ import '../visual/nest-layout.css'
 // 糖人小窝（《项目要求》§9.6）：全家共同的回忆 + 一起玩的功能入口。
 // 功能清单来自后端注册表（`/api/nest/features`，代码级真相源），前端不写死 ——
 // 加功能只要在 backend/app/features_registry.py 加一条，并给它建一个独立项目 `features/<folder>/`。
-// 记忆 / 模型调用都走「小窝大脑 API」（NestApiPanel），与聊天页的模型设置分开。
+// 记忆 / 模型调用都走「小窝大脑 API」（NestApiPanel），聊天与所有小窝功能统一使用这里的大脑配置。
 //
 // ── 布局（§9.6.7）：抽屉 + 工作台 ─────────────────────────────────────────
 // 以前这里把**所有**面板无条件排下去（大脑 API / 功能开关 / 跑起来 / 动态流 / Gemini /
@@ -24,24 +24,23 @@ import '../visual/nest-layout.css'
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import GalleryGrid from './GalleryGrid'
-import WorldbookPanel from './WorldbookPanel'
 import EnglishStudyPanel from './EnglishStudyPanel'
 import GeminiSyncPanel from './GeminiSyncPanel'
 import JapaneseLabPanel from './JapaneseLabPanel'
 import NestApiPanel from './NestApiPanel'
 import ComputeSettings from './ComputeSettings'
 import ProcessPanel from './ProcessPanel'
-import AutonomousActivityPanel from './AutonomousActivityPanel'
+import PluginPanel from './PluginPanel'
+import ExpertModeControl from './ExpertModeControl'
+import { useExpertMode } from '../lib/expertMode'
 import StoragePanel from './StoragePanel'
 import NestDrawer from './NestDrawer'
 import NestFeedPanel from './NestFeedPanel'
 import NestRunnerPanel from './NestRunnerPanel'
-import NestSettingsPanel from './NestSettingsPanel'
 import QqBridgePanel from './QqBridgePanel'
 import DesktopPetPanel from './DesktopPetPanel'
 import ToolCenter from './ToolCenter'
 import ProjectCostsPanel from './ProjectCostsPanel'
-import { fetchAgentInbox, sendAgentMessage, type AgentMessage } from '../api/agents'
 import { fetchNestFeatures, launchInteractiveHome, type NestFeature } from '../api/client'
 
 // 只有后端注册表里 status='available' 的功能才有可点的入口；planned 的点了给一句规划中提示。
@@ -101,11 +100,21 @@ const STATUS_FILTERS: { id: '' | 'available' | 'planned'; label: string }[] = [
 ]
 
 export default function NestView() {
+  const expert = useExpertMode()
   const [tavernMode, setTavernMode] = useTavernMode()
+
   const [modeError, setModeError] = useState('')
   const nestChoice='n3'
   const [area,setArea]=useState(() => window.location.hash === '#project-costs' ? 'play' : ['#tool-center', '#autonomous-activity'].includes(window.location.hash) ? 'settings' : 'memories')
   const [setting,setSetting]=useState(() => window.location.hash === '#autonomous-activity' ? 'autonomy' : window.location.hash === '#tool-center' ? 'tools' : 'appearance')
+  useEffect(() => {
+    if (!expert.loaded) return
+    if (!expert.enabled && ["autonomy", "tools", "processes", "runner", "compute"].includes(setting)) setSetting("appearance")
+    if (!expert.autonomy_installed && setting === "autonomy") setSetting("appearance")
+  }, [expert.loaded, expert.enabled, expert.autonomy_installed, setting])
+  useEffect(() => {
+    if (expert.loaded && !expert.enabled && area === 'feed') setArea('memories')
+  }, [expert.loaded, expert.enabled, area])
   useEffect(() => {
     const openTools = () => {
       if (window.location.hash === '#tool-center') { setArea('settings'); setSetting('tools') }
@@ -116,13 +125,8 @@ export default function NestView() {
     return () => window.removeEventListener('hashchange', openTools)
   }, [])
   const [features, setFeatures] = useState<NestFeature[]>([])
+  const [featureError, setFeatureError] = useState(false)
   const [toast, setToast] = useState('')
-  const [agentText, setAgentText] = useState('')
-  const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([])
-  // 协作消息读不到时说一句（Block 二 ③）：以前 silent catch，那一块就是空的，
-  // 看着和「大家都没留言」一样。
-  const [agentErr, setAgentErr] = useState('')
-  const [agentBusy, setAgentBusy] = useState(false)
   // 「让功能跑起来」面板当前选中的功能 id（点卡片时滚过去并选中它）。
   const [runnerId, setRunnerId] = useState('')
   // 抽屉的开关 —— 全默认收起，进小窝看到的就是一屏。
@@ -136,14 +140,11 @@ export default function NestView() {
 
   // 拉不到就当空清单 —— 清单那块自己会说「功能清单没拉到（后端没连上？）」，
   // 不会假装「本来就一个功能都没有」。
-  useEffect(() => { void fetchNestFeatures().then(setFeatures).catch(() => setFeatures([])) }, [])
-  useEffect(() => {
-    if(area!=='settings'||setting!=='agents')return
-    void fetchAgentInbox('xiaotangren-ui')
-      .then((list) => { setAgentMessages(list); setAgentErr('') })
-      .catch((e) => setAgentErr(e instanceof Error ? e.message : String(e)))
-  }, [area,setting])
-
+  useEffect(() => { void fetchNestFeatures().then(items => {
+    setFeatures(items)
+    const installed = new Set(items.map(item => item.id))
+    setOpenIds(ids => ids.filter(id => installed.has(id)))
+  }).catch(() => { setFeatureError(true); setFeatures([]) }) }, [expert.enabled])
   useEffect(() => { localStorage.setItem(OPEN_KEY, JSON.stringify(openIds)) }, [openIds])
   useEffect(() => {
     if (activePanel) localStorage.setItem(ACTIVE_KEY, activePanel)
@@ -167,17 +168,6 @@ export default function NestView() {
 
   // 最近用过的（工作台里开着的）—— 收起状态也摆在抽屉上面，省得每次都要点开找。
   const recent = openIds.map((id) => byId.get(id)).filter((f): f is NestFeature => !!f)
-
-  const sendToAgent = async () => {
-    const text = agentText.trim()
-    if (!text || agentBusy) return
-    setAgentBusy(true)
-    try {
-      const sent = await sendAgentMessage({ sender: 'xiaotangren-ui', recipient: '*', conversation_id: 'nest', kind: 'message', payload: { text } })
-      setAgentMessages((items) => [sent, ...items]); setAgentText('')
-    } catch (e) { flash(e instanceof Error ? e.message : String(e)) }
-    finally { setAgentBusy(false) }
-  }
 
   // 把一个项目送进工作台：已经在就切过去；满了就把最旧的那个挤掉（大老大只要 1~2 个）。
   const openPanel = (id: string) => {
@@ -205,6 +195,10 @@ export default function NestView() {
   }
 
   const openFeature = (f: NestFeature) => {
+    if (f.id === 'tools' && expert.enabled) {
+      setArea('settings'); setSetting('tools')
+      return
+    }
     const action = AVAILABLE_ACTION[f.id]
     if (action === 'unity') {
       if (window.confirm('要进入互动小家吗？确认后将打开 Unity 项目。')) {
@@ -251,8 +245,8 @@ export default function NestView() {
 
       <nav className="nest-room-nav" aria-label="小窝分区">{([
         ['memories','gallery','共同回忆','相片与收藏'],['play','game','一起玩','学习与陪伴'],['feed','inbox','小窝动态','她们的新发现'],['settings','settings','小窝设置','偏好与连接']
-      ] as const).map(([id,icon,label,note])=><button key={id} aria-current={area===id?'page':undefined} onClick={()=>setArea(id)}><UiIcon name={icon} size={25}/><span><strong>{label}</strong><small>{note}</small></span></button>)}</nav>
-      <div className="tool-entry-bar"><button type="button" onClick={() => { setArea('settings'); setSetting('tools') }}>✦ 工具中心</button><span>查看能力、允许目录与最近执行记录</span></div>
+      ] as const).filter(([id]) => id !== 'feed' || expert.enabled).map(([id,icon,label,note])=><button key={id} aria-current={area===id?'page':undefined} onClick={()=>setArea(id)}><UiIcon name={icon} size={25}/><span><strong>{label}</strong><small>{note}</small></span></button>)}</nav>
+      {expert.enabled && <div className="tool-entry-bar"><button type="button" onClick={() => { setArea('settings'); setSetting('tools') }}>✦ 工具中心</button><span>按插件管理能力与最近执行记录</span></div>}
       {area==='play'&&<div className="nest-play-room">
       <div className="nest-room-heading"><div><span className="nest-section-note">留一点时间，一起做点喜欢的事</span><h2>一起玩</h2></div></div>
       {/* ---- 一起玩：抽屉。收起时只露一行「最近用的」，点开才列全部 + 能搜 ---- */}
@@ -281,7 +275,7 @@ export default function NestView() {
         </div>
 
         {features.length === 0 ? (
-          <p className="text-[13px] text-[var(--text-3)]">功能清单没拉到（后端没连上？）。</p>
+          <p className="text-[13px] text-[var(--text-3)]">{featureError ? '功能清单读取失败，请检查后端连接。' : '尚未安装可选功能，可按 README 从 GitHub 安装。'}</p>
         ) : matches.length === 0 ? (
           <p className="text-[13px] text-[var(--text-3)]">没有匹配「{query || statusFilter}」的项目。</p>
         ) : (
@@ -345,7 +339,7 @@ export default function NestView() {
         ) : (
           <>
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              {openIds.map((id) => {
+              {openIds.filter(id => byId.has(id)).map((id) => {
                 const f = byId.get(id)
                 const meta = WORKBENCH_PANELS[id]
                 return (
@@ -390,32 +384,22 @@ export default function NestView() {
         <div className="nest-room-heading"><div><span className="nest-section-note">我们的相册</span><h2>共同回忆</h2><p>全家的合照、喜欢的画，还有值得留下的片刻。</p></div><button className="nest-text-action" onClick={()=>{setArea('settings');setSetting('appearance')}}><UiIcon name="paint"/>页头与入场设置 →</button></div>
         <NestStickerEditor/><GalleryGrid owner="" variant="home" bare />
       </section>}
-      {area==='feed'&&<section className="nest-room" aria-label="小窝动态"><div className="nest-room-heading"><div><span className="nest-section-note">带回来与你分享</span><h2>小糖人找到了什么</h2><p>功能带回来的发现，收藏或留下你的反馈。</p></div></div><NestFeedPanel features={features} bare /></section>}
+      {expert.enabled && area==='feed'&&<section className="nest-room" aria-label="小窝动态"><div className="nest-room-heading"><div><span className="nest-section-note">带回来与你分享</span><h2>小糖人找到了什么</h2><p>功能带回来的发现，收藏或留下你的反馈。</p></div></div><NestFeedPanel features={features} bare /></section>}
       {area==='settings'&&<div id="nest-tools" className="nest-settings-layout">
         <nav className="nest-setting-nav" aria-label="小窝设置分类">{([
-          ['tavern','card','酒馆模式'],['appearance','paint','外观与入场'],['autonomy','rocket','自主活动与沙盒'],['tools','tools','工具中心'],['brain','memory','小窝大脑'],['features','settings','功能偏好'],['runner','rocket','运行与日志'],['processes','settings','进程管理'],['storage','settings','存储管理'],['worldbook','book','共用世界书'],['agents','link','Agent 协作']
-        ] as const).map(([id,icon,label])=><button key={id} aria-current={setting===id?'page':undefined} onClick={()=>setSetting(id)}><UiIcon name={icon}/>{label}</button>)}</nav>
+          ['tavern','card','酒馆模式'],['appearance','paint','外观与入场'],['autonomy','rocket','自主活动与沙盒'],['tools','tools','工具中心'],['brain','memory','小窝大脑'],['runner','rocket','运行与日志'],['processes','settings','进程管理'],['storage','settings','存储管理'],['compute','rocket','委托计算']
+        ] as const).filter(([id]) => !['tools','processes','runner','autonomy','compute'].includes(id) || (expert.enabled && (id !== 'autonomy' || expert.autonomy_installed))).map(([id,icon,label])=><button key={id} aria-current={setting===id?'page':undefined} onClick={()=>setSetting(id)}><UiIcon name={icon}/>{label}</button>)}</nav>
         <section className="nest-setting-content" aria-label="设置内容">
           {setting==='tavern'&&<section><h2>酒馆模式</h2><label className="mt-4 flex items-center gap-2"><input type="checkbox" checked={tavernMode} onChange={e => { setModeError(''); void setTavernMode(e.target.checked).catch(err => setModeError(String(err))) }}/>启用酒馆模式</label><p className="mt-2 text-sm">开启后显示角色世界书、导入角色卡会话和导入入口；关闭后保留已有数据。</p>{modeError&&<p role="alert">{modeError}</p>}</section>}
           {setting==='appearance' &&<NestWelcomeSettings/>}
-          {setting==='autonomy'&&<AutonomousActivityPanel/>}
-          {setting==='tools'&&<ToolCenter/>}
-          {setting==='processes'&&<ProcessPanel/>}
+          {expert.enabled && expert.autonomy_installed && setting==='autonomy'&&<PluginPanel featureId="autonomous_activity" title="自主活动与沙盒"/>}
+          {expert.enabled && setting==='tools'&&<ToolCenter/>}
+          {expert.enabled && setting==='processes'&&<ProcessPanel/>}
+          {expert.enabled && setting==='compute'&&<ComputeSettings/>}
           {setting==='storage'&&<StoragePanel embedded/>}
-          {setting==='brain'&&<><div className="nest-room-heading"><div><h2>小窝大脑</h2><p>供小窝功能使用，与聊天模型设置分开。</p></div></div><NestApiPanel bare/><ComputeSettings/></>}
-          {setting==='features'&&<NestSettingsPanel features={features} bare hideIds={['desktop_pet','qq_bridge','japanese_lab','english_study']}/>}
-          {setting==='runner'&&<NestRunnerPanel features={features} activeId={runnerId} onActiveChange={setRunnerId} bare/>}
-          {setting==='worldbook'&&<WorldbookPanel owner="" ownerLabel="家 · 共用世界书" bare/>}
-          {setting==='agents'&&<>            <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-              <div className="mb-1 flex items-center justify-between gap-2"><h2 className="font-bold">🤝 Agent 协作</h2><span className="text-[11px] text-[var(--text-3)]">通用消息中转</span></div>
-              <p className="mb-3 text-[12px] text-[var(--text-2)]">给其他项目的 Agent 留言、交换协议或请求状态；具体功能和逻辑由独立项目处理。</p>
-              <div className="flex gap-2">
-                <input className="input min-w-0 flex-1" value={agentText} onChange={(e) => setAgentText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void sendToAgent() }} placeholder="写一条协作消息…" />
-                <button className="btn sm" disabled={agentBusy || !agentText.trim()} onClick={() => void sendToAgent()}>发送</button>
-              </div>
-              {agentErr&&<p role="alert" className="text-sm text-[var(--pink-deep)]">协作消息未读取：{agentErr}</p>}
-              {agentMessages.length > 0 && <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">{agentMessages.slice(0, 12).map((m) => <div key={m.id} className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[12px]"><b>{m.sender}</b><span className="mx-1 text-[var(--text-3)]">→</span>{String(m.payload.text ?? JSON.stringify(m.payload))}</div>)}</div>}
-            </section></>}
+          {setting==='brain'&&<><div className="nest-room-heading"><div><h2>小窝大脑</h2><p>聊天与小窝功能共用的模型配置。</p></div></div><NestApiPanel bare/></>}
+          {expert.enabled && setting==='runner'&&<NestRunnerPanel features={features} activeId={runnerId} onActiveChange={setRunnerId} bare/>}
+          <ExpertModeControl/>
         </section>
       </div>}
     </main>

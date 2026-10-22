@@ -52,7 +52,7 @@ export default function WorldbookPanel({ owner, ownerLabel, bare = false }: Prop
   const reload = useCallback(async () => {
     try {
       // 角色页在这里把「家共用」也列出来（只读），让人看得见私聊时还有哪些共用条目会生效
-      const [mine, home] = await Promise.all([fetchWorldbook(owner), fetchWorldbook('')])
+      const [mine, home] = await Promise.all([fetchWorldbook(owner), owner === '' ? Promise.resolve([]) : fetchWorldbook('')])
       setEntries(mine)
       setShared(owner === '' ? [] : home)
     } catch (e) {
@@ -198,7 +198,7 @@ export default function WorldbookPanel({ owner, ownerLabel, bare = false }: Prop
       {shared.length > 0 && (
         <div className="mt-6">
           <p className="mb-2 text-[13px] text-[var(--text-3)]">
-            另外，下面这些<b>家 · 共用</b>词条在她私聊时也会生效（在「🏠 糖人小窝」里编辑）：
+            另外，下面这些<b>家 · 共用</b>词条在她私聊时也会生效（开启酒馆模式后，在「最近聊天」底栏的「共用世界书」里编辑）：
           </p>
           <div className="space-y-2">
             {shared.map((e) => (

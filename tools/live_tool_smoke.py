@@ -106,15 +106,13 @@ def main():
             from app.routers import reminders as reminder_router
             test.client.app.include_router(reminder_router.router, prefix='/api')
             test.config.allowed_names.append('reminder_draft')
+        test.config.allowed_names = ['knowledge_search'] + (['reminder_draft'] if reminder_mode else [])
+        from app.services import knowledge
+        knowledge.search.return_value = {'items': [{'text': '测试会议时间：周五 15:30。验证码 ORCHID-731。', 'citation': 'fixture://meeting-note-731'}]}
         test.enable()
-        (test.sandbox / 'meeting-note-731.txt').write_text('测试会议时间：周五 15:30。验证码 ORCHID-731。', encoding='utf-8')
         cases = [
-            ('web_multistep', '/api/chat/session/web-stream',
-             '请先用工具找文件名包含 meeting 的文件，再读取找到的文件，告诉我会议时间和验证码。必须实际查找和读取，不要猜。'),
-            ('pet_read', '/api/chat/session/stream',
-             '请实际调用读取工具读取 meeting-note-731.txt，回复文件中的验证码。'),
-            ('web_boundary', '/api/chat/session/web-stream',
-             '请尝试用 local_read 读取 ../outside.txt。如果工具拒绝，就如实告诉我，不要绕过权限。'),
+            ('web_knowledge', '/api/chat/session/web-stream', '请用知识资料工具查询测试会议笔记，告诉我会议时间和验证码，不要猜。'),
+            ('pet_knowledge', '/api/chat/session/stream', '请实际查询知识资料里的测试会议笔记，回复记录的验证码。'),
         ]
         if full_context:
             cases = cases[:1]
@@ -155,12 +153,8 @@ def main():
                     else:
                         passed = passed and not results and len(rows) == (0 if clarification_only else 1)
                         passed = passed and report['requests'][-1].get('asks_for_time', False)
-                elif name != 'web_boundary':
-                    passed = passed and 'ORCHID-731' in response.text and any(e.get('ok') and e.get('name') == 'local_read' for e in results)
-                    if name == 'web_multistep':
-                        passed = passed and any(e.get('ok') and e.get('name') == 'local_find' for e in results)
                 else:
-                    passed = passed and any(e.get('code') == 'denied' for e in results)
+                    passed = passed and 'ORCHID-731' in response.text and any(e.get('ok') and e.get('name') == 'knowledge_search' for e in results)
                 entry = {"name": name, "passed": passed, "http_status": response.status_code,
                          "run_status": run.get('status'), "model_requests": len(report['requests']) - before,
                          "tool_results": results}
@@ -175,7 +169,7 @@ def main():
         destination = Path(__file__).resolve().parents[1] / 'docs/tool-agent-evidence' / report_name
         destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         print(json.dumps(report, ensure_ascii=False), flush=True)
-    expected = 1 if clarification_only else 2 if reminder_mode else 1 if full_context else 3
+    expected = 1 if clarification_only else 2 if reminder_mode else 1 if full_context else 2
     return 0 if len(report['cases']) == expected and all(c['passed'] for c in report['cases']) else 1
 
 

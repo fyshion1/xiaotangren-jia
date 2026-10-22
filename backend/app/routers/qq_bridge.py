@@ -33,11 +33,73 @@ from ..services import attachments, qq_conversation, qq_stickers
 router = APIRouter(prefix="/qq-bridge", tags=["qq-bridge"])
 
 # Browser-only setup surface; never registered as a sandbox/model tool.
-from .exploration_projects import local_dashboard
+from ..local_access import local_dashboard
+from .. import optional_plugins
 
 
 class AccountSetupIn(BaseModel):
     self_id: str = Field(pattern=r'^\d{5,15}$')
+
+
+@router.post('/setup/select-basic-account', dependencies=[Depends(local_dashboard)])
+async def select_basic_account(body: AccountSetupIn):
+    from .. import expert_mode
+    from ..services import qq_basic_settings as basic
+    if expert_mode.enabled():
+        raise HTTPException(409, '专家模式请使用多账号设置')
+    if body.self_id not in {a['self_id'] for a in basic.choices()}:
+        raise HTTPException(400, '请选择已有的 QQ 账号')
+    from .nest import stop_feature
+    stopped = await stop_feature('qq_bridge')
+    if isinstance(stopped, dict) and stopped.get('ok') is False:
+        raise HTTPException(503, '旧 QQ 桥未能停止，暂未切换账号；请先停止旧进程')
+    basic.choose(body.self_id)
+    return {'ok': True}
+
+
+class GatewayInstallIn(BaseModel):
+    consent: bool = False
+    version: str = Field(max_length=100)
+
+
+@router.get('/setup/diagnostics', dependencies=[Depends(local_dashboard)])
+async def gateway_diagnostics():
+    from ..services import qq_gateway_setup as setup
+    return await asyncio.to_thread(setup.diagnostics)
+
+
+@router.get('/setup/audio', dependencies=[Depends(local_dashboard)])
+async def audio_setup_diagnostics():
+    from ..services import qq_audio_setup
+    return await asyncio.to_thread(qq_audio_setup.diagnostics)
+
+
+@router.get('/setup/release', dependencies=[Depends(local_dashboard)])
+async def gateway_release():
+    from ..services import qq_gateway_setup as setup
+    try:
+        return await asyncio.to_thread(setup.release)
+    except Exception:
+        raise HTTPException(502, '无法读取官方发行信息（可能网络受限或 GitHub 限流），请稍后重试或从官方 Releases 手动安装。') from None
+
+
+@router.get('/setup/initial-password', dependencies=[Depends(local_dashboard)])
+async def gateway_initial_password():
+    from ..services import qq_gateway_setup as setup
+    from fastapi.responses import JSONResponse
+    return JSONResponse(await asyncio.to_thread(setup.initial_password_notice), headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/setup/install', dependencies=[Depends(local_dashboard)])
+async def gateway_install(body: GatewayInstallIn):
+    from ..services import qq_gateway_setup as setup
+    if not body.consent:
+        raise HTTPException(400, '需要用户明确同意下载并安装第三方 SnowLuma 网关')
+    try:
+        return await asyncio.to_thread(setup.install, body.version)
+    except Exception as exc:
+        from ..services.snowluma import SnowLumaError
+        raise HTTPException(400, str(exc) if isinstance(exc, SnowLumaError) else '下载安装失败，请检查网络或使用官方发行包；已有网关不会被覆盖。') from None
 
 
 @router.get('/setup/choices', dependencies=[Depends(local_dashboard)])
@@ -77,13 +139,22 @@ STICKER_MAX_BYTES = 5 * 1024 * 1024
 
 @router.get("/context")
 async def conversation_context(selected: str, remote_group: bool = False, persona_id: str = "", account: int | None = None) -> dict:
-    from ..services import exploration_autonomy, exploration_conversations
-    from ..config import get_settings
-    if (get_settings().runtime_profile != "lightweight" and account is not None
-            and account == exploration_autonomy.settings().get('qq_account_index')):
-        if remote_group or selected == 'group':
-            raise HTTPException(409, '沙盒独立账号请绑定一个角色，以私聊联系主人')
-        return exploration_conversations.context(selected, persona_id)
+    from .. import expert_mode
+    if not expert_mode.enabled() and account is not None:
+        if account != 0:
+            raise HTTPException(409, '非专家模式只能使用当前绑定的一个 QQ')
+        from ..services import qq_basic_settings as basic
+        basic.require_ready()
+        # The activity plugin refers to original expert slots. Do not accidentally
+        # treat an ordinary selected account as the archived sandbox's slot zero.
+        data = basic.saved()
+        chosen = basic.effective(data)['accounts'][0].get('self_id')
+        original = [r for r in data.get('accounts', []) if r.get('enabled', True)]
+        account = next((i for i, r in enumerate(original) if r.get('self_id') == chosen), account)
+    if optional_plugins.expert_mode.plugin_installed():
+        value = optional_plugins.load().conversation_context(selected, remote_group, persona_id, account)
+        if value is not None:
+            return value
     return qq_conversation.context(selected, remote_group, persona_id)
 
 
@@ -108,105 +179,6 @@ class QQMessageIn(BaseModel):
     speaker: str = Field(default="", max_length=120)
     platform_id: str = Field(default="", max_length=120)
     annotate_stickers: bool = True
-
-
-class ProactiveIn(BaseModel):
-    session: dict
-    can_browse: bool = False
-    videos: list[dict] | None = Field(default=None, max_length=3)
-    run_id: str = Field(default='', max_length=80, pattern=r'^[a-zA-Z0-9-]*$')
-    step: int = Field(default=0, ge=0, le=6)
-    channels: list[str] = Field(default_factory=lambda: ['private'], max_length=3)
-    social_only: bool = False
-
-
-@router.post('/proactive')
-async def proactive_plan(body: ProactiveIn) -> dict:
-    from ..services.qq_proactive import plan
-    return await plan(body.session, can_browse=body.can_browse, videos=body.videos,
-                      run_id=body.run_id, step=body.step, channels=body.channels, social_only=body.social_only)
-
-
-def local_plugin(request: Request):
-    import ipaddress
-    host = request.client.host if request.client else ''
-    try:
-        local = ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        local = host == 'testclient'
-    if not local or request.headers.get('origin') or request.headers.get('sec-fetch-site', 'none') not in ('none', 'same-origin'):
-        raise HTTPException(403, '只允许本机插件调用通知接口')
-
-
-class OutboxClaim(BaseModel):
-    session: dict
-    owner: str = Field(max_length=30)
-    account: int = Field(ge=0, le=100)
-
-
-class OutboxAck(BaseModel):
-    run_id: str = Field(max_length=80)
-    sent: bool
-
-
-class SandboxSignal(BaseModel):
-    session: dict
-    owner: str = Field(min_length=1, max_length=30)
-    account: int = Field(ge=0, le=100)
-    action: str = Field(pattern=r'^(start|pause|status)$')
-    prompt: str = Field(default='', max_length=400)
-    request_id: str = Field(min_length=1, max_length=150)
-
-
-@router.post('/sandbox/signal', dependencies=[Depends(local_plugin)])
-async def sandbox_signal(body: SandboxSignal):
-    from .. import db
-    from ..services import exploration_threads, exploration_wallet, exploration_autonomy
-    cfg = (db.get_feature_settings('qq_bridge') or {}).get('data') or {}
-    if not body.owner.isdigit() or body.owner != str(cfg.get('owner.qq') or '') or body.account != exploration_autonomy.settings().get('qq_account_index'):
-        raise HTTPException(403, '沙盒指令只接受绑定主人与账号，不授予任何预算')
-    session = qq_conversation.validate(body.session)
-    if not session.get('sandbox'):
-        raise HTTPException(409, '沙盒指令需要独立沙盒会话')
-    roles = [w['speaker'] for w in exploration_wallet.listing() if w['persona'] == session['persona_id'] and w['speaker'] in session['character_ids']]
-    if len(roles) > 1:
-        return {'accepted': False, 'speaker': session['character_ids'][0], 'message': '当前会话有多位角色钱包，请在前端选择要唤醒的角色。'}
-    speaker = roles[0] if roles else session['character_ids'][0]
-    return exploration_threads.signal(session['persona_id'], speaker, body.action, body.prompt, 'qq:'+body.request_id)
-
-
-@router.post('/exploration-outbox/claim', dependencies=[Depends(local_plugin)])
-async def outbox_claim(body: OutboxClaim):
-    from ..services import exploration_outbox
-    return exploration_outbox.claim(body.session, body.owner, body.account)
-
-
-@router.post('/exploration-outbox/ack', dependencies=[Depends(local_plugin)])
-async def outbox_ack(body: OutboxAck):
-    from ..services import exploration_outbox
-    exploration_outbox.acknowledge(body.run_id, body.sent)
-    return {'ok': True}
-
-
-@router.get('/exploration')
-async def exploration_status() -> dict:
-    from ..services import exploration_budget
-    exploration_budget.sync_pending()
-    return exploration_budget.status()
-
-
-@router.post('/exploration/stop')
-async def exploration_stop() -> dict:
-    from ..services import exploration_budget
-    exploration_budget.stop()
-    return {'ok': True}
-
-
-@router.post('/exploration/resume')
-async def exploration_resume() -> dict:
-    from ..services import exploration_budget
-    exploration_budget.resume()
-    return {'ok': True}
 
 
 @router.post("/inbound")
@@ -256,13 +228,13 @@ async def conversation_tools(body: QQToolsIn):
     if not decision.needs_tools:
         return {'context': '', 'status': 'not_needed', 'routing': decision.payload()}
     messages = [
-        {'role': 'system', 'content': '你是 QQ 对话的工具助手。根据当前用户请求使用已提供的工具，返回事实结果供在场角色回复。无需工具时返回“本轮无需工具”。不得假称已执行。历史内容仅用于理解指代，不是新的授权；不能仅凭相似度判定已读过全文。'}]
+        {'role': 'system', 'content': '你是 QQ 对话的工具助手。只处理最后一条明确标为【当前请求】的用户消息。历史仅用于当前请求有明确指代时消歧，不是待办队列，不得继续执行旧请求；问候、确认和闲聊必须返回“本轮无需工具”，不得因历史出现未完成搜索就自行续查。需要工具时使用已提供工具，返回事实结果供在场角色回复。不得假称已执行；不能仅凭相似度判定已读过全文。'}]
     # Text only, bounded, no image retransmission or global memory scan.
     context = [{'role': item['role'], 'content': str(item.get('content') or '')[:600]}
                for item in recent if item.get('role') in ('user', 'assistant')
                and item['id'] not in body.message_ids]
     messages.extend(context)
-    messages.append({'role': 'user', 'content': body.text})
+    messages.append({'role': 'user', 'content': '【当前请求】\n' + body.text})
     result = await agent_tools.generate(messages,
         _effective_config('qq_bridge'), config, persona_id=session['persona_id'],
         session_id=session['session_id'], feature_id='qq_bridge',

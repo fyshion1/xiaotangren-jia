@@ -67,7 +67,7 @@ async def monitor(session, request_id, source, emit=None):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-async def transient_stream(messages, model, base_url, api_key='', *, max_tokens=None, source='legacy_chat'):
+async def transient_stream(messages, model, base_url, api_key='', *, max_tokens=None, source='legacy_chat', suggestions_enabled=False):
     """Legacy stateless transports share progress/log/diagnostics and one attempt.
 
     These APIs carry no durable session identity, so do not populate a persistent
@@ -81,6 +81,8 @@ async def transient_stream(messages, model, base_url, api_key='', *, max_tokens=
     queue = asyncio.Queue(maxsize=128)
     options = {'model': model, 'base_url': base_url, 'api_key': api_key}
     async def produce():
+        from .reply_suggestions import SuggestionStream
+        suggestions = SuggestionStream(suggestions_enabled)
         async with monitor(session, rid, source, queue.put) as progress:
             progress.event('received', {'messages': [{'role': m['role'], 'text': m['content'] if isinstance(m['content'], str) else '\n'.join(p.get('text', '') for p in m['content'] if p.get('type') == 'text')} for m in messages if m['role'] != 'system']})
             progress.event('generation')
@@ -89,10 +91,15 @@ async def transient_stream(messages, model, base_url, api_key='', *, max_tokens=
                 async for event in openai.stream_chat_retry(messages, model, base_url, api_key, max_tokens=max_tokens, attempts=1):
                     if event['type'] == 'text':
                         raw.append(event['text'])
-                        await queue.put({'type': 'token', 'text': event['text']})
+                        visible = suggestions.feed(event['text'])
+                        if visible:
+                            await queue.put({'type': 'token', 'text': visible})
                     elif event['type'] == 'done':
+                        tail = suggestions.finish()
+                        if tail:
+                            await queue.put({'type': 'token', 'text': tail})
                         progress.event('generated', {'raw': ''.join(raw), 'finish_reason': event.get('finish_reason')})
-                        await queue.put(event)
+                        await queue.put({**event, 'reply_suggestions': suggestions.candidates})
                     elif event['type'] == 'error':
                         code = event.get('status')
                         raise RuntimeError(f'上游 {code}' if isinstance(code, int) else '模型暂时未能回复')

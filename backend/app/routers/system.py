@@ -7,12 +7,14 @@ import signal
 from pathlib import Path
 
 import psutil
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from ..launcher_settings import StartupSettings, load_startup, save_startup
 
-router = APIRouter(prefix="/system", tags=["system"])
+from ..expert_mode import require_expert
+
+router = APIRouter(prefix="/system", tags=["system"], dependencies=[Depends(require_expert)])
 REPO = Path(__file__).resolve().parents[3]
 WATCH_PORTS = {8000, *range(5173, 5181), 8765, 8766, 3001, 3010}
 
@@ -51,7 +53,7 @@ def _project(p) -> bool:
         # known service command before using cwd as evidence of project membership.
         service_args = " ".join(args).lower()
         known = any(token in service_args for token in (
-            "app.main:app", "multiprocessing", "vite", "qqbridge", "jplab", "english_study",
+            "app.main:app", "app.plugin_worker", "multiprocessing", "vite", "qqbridge", "jplab", "english", "costs",
         ))
         return known and _under_repo(p.cwd())
     return False
@@ -93,7 +95,7 @@ def list_processes() -> dict:
             can, force, reason = _why(p)
             if not related:
                 can, reason = False, "端口被其他项目占用，不在这里停止"
-            role = "后端" if "app.main:app" in args else (
+            role = "自主活动插件" if "app.plugin_worker" in args else "后端" if "app.main:app" in args else (
                 "前端" if any("vite" in a for a in args) else "功能进程")
             items.append({
                 "pid": p.pid, "ppid": p.ppid(), "name": p.name(), "role": role,

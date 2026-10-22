@@ -57,7 +57,8 @@ def meaningful_speech(text: str) -> bool:
 
 
 def local_asr_ready() -> bool:
-    return all((MODEL_DIR / name).is_file() for name in ('tokens.txt', 'encoder.int8.onnx', 'decoder.int8.onnx'))
+    return all((MODEL_DIR / name).is_file() and (MODEL_DIR / name).stat().st_size > 0
+               for name in ('tokens.txt', 'encoder.int8.onnx', 'decoder.int8.onnx'))
 
 
 class LocalRecognizer:

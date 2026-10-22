@@ -13,7 +13,7 @@
 
 ## 轻量主机
 
-参考 `deploy/j1900.env.example` 和 `deploy/xiaotangren.service`。安装 `backend/requirements-lightweight.txt` 及本地 `packages/tool-runtime`，前端预先在笔记本构建，再复制 `frontend/dist`。
+参考 `deploy/j1900.env.example` 和 `deploy/xiaotangren.service`。安装 `backend/requirements-lightweight.txt`；工具仅在需要时另行安装独立的 `features/tools`，前端预先在笔记本构建，再复制 `frontend/dist`。
 
 `RUNTIME_PROFILE=lightweight` 关闭桌宠、语音及音视频接口，停用采集和自主探索调度；不加载本地向量模型。无需安装 PyTorch、ASR 或 TTS。
 

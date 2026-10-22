@@ -13,7 +13,7 @@
 | 图片与视频 | 上传附件、看图、视频关键帧、画廊收藏和存储管理。看图需要视觉模型；视频处理还需 FFmpeg。 |
 | 个人记忆 | 原始聊天归档、清洗、每日事件整理、长期记忆候选、人工审核、注入与来源管理。AI 整理会调用模型。 |
 | 个人数据库与知识资料 | 管理个人事实、知识文档、出处检索与待确认草案；支持独立 Embedding API。 |
-| 工具中心 | 按能力启用文件读取、搜索、知识检索、提醒等工具，并查看执行记录；模型需支持 tools/tool_calls。部分工具依赖独立功能。 |
+| 工具中心 | 专家模式按插件抽屉授权联网、知识资料、项目费用和提醒工具；需另行安装 features/tools。联网依赖第三方 OmniReach，部分来源需 Chrome 扩展。 |
 | 语音 | Edge/Piper 朗读；单角色持续通话支持本地或云端识别与合成、插话打断。需另配模型文件或语音服务。 |
 | 生图 | 本地/云端 ComfyUI、OpenAI 兼容生图接口。需自备对应服务；NovelAI 目前为预留适配。 |
 | QQ 与桌宠 | 本体有接入、配置与共享对话能力；桥客户端、桌宠应用及网关属于额外安装内容。 |
@@ -31,9 +31,14 @@
 ```powershell
 git clone https://github.com/fyshion1/xiaotangren-jia.git
 cd xiaotangren-jia
+python install-features.py
 ```
 
+下载询问依次提供 **桌宠、QQ 桥、联网搜索、QQ 语音转写、本地说话与听写、按意思查找记忆和资料**，全部默认不安装（直接回车）。提示先解释能做什么，再介绍依赖。QQ 语音转写不下载朗读音色；完整本地语音另含中文音色。「按意思查找」安装本地 embedding 模型，模型约 100 MB，但运行依赖可能占 GB 级空间；不安装仍可关键词检索。安装及首次配置见[可选组件说明](docs/guides/optional-components.md)。其他功能不在安装器中提供选项，请到 [GitHub](https://github.com/fyshion1) 按需求查看各仓库。下载不等于已完成账号配置；私有仓库需要访问权限。以后也可再次运行 `python install-features.py`，已有目录会跳过。
+
 已有项目时先保存自己的改动，再运行 `git pull`。不要用另一台机器的私人数据覆盖自己的配置。
+
+首次创建的私人空间使用“主人”和“自定义身份”两个中性模板，不预填生日、身体数据、职业或亲密关系。可在私人空间自行编辑，身体尺寸字段默认隐藏，可在编辑器中取消隐藏。更新程序会保留已有档案；旧档案的称呼和介绍需要在私人空间自行修改。
 
 ### 2. 安装后端依赖并配置模型
 
@@ -67,15 +72,10 @@ cd ..
 
 启动脚本不会代替上述依赖安装。以后更新代码，如果依赖清单有变化，重新执行后端 `uv sync --locked` 和前端 `npm ci`。
 
-### 4. 第一次只启动网页和后端
+### 4. 启动小窝
 
-启动器默认还会尝试启动 QQ 桥和桌宠。新机器通常没有这些独立项目，建议先运行：
-
-```powershell
-.\start.bat --configure
-```
-
-依次将 **后端、前端选 y，QQ 桥、桌宠选 n**。然后双击 `start.bat`，或运行：
+普通模式自动启动前端、大脑，以及已安装的 QQ 桥、桌宠和常驻功能后端；未安装的功能会跳过。
+双击 `start.bat`，或运行：
 
 ```powershell
 .\start.bat
@@ -83,7 +83,7 @@ cd ..
 
 打开 **http://localhost:5173**。后端地址为 `http://127.0.0.1:8000`，健康检查为 `http://127.0.0.1:8000/api/health`，接口文档为 `http://127.0.0.1:8000/docs`。
 
-保持启动窗口开启；关闭总窗口会回收它启动的服务。启动偏好保存在本机 `backend/data/launcher.json`，也可在「小窝设置 → 进程管理」调整；`start.bat --reset-startup` 会恢复全部服务默认开启。
+保持启动窗口开启；直接叉掉主 CMD 会关闭它管理的全部子进程，无需先按 Ctrl+C。普通模式不显示进程管理；开发者可通过隐藏入口开启[专家模式](docs/guides/expert-mode.md)，在进程管理调整下一次启动偏好。自主活动与沙盒已迁至独立插件 `features/autonomous-activity`，只有安装插件并开启专家模式后才显示。
 
 ### Linux / macOS 或手动启动
 
@@ -111,6 +111,8 @@ npm run dev
 2. **试角色与身份**：修改角色资料或导入一张自己的角色卡，查看导入预览、开场白、世界书和提示词；在私人空间确认当前身份。
 3. **试多模态**：上传一张普通图片，询问具体内容；再试画廊收藏。视频、生图等服务配好后再测试。
 4. **试记忆**：聊一件带时间、人物的合成小事，在「私人空间 → 个人记忆库」查看整理与候选，核对后批准并启用，换话题后检查能否正确引用。个人事实资料在「个人数据库」管理。
+
+聊天输入框上方的候选回复随角色本次回复一起生成，最多 3 条，不单独请求模型；候选字段不会写入聊天正文。点击候选只填入输入框，收起候选会停止后续回合的候选生成。模型未返回有效候选时留空，不额外请求补生成。此功能仍会消耗少量附录提示和输出 token。
 5. **试工具与提醒**：在「糖人小窝 → 小窝设置 → 工具中心」启用需要的能力，指定测试目录，用测试文件检查读取结果和执行记录；再测试一次性提醒。
 6. **最后试扩展**：语音通话、QQ、桌宠和自主活动分别配置后单独测试，方便定位问题。
 
@@ -140,7 +142,7 @@ npm run dev
 
 ### QQ、桌宠和其他独立功能
 
-**`features/` 中的应用是独立 Git 仓库，本体 clone 不会将它们下载，也没有自动安装全部功能的子模块。** 页面出现入口不代表对应服务已经安装。
+**`features/` 中的应用是独立 Git 仓库，本体 clone 不会将它们下载，也没有自动安装全部功能的子模块。** 功能页仅显示已放入对应目录的独立功能，未安装的日语、英语等不显示；本体自带的 Gemini 同步入口保留。
 
 2026-10-22 已将桌宠首次提交 `101df58` 推送到私有仓库 [fyshion1/desktop-pet](https://github.com/fyshion1/desktop-pet)，QQ 桥更新 `bf8f092` 已推送到私有仓库 [fyshion1/qq-bridge](https://github.com/fyshion1/qq-bridge)。朋友需先取得两个仓库的访问权限并接受邀请。本体与两个功能分别提交、分别更新；仅拉取本体不会更新它们。
 
@@ -174,7 +176,7 @@ cd ../features/qq-bridge
 ..\..\backend\.venv\Scripts\python.exe -m qqbridge check
 ```
 
-若提示仓库不存在，先检查私有仓库访问权限。本体环境已经安装桥所需的 aiohttp 与本地工具 SDK；使用本体解释器运行，不必先创建另一套 Python 环境。
+若提示仓库不存在，先检查私有仓库访问权限。本体环境已提供桥所需的 aiohttp；使用本体解释器运行即可。工具插件位于可选的 features/tools，普通 QQ 聊天不依赖它。
 
 接下来依次配置：
 
@@ -185,7 +187,7 @@ cd ../features/qq-bridge
 
 首次只配置一个机器人账号和一个测试联系人；同一账号由一份桥负责收发。朋友需要自行登录 QQ、填白名单和配置模型，维护者的 `config.json`、网关登录态和密钥不随源码分发。配置完成后再在 `start.bat --configure` 开启 QQ 桥或桌宠自动启动。
 
-QQ 需要桥客户端、网关与登录配置；桌宠需要独立桌面应用；日语、英语、项目费用等面板也依赖各自功能项目。需要这些功能时向项目维护者取得对应仓库与安装说明，按 `backend/app/features_registry.py` 的目录约定放入 `features/`。本体仅保留接口、配置与展示层，缺少独立服务时先测试网页基础功能即可。
+QQ 需要桥客户端、网关与登录配置；桌宠需要独立桌面应用；日语、英语、项目费用等面板也依赖各自功能项目。需要这些功能时向项目维护者取得对应仓库与安装说明，按 `backend/app/features_registry.py` 的目录约定放入 `features/`。本体仅保留接口、配置与展示层；未安装的功能不会出现在功能列表中。
 
 入口文档：[独立功能约定](features/README.md)、[QQ 网关接入](docs/integrations/qq-gateway-snowluma.md)、[QQ 排查](docs/qq-bridge-troubleshooting.md)、[桌宠方案与接入](docs/plans/desktop-pet-mvp.md)、[Gemini 网页扩展](extensions/gemini-sync/README.md)。
 
@@ -228,7 +230,7 @@ Live2D、VRM、Piper、ASR 和 Embedding 等本机模型不保证随仓库提供
 
 ## 开发与测试
 
-技术栈：React 18、TypeScript、Vite 5、Tailwind CSS 4；FastAPI、Pydantic、SQLite；本地工具 SDK 位于 `packages/tool-runtime/`。
+技术栈：React 18、TypeScript、Vite 5、Tailwind CSS 4；FastAPI、Pydantic、SQLite；本地工具 SDK 位于 `features/tools/`。
 
 ```powershell
 # 前端：在 frontend/ 执行
@@ -250,7 +252,7 @@ backend/app/           后端接口、对话、记忆、语音、工具和启动
 backend/tests/         后端自动化测试
 frontend/src/          页面、组件、API 与视觉资源
 frontend/tests/        单元测试与浏览器测试脚本
-packages/tool-runtime/ 本地工具 SDK
+features/tools/ 本地工具 SDK
 features/              另外安装的独立功能项目（本仓库仅收录说明）
 extensions/            浏览器扩展
 assets/、models/        素材与本机模型，留意授权与忽略规则

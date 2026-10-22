@@ -24,6 +24,7 @@ type Props = {
   maxTokens: number | null
   uncensored: boolean
   cardDisplayMode?: 'chat' | 'html'
+  replySuggestions?: boolean
 }
 
 /** 把「角色名 → id」的展示做轻量一点：后端返回的是纯 JSON，这里只做高亮与折叠。 */
@@ -37,7 +38,7 @@ function RoleTag({ role }: { role: string }) {
   return <span className={`rounded-md border px-1.5 py-0.5 text-[11px] ${cls}`}>{role}</span>
 }
 
-export default function PromptInspector({ open, onClose, characterIds, personaId, messages, uncensored, model, baseUrl, maxTokens, cardDisplayMode }: Props) {
+export default function PromptInspector({ open, onClose, characterIds, personaId, messages, uncensored, model, baseUrl, maxTokens, cardDisplayMode, replySuggestions }: Props) {
   const [dump, setDump] = useState<PromptDump | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
@@ -59,8 +60,9 @@ export default function PromptInspector({ open, onClose, characterIds, personaId
         base_url: baseUrl || null,
         max_tokens: maxTokens,
         card_display_mode: cardDisplayMode,
+        reply_suggestions: replySuggestions,
       }),
-    [messages, characterIds, personaId, uncensored, model, baseUrl, maxTokens, cardDisplayMode],
+    [messages, characterIds, personaId, uncensored, model, baseUrl, maxTokens, cardDisplayMode, replySuggestions],
   )
 
   const run = useCallback(async () => {

@@ -1,3 +1,4 @@
+import NetworkAccess from './NetworkAccess'
 import { useEffect, useState } from 'react'
 import { fetchNestRunStatus, runNestFeature, stopNestFeature } from '../api/client'
 import NestSettingsPanel from './NestSettingsPanel'
@@ -32,6 +33,7 @@ export default function DesktopPetPanel() {
     finally { setBusy(false) }
   }
   return <div className="space-y-5">
+    <NetworkAccess channel="desktop_pet"/>
     <div className="rounded-2xl border border-purple-100 bg-purple-50/50 p-5">
       <div className="flex items-center justify-between gap-4">
         <div><h3 className="font-semibold text-purple-900">🐾 桌边的小糖人</h3><p className="mt-2 text-sm text-gray-600">桌面气泡可切换群聊或角色私聊；拖动人物或气泡标题栏一起移动，靠近边缘自动贴边。</p></div>

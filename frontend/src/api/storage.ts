@@ -31,7 +31,7 @@ export function toChatMessage(s: StoredMessage): ChatMessage {
     content: s.content,
     image: s.image_source === 'video' && s.frames?.length ? s.frames[0] : s.image ? thumbOf(s.image) : undefined,
     imageOrig: s.image || undefined,
-    imageSource: (s.image_source as 'upload' | 'generated' | 'video') || undefined,
+    imageSource: (s.image_source as ChatMessage['imageSource']) || undefined,
     kind: s.kind === 'groups' ? 'groups' : 'text',
     segments: s.segments?.length ? s.segments : undefined,
     seq: s.seq,

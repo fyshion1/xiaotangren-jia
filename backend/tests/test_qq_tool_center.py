@@ -31,7 +31,8 @@ class QQToolCenterTests(unittest.IsolatedAsyncioTestCase):
             history.assert_called_once_with(session, ['now'])
             messages = generate.await_args.args[0]
             self.assertEqual(len(messages[1]['content']), 600)
-            self.assertEqual(messages[-1], {'role': 'user', 'content': '读完那个版本'})
+            self.assertEqual(messages[-1], {'role': 'user', 'content': '【当前请求】\n读完那个版本'})
+            self.assertIn('不得继续执行旧请求', messages[0]['content'])
             self.assertEqual(len(messages), 3)
 
     async def test_owner_and_center_permissions_before_generation(self):

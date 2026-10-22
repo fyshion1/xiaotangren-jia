@@ -190,6 +190,11 @@ class Launcher:
         self.spawn("frontend", [node, str(vite), "--port", str(self.frontend_port), "--strictPort"], REPO / "frontend")
 
     def start_feature(self, feature: str):
+        from .features_registry import runner_of
+        runner = runner_of(feature)
+        if not runner or not (REPO / 'features' / runner['folder']).is_dir():
+            say(f"{feature} 未安装，跳过。")
+            return
         if feature == "qq_bridge":
             # Gateway may require a QQ login. Its failure must not block the pet,
             # the frontend, or the shutdown/restart control loop.
@@ -200,10 +205,11 @@ class Launcher:
             except (OSError, ValueError) as exc:
                 say(f"QQ 网关未就绪：{exc}；桥仍会按已有配置启动，详情见功能日志。")
         try:
-            result = request_json(self.backend_port, f"/api/nest/features/{feature}/run", {"command": "run"}, timeout=10)
+            command = 'serve' if any(c['name'] == 'serve' and c.get('background') for c in runner['commands']) else 'run'
+            result = request_json(self.backend_port, f"/api/nest/features/{feature}/run", {"command": command}, timeout=10)
             say(f"{feature}：{result.get('message', '启动请求已提交')}")
         except (OSError, ValueError) as exc:
-            say(f"{feature} 启动失败：{exc}，请查看小窝进程管理 / 功能日志。")
+            say(f"{feature} 启动失败：{exc}，详情请查看功能日志。")
 
     def stop_backend(self):
         self.backend_ready = False
@@ -254,12 +260,19 @@ class Launcher:
                 except Exception as exc:
                     say(str(exc))
         if self.backend_ready:
-            for feature in ("qq_bridge", "desktop_pet"):
+            for feature in ("qq_bridge", "desktop_pet", "autonomous_activity"):
                 if getattr(self.settings, feature):
                     threading.Thread(target=self.start_feature, args=(feature,), daemon=True).start()
+            # Installed HTTP backends are services; scheduled 'watch' jobs remain opt-in.
+            from .features_registry import FEATURES
+            for feature in FEATURES:
+                runner = feature.get('runner')
+                if runner and any(c['name'] == 'serve' and c.get('background') for c in runner['commands']):
+                    if (REPO / 'features' / runner['folder']).is_dir():
+                        threading.Thread(target=self.start_feature, args=(feature['id'],), daemon=True).start()
         say("关闭本窗口 = 退出全部服务（含 QQ 桥、网关、桌宠和前端）。")
         if self.settings.frontend:
-            say(f"小窝：http://localhost:{self.frontend_port}（设置 → 进程管理）")
+            say(f"小窝：http://localhost:{self.frontend_port}")
         reported = set()
         last_health, failures = time.monotonic(), 0
         while not self.stopping.is_set():
@@ -290,10 +303,14 @@ class Launcher:
 
 
 def configure():
+    from .expert_mode import enabled
+    if not enabled():
+        say('普通模式自动启动所有已安装的服务，无需配置。')
+        return
     previous = load_startup().model_dump()
-    labels = {"backend": "后端大脑", "frontend": "前端页面", "qq_bridge": "QQ 桥与网关", "desktop_pet": "桌宠"}
+    labels = {"backend": "后端大脑", "frontend": "前端页面", "qq_bridge": "QQ 桥与网关", "desktop_pet": "桌宠", "autonomous_activity": "自主活动插件"}
     for key, label in labels.items():
-        if key in ("qq_bridge", "desktop_pet") and not previous["backend"]:
+        if key in ("qq_bridge", "desktop_pet", "autonomous_activity") and not previous["backend"]:
             previous[key] = False
             say(f"已取消 {label}（需要后端）")
             continue

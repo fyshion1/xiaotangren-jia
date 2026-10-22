@@ -151,7 +151,7 @@ export async function streamSSE(
 }
 
 export function finishWarning(reason?: string): string {
-  if (reason === 'length' || reason === 'max_tokens') return '回复达到模型的长度上限，可能尚未写完。可在模型设置中提高回复 token 上限。'
+  if (reason === 'length' || reason === 'max_tokens') return '回复达到模型的长度上限，可能尚未写完。可以让对方继续回复。'
   if (reason === 'content_filter' || reason === 'refusal') return '上游模型因内容限制结束了回复，已保留收到的文字。'
   if (reason && reason !== 'stop') return `上游结束了回复（${reason}），内容可能不完整。`
   return ''

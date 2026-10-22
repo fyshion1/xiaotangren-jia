@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useExpertMode } from '../lib/expertMode'
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { fetchToolConfig, fetchToolRuns, runLabels, saveToolConfig, toolLabels, type AgentEvent, type ToolConfig, type ToolRun } from '../api/tools'
 import './tools.css'
 import ReminderPanel from './ReminderPanel'
+import NestDrawer from './NestDrawer'
 
 export function ToolDialog({ onClose, children }: { onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null)
@@ -14,16 +16,20 @@ export function ToolDialog({ onClose, children }: { onClose: () => void; childre
 }
 
 export function ToolEntry({ onOpen, personaId }: { onOpen: () => void; personaId: string }) {
+  const expert = useExpertMode()
   const [status, setStatus] = useState('正在读取…')
   useEffect(() => {
     let current = true
+    if (!expert.enabled) return
     const load = () => fetchToolConfig().then(data => {
-      if (current) setStatus(!data.config.enabled ? '未开启' : data.config.owner_persona_id !== personaId ? '当前身份未获授权' : !data.config.web_enabled ? '网页聊天未开启' : !data.config.allowed_names.length ? '尚未选择能力' : `已开启 ${data.config.allowed_names.length} 项能力`)
+      const count = data.capabilities.filter(capability => data.config.allowed_names.includes(capability.name) && data.groups?.some(group => group.id === capability.group && group.installed)).length
+      if (current) setStatus(data.installed === false ? '工具插件未安装' : !data.config.enabled ? '未开启' : data.config.owner_persona_id !== personaId ? '当前身份未获授权' : !data.config.web_enabled ? '网页聊天未开启' : !count ? '尚未选择可用能力' : `已开启 ${count} 项能力`)
     }).catch(() => { if (current) setStatus('设置暂不可用') })
     void load()
     window.addEventListener('xtr:tools-changed', load)
     return () => { current = false; window.removeEventListener('xtr:tools-changed', load) }
-  }, [personaId])
+  }, [personaId, expert.enabled])
+  if (!expert.enabled) return null
   return <div className="tool-entry-bar"><button type="button" onClick={onOpen}>✦ 工具能力</button><span>{status} · 点击查看与配置</span></div>
 }
 
@@ -48,6 +54,8 @@ export function ToolActivity({ events }: { events: AgentEvent[] }) {
 }
 
 export default function ToolCenter({ personaId = '', sessionId = '', onExample }: { personaId?: string; sessionId?: string; onExample?: (text: string) => void }) {
+  const formId = useId()
+  const [openGroups, setOpenGroups] = useState<string[]>([])
   const [data, setData] = useState<ToolConfig | null>(null)
   const [runs, setRuns] = useState<ToolRun[]>([])
   const [error, setError] = useState('')
@@ -78,26 +86,35 @@ export default function ToolCenter({ personaId = '', sessionId = '', onExample }
     <header className="tool-center-title"><div><span className="eyebrow">让小糖人动手做事</span><h2>工具中心</h2><p>网页聊天和桌宠共用。先选择允许的能力，再在聊天里说出你想做的事。</p></div><span className={`tool-badge ${data?.config.enabled ? 'on' : ''}`}>{dirty ? '设置待保存' : data?.config.enabled ? '工具已开启' : '工具未开启'}</span></header>
     {error && <p role="alert" className="tool-error">{error}</p>}
     {!data ? <p>{error ? '工具设置未读取，请关闭面板后重试。' : '正在读取工具设置…'}</p> : <>
-      <form onSubmit={async e => { e.preventDefault(); setBusy(true); setError(''); try { const result = await saveToolConfig(data.config); setData(result); setDirty(false); setNotice('已保存，下一轮聊天生效。') } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) } }}>
-        <fieldset disabled={busy}>
-          <label className="tool-master"><input type="checkbox" checked={data.config.enabled} onChange={e => update('enabled', e.target.checked)} /><span><b>允许小糖人使用工具</b><small>关闭后继续普通聊天。</small></span></label>
-          <div className="tool-channel-row"><label><input type="checkbox" checked={data.config.web_enabled} onChange={e => update('web_enabled', e.target.checked)} />网页聊天</label><label><input type="checkbox" checked={data.config.pet_enabled} onChange={e => update('pet_enabled', e.target.checked)} />桌宠文字聊天</label><label><input type="checkbox" checked={data.config.qq_enabled} onChange={e => update('qq_enabled', e.target.checked)} />QQ 桥（仅主人 QQ）</label></div>
-          <label className="tool-field">可使用工具的主人身份<select className="input" value={data.config.owner_persona_id} onChange={e => update('owner_persona_id', e.target.value)}>{data.personas.map(persona => <option key={persona.id} value={persona.id}>{persona.name}</option>)}</select></label>
-          <h3>已实现的能力</h3>
-          <div className="tool-capabilities">{data.capabilities.map(capability => <article key={capability.name}>
-            <label><input type="checkbox" checked={data.config.allowed_names.includes(capability.name)} onChange={e => update('allowed_names', e.target.checked ? [...data.config.allowed_names, capability.name] : data.config.allowed_names.filter(name => name !== capability.name))} /><b>{capability.label}</b></label><p>{capability.description}</p><button type="button" className="tool-example" onClick={() => onExample ? onExample(capability.example) : navigator.clipboard?.writeText(capability.example).then(() => setNotice('示例已复制，可粘贴到聊天里。')).catch(() => setNotice(capability.example))}>{onExample ? '填入聊天' : '复制示例'}：{capability.example}</button>
-          </article>)}</div>
-          <label className="tool-field">允许访问的目录<input className="input" value={data.config.root} placeholder="留空使用专用工具目录" onChange={e => update('root', e.target.value)} /><small>当前保存的目录：{data.resolved_root}</small></label>
-          <p className="tool-hint">把要让小糖人读取的 UTF-8 文本放入允许目录。首次执行会创建目录；不会修改或删除文件。联网搜索不用放文件，直接问就行；QQ 桥的工具在「QQ 桥 → 小工具」里单独开。</p>
+      <form id={formId} onSubmit={async e => { e.preventDefault(); setBusy(true); setError(''); try { const result = await saveToolConfig(data.config); setData(result); setDirty(false); setNotice('已保存，下一轮聊天生效。') } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) } }} />
+        {data.installed === false && <p className="tool-hint">工具插件未安装。安装后即可按插件选择工具能力。</p>}
+        <fieldset disabled={busy || data.installed === false}>
+          <label className="tool-master"><input form={formId} type="checkbox" checked={data.config.enabled} onChange={e => update('enabled', e.target.checked)} /><span><b>允许小糖人使用工具</b><small>关闭后继续普通聊天。</small></span></label>
+          <div className="tool-channel-row"><label><input form={formId} type="checkbox" checked={data.config.web_enabled} onChange={e => update('web_enabled', e.target.checked)} />网页聊天</label><label><input form={formId} type="checkbox" checked={data.config.pet_enabled} onChange={e => update('pet_enabled', e.target.checked)} />桌宠文字聊天</label><label><input form={formId} type="checkbox" checked={data.config.qq_enabled} onChange={e => update('qq_enabled', e.target.checked)} />QQ 桥（仅主人 QQ）</label></div>
+          <label className="tool-field">可使用工具的主人身份<select form={formId} className="input" value={data.config.owner_persona_id} onChange={e => update('owner_persona_id', e.target.value)}>{data.personas.map(persona => <option key={persona.id} value={persona.id}>{persona.name}</option>)}</select></label>
+          <h3>插件与可选能力</h3>
+          <div className="tool-plugin-groups">{(data.groups || []).map(group => {
+            const capabilities = data.capabilities.filter(capability => capability.group === group.id)
+            const selected = capabilities.filter(capability => data.config.allowed_names.includes(capability.name)).length
+            return <NestDrawer key={group.id} title={group.label} hint={group.description}
+              badge={group.installed ? `${selected} / ${capabilities.length} 项已选` : '未安装'}
+              open={openGroups.includes(group.id)} onToggle={() => setOpenGroups(prev => prev.includes(group.id) ? prev.filter(id => id !== group.id) : [...prev, group.id])}>
+              <p className="tool-hint">{group.description}</p>
+              {!group.installed && <p className="tool-hint">{group.id === 'network' ? '尚未安装 OmniReach。联网是独立可选依赖，安装并配置来源后才可使用。' : '请先安装此插件，再启用它提供的工具。'}</p>}
+              <div className="tool-capabilities">{capabilities.map(capability => <article key={capability.name}>
+                <label><input form={formId} type="checkbox" disabled={!group.installed} checked={data.config.allowed_names.includes(capability.name)} onChange={e => update('allowed_names', e.target.checked ? [...data.config.allowed_names, capability.name] : data.config.allowed_names.filter(name => name !== capability.name))} /><b>{capability.label}</b></label>
+                <p>{capability.description}</p><button type="button" className="tool-example" disabled={!group.installed} onClick={() => onExample ? onExample(capability.example) : navigator.clipboard?.writeText(capability.example).then(() => setNotice('示例已复制，可粘贴到聊天里。')).catch(() => setNotice(capability.example))}>{onExample ? '填入聊天' : '复制示例'}：{capability.example}</button>
+              </article>)}</div>
+              {group.id === 'reminders' && group.installed && <ReminderPanel personaId={personaId} />}
+              {group.id === 'project_costs' && group.installed && <div className="tool-planned"><a href="#project-costs" onClick={() => window.dispatchEvent(new HashChangeEvent('hashchange'))}><b>打开项目费用 →</b></a><span>管理支出与账单对账。</span></div>}
+            </NestDrawer>
+          })}</div>
           <details className="tool-limits"><summary>执行限制</summary><div className="tool-limit-grid">{([
-            ['max_bytes', '最多读取字节', 100, 60000], ['max_turns', '最多模型轮数', 1, 8], ['max_calls', '最多工具调用', 1, 12], ['timeout_seconds', '本轮最长秒数', 5, 120],
-          ] as const).map(([key, label, min, max]) => <label key={key}>{label}<input className="input" type="number" min={min} max={max} step={1} required value={data.config[key]} onChange={e => update(key, Number(e.target.value))} /></label>)}</div><p>相同调用不会重复执行；参数最多纠正一次。超时会停止等待，不自动重试。</p></details>
-          <div className="tool-save-row"><button type="submit" className="btn-primary" disabled={busy}>{busy ? '保存中…' : '保存工具设置'}</button><span role="status">{notice}</span></div>
+            ['max_turns', '最多模型轮数', 1, 8], ['max_calls', '最多工具调用', 1, 12], ['timeout_seconds', '本轮最长秒数', 5, 120],
+          ] as const).map(([key, label, min, max]) => <label key={key}>{label}<input form={formId} className="input" type="number" min={min} max={max} step={1} required value={data.config[key]} onChange={e => update(key, Number(e.target.value))} /></label>)}</div><p>相同调用不会重复执行；参数最多纠正一次。超时会停止等待，不自动重试。</p></details>
+          <div className="tool-save-row"><button form={formId} type="submit" className="btn-primary" disabled={busy}>{busy ? '保存中…' : '保存工具设置'}</button><span role="status">{notice}</span></div>
         </fieldset>
-      </form>
-      <ReminderPanel personaId={personaId} />
-      <div className="tool-planned"><a href="#project-costs" onClick={() => window.dispatchEvent(new HashChangeEvent('hashchange'))}><b>打开项目费用 →</b></a><span>管理支出与账单对账；聊天记账需勾选并保存上面的费用能力。</span></div>
-      <section className="tool-history" aria-label="最近工具记录"><div className="tool-activity-heading"><h3>最近执行记录</h3><button type="button" onClick={() => void loadRuns()}>刷新</button></div><p>网页搜索和歌词搜索会保留搜索词及最多 4000 字的初始结果，方便核对小糖人实际读到的内容；本地文件和个人记录等隐私结果不写入历史。</p>{historyError && <p role="alert">{historyError}</p>}{!historyError && !runs.length && <p>还没有执行记录。开启并保存后，可先试“用工具确认你能访问的目录和限制”。</p>}{runs.map(run => <details key={run.id}><summary><span>{new Date(run.created_at * 1000).toLocaleString('zh-CN', { hour12: false })} · {run.feature_id === 'desktop_pet' ? '桌宠' : run.feature_id === 'qq_bridge' ? 'QQ 桥' : '网页聊天'}</span><span>{runLabels[run.status] || run.status}</span></summary><ToolActivity events={[...run.events, { type: 'agent_end', status: run.status }]} /></details>)}</section>
+      <section className="tool-history" aria-label="最近工具记录"><div className="tool-activity-heading"><h3>最近执行记录</h3><button type="button" onClick={() => void loadRuns()}>刷新</button></div><p>网页搜索和歌词搜索会保留搜索词及最多 4000 字的初始结果，方便核对小糖人实际读到的内容；个人记录等隐私结果不写入历史。</p>{historyError && <p role="alert">{historyError}</p>}{!historyError && !runs.length && <p>还没有执行记录。展开插件抽屉、选择能力并保存后，即可在聊天中使用。</p>}{runs.map(run => <details key={run.id}><summary><span>{new Date(run.created_at * 1000).toLocaleString('zh-CN', { hour12: false })} · {run.feature_id === 'desktop_pet' ? '桌宠' : run.feature_id === 'qq_bridge' ? 'QQ 桥' : '网页聊天'}</span><span>{runLabels[run.status] || run.status}</span></summary><ToolActivity events={[...run.events, { type: 'agent_end', status: run.status }]} /></details>)}</section>
     </>}
   </section>
 }

@@ -51,7 +51,14 @@ async def transcribe_local_audio(request: Request):
             raise HTTPException(413, '语音超过 25MB')
     if not data:
         raise HTTPException(400, '语音为空')
-    ffmpeg = shutil.which('ffmpeg')
+    from ..services import qq_audio_setup
+    checks = await asyncio.to_thread(qq_audio_setup.diagnostics)
+    needed = dict(checks['checks'])
+    if not data.startswith((b'\x02#!SILK_V3', b'#!SILK_V3')):
+        needed['pilk'] = True  # Non-SILK inputs do not require QQ's decoder.
+    if not all(needed.values()):
+        raise HTTPException(503, qq_audio_setup.missing_message(needed))
+    ffmpeg = qq_audio_setup.ffmpeg_executable()
     if not ffmpeg:
         raise HTTPException(503, '本地语音识别需要 ffmpeg')
     def run():

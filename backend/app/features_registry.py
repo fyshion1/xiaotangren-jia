@@ -39,7 +39,7 @@ class RunnerCommand(TypedDict):
 class SettingField(TypedDict):
     """功能自己声明的**可配置项**（§9.6.5）—— 前端按 type 渲染成表单，值存在本体。
 
-    为什么由功能在注册表里声明、值却存在本体：功能是**独立项目**，大老大不该为了
+    为什么由功能在注册表里声明、值却存在本体：功能是**独立项目**，你不该为了
     改个白名单去开终端编辑 `features/<folder>/config.json`（还会遇到中文乱码）。
     声明放注册表（代码级资产，跟着功能走），值放数据库（用户数据，改完立刻生效）。
 
@@ -64,7 +64,7 @@ class SettingField(TypedDict):
     max: NotRequired[float]
     # 只给 `bool` 用：**前端显示的是这个值的反**（存的还是 `default` 那一套语义）。
     # 为什么要有它：有些开关的名字天生是反着写的（`memory.isolate` = 「单独记」），
-    # 而大老大要看的是正面那句「和群聊 / 私聊共享记忆」。前端勾上 = 存进去 False。
+    # 而你要看的是正面那句「和群聊 / 私聊共享记忆」。前端勾上 = 存进去 False。
     # 值本身（`values`）**始终是存储语义** —— 功能侧拉回去直接覆盖 config.json，
     # 不认得这个标记，也不该认得。
     # ⚠ 只在**顶层字段**上生效；`accounts` 行里的格子不认它（目前也没人用，别指望）。
@@ -77,7 +77,7 @@ class RunnerGateway(TypedDict):
     """功能**要先有个外部的服务**才连得上时，那个服务怎么开（现在只有 QQ 桥的 SnowLuma）。
 
     桥报「Cannot connect to host 127.0.0.1:3001」十有八九就是网关根本没开 —— 以前得自己去
-    D:\\SnowLuma 双击 launcher.bat，再回来点启动。现在小窝替大老大按这一下。
+    D:\\SnowLuma 双击 launcher.bat，再回来点启动。现在小窝替你按这一下。
     - `folder`：网关目录（可在功能设置 `gateway.folder` 里覆盖，见 routers/nest.py 的 `_gateway_spec`）。
     - `node`：node 可执行文件路径（相对 folder，默认用网关自带的 `node.exe`，不吃系统 node 版本）。
     - `script`：入口脚本（相对 folder）。不走 launcher.bat —— 它最后有个 pause，会一直挂着。
@@ -93,12 +93,13 @@ class RunnerGateway(TypedDict):
 class Runner(TypedDict):
     """怎么把「本体外那个独立项目」跑起来。
 
-    本体**不实现功能逻辑**，只是替大老大按一下启动键：在 `features/<folder>/` 下
+    本体**不实现功能逻辑**，只是替你按一下启动键：在 `features/<folder>/` 下
     用当前 Python 起 `python -m <module> <子命令>`，把输出收进日志给前端看。
     module / 子命令都来自这份注册表，**不接受前端传来的任意命令**（见 routers/nest.py）。
     """
     folder: str
     module: str
+    host_plugin: NotRequired[bool]
     commands: list[RunnerCommand]
     # 有 gateway = 这个功能连的是外部服务，面板上给一个「开网关」按钮（见 routers/nest.py 的 gateway 接口）。
     gateway: NotRequired[RunnerGateway]
@@ -123,6 +124,18 @@ class Feature(TypedDict):
 # ---- 功能清单 ----
 # 顺序 = 前端展示顺序。加新功能就往这里加一条，并在 features/<folder>/ 建独立仓库。
 FEATURES: list[Feature] = [
+    {
+        "id": "tools", "name": "工具插件", "emoji": "🧰", "kind": "other",
+        "status": "available", "desc": "按插件授权工具能力。联网依赖需另外安装，不随本体提供。",
+        "needs_vision": False, "folder": "tools",
+    },
+    {
+        "id": "autonomous_activity", "name": "自主活动与沙盒", "emoji": "🚀", "kind": "other",
+        "status": "available", "desc": "专家模式独立插件：自主探索、独立钱包、项目审批与隔离工作区。",
+        "needs_vision": False, "folder": "autonomous-activity",
+        "runner": {"folder": "autonomous-activity", "module": "app.plugin_worker", "host_plugin": True,
+                   "commands": [{"name": "run", "label": "启动自主活动插件", "desc": "运行独立插件后台；活动仍遵守自己的开关与预算。", "params": [], "background": True}]},
+    },
     {
         "id": "project_costs", "name": "项目费用", "emoji": "🧾", "kind": "other",
         "status": "available", "desc": "记录 API 充值、订阅和临时购买，导入微信/支付宝账单并确认对账。",
@@ -164,16 +177,18 @@ FEATURES: list[Feature] = [
              "default": "single", "options": [{"value": "single", "label": "她的私聊"}, {"value": "group", "label": "家庭群聊"}],
              "desc": "沿用当前用户身份与现有聊天记录。群聊沿用小窝成员名单。"},
             {"key": "model", "label": "桌宠模型（Live2D / 3D VRM）", "type": "select", "group": "外观",
-             "default": "hiyori", "options": [{"value": "haru", "label": "Live2D · Haru"}, {"value": "hiyori", "label": "Live2D · Hiyori · 米黄色开衫"}, {"value": "alicia", "label": "3D VRM · Alicia Solid"}, {"value": "vrm1", "label": "3D VRM · 1.0 技术样例"}],
+             "default": "hiyori", "options": [{"value": "haru", "label": "Live2D · Haru"}, {"value": "hiyori", "label": "Live2D · Hiyori · 米黄色开衫"}, {"value": "teto", "label": "Live2D · Teto（D盘本地）"}, {"value": "furina", "label": "Live2D · 芙宁娜（D盘本地）"}, {"value": "alicia", "label": "3D VRM · Alicia Solid"}, {"value": "vrm1", "label": "3D VRM · 1.0 技术样例"}],
              "desc": "从本机 assets 加载公开样例，不复制或打包模型。"},
             {"key": "scale", "label": "人物大小", "type": "number", "group": "外观",
-             "default": 1.0, "min": 0.4, "max": 1.8, "desc": "保存后桌面自动更新。"},
+             "default": 1.0, "min": 0.15, "max": 3.0, "desc": "滚轮缩放范围15%–300%，允许人物超出屏幕；保存后桌面自动更新。"},
             {"key": "always_on_top", "label": "保持在其他窗口上方", "type": "bool", "group": "窗口",
              "default": True, "desc": "关闭后桌宠作为普通窗口显示。"},
             {"key": "dock_auto_hide", "label": "停靠后自动收起", "type": "bool", "group": "窗口",
              "default": False, "desc": "默认保持常驻。开启后离开约 3 秒收起，保留边缘标签；靠近展开。桌面底部可切换。"},
             {"key": "auto_memory", "label": "自动提炼记忆", "type": "bool", "group": "陪伴",
              "default": True, "desc": "沿用普通聊天规则：私聊写入个人记忆，群聊写入相应记忆桶。"},
+            {"key": "poke_to_chat", "label": "触碰发送到小窝并调用大模型", "type": "bool", "group": "陪伴",
+             "default": False, "desc": "默认双击人物只显示本地预设台词；开启后将触碰发到当前私聊/群聊并生成回应。拖动优先，不会自动重试。"},
         ],
     },
     {
@@ -193,7 +208,7 @@ FEATURES: list[Feature] = [
         "emoji": "📺",
         "kind": "media",
         "status": "available",
-        "desc": "让小糖人去 B站到处看视频，挑出值得大老大看的，攒成推荐。先做「自己刷」，「一起看」留位。",
+        "desc": "让小糖人去 B站到处看视频，挑出值得你看的，攒成推荐。先做「自己刷」，「一起看」留位。",
         "needs_vision": False,  # 只读标题/简介/弹幕，不看图 —— 视觉路留给以后的「一起看」
         "folder": "bilibili-scout",
         # 采集端是独立项目（features/bilibili-scout），本体只负责把它跑起来。
@@ -226,7 +241,7 @@ FEATURES: list[Feature] = [
             {"key": "comment.enabled", "label": "去别人的视频下留言", "type": "bool", "group": "留口子的功能",
              "default": False, "desc": "**默认不发**（有话在小窝里说就行）。真发需要 B站登录 Cookie 和频控，"
                                      "还有风控 / 封号风险 —— 打开这个开关也不会真的发，只是把意愿记下来。"},
-            {"key": "comment.at_owner", "label": "留言时 @ 上大老大", "type": "bool", "group": "留口子的功能",
+            {"key": "comment.at_owner", "label": "留言时 @ 上你", "type": "bool", "group": "留口子的功能",
              "default": True, "desc": "真开启发评论时，@ 一下主人（别人家的小糖人是这么干的）。"},
             {"key": "comment.max_per_day", "label": "每天最多几条", "type": "number", "group": "留口子的功能",
              "default": 3, "desc": "就算真开了也限流，别把评论区刷成广告位。", "min": 0, "max": 20},
@@ -260,7 +275,7 @@ FEATURES: list[Feature] = [
             },
         },
         # 这个功能的配置项**全部在前端改**（值存本体，桥每轮读一次）——
-        # 大老大原话：「这块希望在前端可以自己配置，现在说比较复杂」。
+        # 你原话：「这块希望在前端可以自己配置，现在说比较复杂」。
         "settings": [
             # ---- 先定「哪个号演谁」（多账号）----
             {"key": "accounts", "label": "QQ 号 × 小糖人", "type": "accounts", "group": "谁在 QQ 上",
@@ -297,7 +312,7 @@ FEATURES: list[Feature] = [
              "default": True, "desc": "关掉 = 群里每句话都插嘴（会很吵）。不 @ 的时候仍然同步进小窝，只是不开口。"},
             {"key": "allow.ignore_bots", "label": "不理别的机器人", "type": "bool", "group": "白名单",
              "default": True, "desc": "防两个机器人互相聊到天荒地老。"},
-            {"key": "owner.qq", "label": "大老大的 QQ", "type": "text", "group": "白名单",
+            {"key": "owner.qq", "label": "用户 QQ", "type": "text", "group": "白名单",
              "default": "", "desc": "管理员。私聊不受白名单限制，可发 /reset /silent 这类桥直接执行的管理命令。"},
             {"key": "owner.admin_commands", "label": "允许管理命令", "type": "bool", "group": "白名单",
              "default": True, "desc": "/reset /silent /active /whoami —— **桥直接执行，不过模型**。"},
@@ -371,7 +386,7 @@ FEATURES: list[Feature] = [
              "default": "whisper-1", "desc": "如 whisper-1 / whisper-large-v3。"},
 
             # ---- 连续输入与多气泡 ----
-            {"key": "proactive.enabled", "label": "偶尔主动来找大老大", "type": "bool", "group": "主动联系",
+            {"key": "proactive.enabled", "label": "偶尔主动来找你", "type": "bool", "group": "主动联系",
              "default": False, "desc": "可以闲聊、感叹、轻轻吐槽或去 B 站找发现；没人回复就不追发。所有活动共用累计 token 预算，开启后会后台调用模型。"},
             {"key": "proactive.account_index", "label": "主动联系使用的 QQ 账号", "type": "number", "group": "主动联系",
              "default": 0, "min": 0, "max": 20},
@@ -393,13 +408,13 @@ FEATURES: list[Feature] = [
              "default": 12000, "min": 0, "max": 50000, "desc": "累计输入＋输出；顾问请教也算。0 = 不调用。缺失用量或预留不足会停下。"},
             {"key": "proactive.day_tokens", "label": "每天 token 总预算", "type": "number", "group": "自主活动",
              "default": 24000, "min": 0, "max": 200000, "desc": "所有角色共用，北京时间每天重置；重启不重置用量。"},
-            {"key": "proactive.group_id", "label": "允许主动 @ 大老大的群号", "type": "text", "group": "自主活动",
-             "default": "", "desc": "留空关闭。还必须在群白名单内，并能确认大老大是群成员；公共分享不读取私聊与私密记忆。"},
+            {"key": "proactive.group_id", "label": "允许主动 @ 你的群号", "type": "text", "group": "自主活动",
+             "default": "", "desc": "留空关闭。还必须在群白名单内，并能确认你是群成员；公共分享不读取私聊与私密记忆。"},
             {"key": "proactive.qzone", "label": "允许发 QQ 空间感想", "type": "bool", "group": "自主活动",
              "default": False, "desc": "需要 SnowLuma 支持；每周最多 2 条，只发文字与链接。所有渠道共用每日主动轮数，不跨渠道重复发。"},
             {"key": "proactive.qzone_right", "label": "空间感想给谁看", "type": "select", "group": "自主活动",
              "default": "64", "options": [{"value": "64", "label": "仅自己可见（先试用）"},
-                                            {"value": "16", "label": "仅大老大可见"},
+                                            {"value": "16", "label": "仅你可见"},
                                             {"value": "4", "label": "好友可见"}],
              "desc": "每次发送显式设置，绝不沿用网关默认的所有人可见；失败不降低可见限制。"},
             {"key": "reply.debounce_seconds", "label": "等我把话说完（秒）", "type": "number", "group": "聊天节奏",
@@ -413,7 +428,7 @@ FEATURES: list[Feature] = [
 
             # ---- 表情包 ----
             {"key": "sticker.enabled", "label": "会发表情包", "type": "bool", "group": "表情包",
-             "default": True, "desc": "大老大很喜欢小糖人的表情包 —— 想让它偶尔来一张就把下面的概率调上。"},
+             "default": True, "desc": "调整发送表情包的概率；设为 0 可关闭。"},
             {"key": "sticker.reply_chance", "label": "每轮回话时来的概率", "type": "number", "group": "表情包",
              "default": 0, "desc": "0 = 只在用户要表情时提供候选；0.1 = 约十分之一的普通回复可选表情，最终仍由语义决定是否发送。", "min": 0, "max": 1},
             {"key": "sticker.auto_collect", "label": "学到别人的表情包", "type": "bool", "group": "表情包",
@@ -427,7 +442,7 @@ FEATURES: list[Feature] = [
             {"key": "sticker.library_session", "label": "表情包存在哪个会话目录", "type": "text", "group": "表情包",
              "default": "single-dalaoda", "desc": "上传表情包时落到哪个附件目录（一般不用改）。"},
 
-            # ---- 小工具（大老大说「可以碰，只要别搞坏东西」）----
+            # ---- 小工具（你说「可以碰，只要别搞坏东西」）----
             # ---- 同步与记忆 ----
             {"key": "sync.to_qq", "label": "网页消息同步到 QQ", "type": "bool", "default": True, "group": "同步",
              "desc": "网页用户消息、角色回复与附件发往本账号最近使用的对应 QQ 会话；首次关联不补发历史。"},

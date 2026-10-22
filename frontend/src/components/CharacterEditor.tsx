@@ -1,12 +1,14 @@
 import ListInput from './ListInput'
 import AvatarCropper from '../visual/AvatarCropper'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CharacterForm, CharacterProfile } from '../data/characters'
 import { LABEL_OF, PROFILE_FIELD_LABELS, parseProfileText, type FieldKey, type ParseResult } from '../lib/parseProfile'
 import { BASE_FORM_ID, activeFormId, listForms, resolveForm } from '../lib/forms'
 import { fetchGallery, type GalleryItem } from '../api/gallery'
 import { profileSignature } from '../lib/profileDisplay'
 import { visionRoute } from '../lib/visionRoute'
+import { useTavernMode } from '../lib/tavernMode'
+import { isPrivateProfileField } from '../lib/profilePrivacy'
 
 
 type Props = {
@@ -143,15 +145,15 @@ const TEXT_FIELDS: { label: string; key: keyof CharacterProfile }[] = [
   ['瞳色', 'eyeColor'],
   ['发型', 'hairstyle'],
   ['发色', 'hairColor'],
-  ['胸部', 'bust'],
-  ['臀部', 'hip'],
+  ['胸围', 'bust'],
+  ['臀围', 'hip'],
   ['服装', 'clothing'],
   ['职业', 'occupation'],
   ['关系', 'relationships'],
   ['特殊特征', 'specialFeatures'],
   ['体重', 'weight'],
-  ['三围', 'measurements'],
-  ['弱点', 'weakPoint'],
+  ['身体尺寸', 'measurements'],
+  ['注意事项', 'weakPoint'],
 ].map(([label, key]) => ({ label, key }) as { label: string; key: keyof CharacterProfile })
 
 const TAG_FIELDS: { label: string; key: 'personality' | 'likes' | 'dislikes' }[] = [
@@ -163,7 +165,7 @@ const TAG_FIELDS: { label: string; key: 'personality' | 'likes' | 'dislikes' }[]
 const LONG_FIELDS: { label: string; key: keyof CharacterProfile }[] = [
   { label: '关于（角色提示词 · 喂给模型）', key: 'about' },
   { label: '秘密', key: 'secret' },
-  { label: '私密小愿望', key: 'privateWish' },
+  { label: '个人愿望', key: 'privateWish' },
 ]
 
 /** 形态管理分区（§17）：在编辑器下方，折叠面板形式。 */
@@ -174,6 +176,7 @@ function FormManager({
   form: CharacterProfile
   setForm: React.Dispatch<React.SetStateAction<CharacterProfile>>
 }) {
+  const [tavernMode] = useTavernMode()
   const [newFormName, setNewFormName] = useState('')
   const forms = listForms(form)
   const curId = activeFormId(form)
@@ -307,7 +310,7 @@ function FormManager({
             本形态覆盖以下词条（勾选 = 覆盖，未勾 = 沿用基础形态）
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {PROFILE_FIELD_LABELS.filter((f) => !['id', 'name'].includes(f.key)).map((f) => {
+            {PROFILE_FIELD_LABELS.filter((f) => !['id', 'name'].includes(f.key) && (tavernMode || !isPrivateProfileField(f.key, f.label))).map((f) => {
               const key = f.key as string
               const on = key in curFields
               return (
@@ -322,7 +325,7 @@ function FormManager({
           {/* 已勾选的词条：在本形态下显示为可编辑输入 */}
           {Object.keys(curFields).length > 0 && (
             <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              {PROFILE_FIELD_LABELS.filter((f) => f.key in curFields).map((f) => {
+              {PROFILE_FIELD_LABELS.filter((f) => f.key in curFields && (tavernMode || !isPrivateProfileField(f.key, f.label))).map((f) => {
                 const key = f.key
                 const val = curFields[key]
                 const isList = ['personality', 'likes', 'dislikes'].includes(key)
@@ -349,10 +352,12 @@ function FormManager({
 }
 
 export default function CharacterEditor({ initial, onSave, onClose }: Props) {
+  const [tavernMode] = useTavernMode()
   const [form, setForm] = useState<CharacterProfile>({ ...initial, signature: profileSignature(initial) })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [draftKey, setDraftKey] = useState('about')
+  useEffect(() => { setDraftKey('about'); setDraft('') }, [tavernMode])
   const [direction, setDirection] = useState('')
   const [draft, setDraft] = useState('')
   const [generating, setGenerating] = useState(false)
@@ -388,7 +393,7 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
 
   const fieldLabel = (key: FieldKey) => PROFILE_FIELD_LABELS.find((x) => x.key === key)?.label ?? LABEL_OF[key] ?? key
   const previewKeys = parsed
-    ? (Object.keys(parsed.fields) as FieldKey[]).sort(
+    ? (Object.keys(parsed.fields) as FieldKey[]).filter(key => tavernMode || !isPrivateProfileField(key, fieldLabel(key))).sort(
         (a, b) =>
           PROFILE_FIELD_LABELS.findIndex((x) => x.key === a) -
           PROFILE_FIELD_LABELS.findIndex((x) => x.key === b),
@@ -507,7 +512,7 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
 
         <div className="max-h-[62vh] space-y-3.5 overflow-y-auto pr-1">
           <details className="rounded-xl border p-3"><summary>生成词条草稿</summary>
-            <select aria-label="生成哪个词条" disabled={generating} className="input my-2" value={draftKey} onChange={e => { setDraftKey(e.target.value); setDraft('') }}>{[...TEXT_FIELDS, ...TAG_FIELDS, ...LONG_FIELDS].map(f => <option key={f.key} value={f.key}>{f.label}</option>)}{(form.customFields || []).map((f,i) => <option key={`custom:${i}`} value={`custom:${i}`}>{f.label || '自定义词条'}</option>)}</select>
+            <select aria-label="生成哪个词条" disabled={generating} className="input my-2" value={draftKey} onChange={e => { setDraftKey(e.target.value); setDraft('') }}>{[...TEXT_FIELDS, ...TAG_FIELDS, ...LONG_FIELDS].filter(f => tavernMode || !isPrivateProfileField(f.key, f.label)).map(f => <option key={f.key} value={f.key}>{f.label}</option>)}{(form.customFields || []).map((f,i) => (tavernMode || !isPrivateProfileField('', f.label)) && <option key={`custom:${i}`} value={`custom:${i}`}>{f.label || '自定义词条'}</option>)}</select>
             <input className="input" placeholder="补充创作方向（可留空）" value={direction} onChange={e => setDirection(e.target.value)} />
             <button className="btn ghost sm my-2" disabled={generating} onClick={async () => {
               setGenerating(true); setError(''); setDraft('')
@@ -538,11 +543,11 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
               {label:'别名 / 称号',key:'alias' as keyof CharacterProfile}, {label:'头像',key:'avatar' as keyof CharacterProfile},
               {label:'立绘',key:'portrait' as keyof CharacterProfile}, {label:'生日',key:'birthday' as keyof CharacterProfile},
               {label:'年龄',key:'age' as keyof CharacterProfile}, {label:'英文 / 罗马音签名',key:'signature' as keyof CharacterProfile},
-              {label:'体重',key:'weight' as keyof CharacterProfile}, {label:'三围',key:'measurements' as keyof CharacterProfile},
-              {label:'秘密',key:'secret' as keyof CharacterProfile}, {label:'弱点',key:'weakPoint' as keyof CharacterProfile},
-              {label:'私密小愿望',key:'privateWish' as keyof CharacterProfile},
-            ].filter((f,i,all) => f.key !== 'name' && all.findIndex(x => x.key === f.key) === i).map(f => <label key={f.key} className="text-sm"><input type="checkbox" checked={form.hiddenFields?.includes(f.key) || false} onChange={e => setForm(p => ({...p, hiddenFields: e.target.checked ? [...(p.hiddenFields || []), f.key] : p.hiddenFields?.filter(k => k !== f.key)}))} />隐藏{f.label}</label>)}
-              {(form.customFields || []).map(f => <label key={`custom:${f.label}`} className="text-sm"><input type="checkbox" checked={form.hiddenFields?.includes(`custom:${f.label}`) || false} onChange={e => setForm(p => ({...p,hiddenFields:e.target.checked?[...(p.hiddenFields||[]),`custom:${f.label}`]:p.hiddenFields?.filter(k=>k!==`custom:${f.label}`)}))}/>隐藏{f.label || '自定义词条'}</label>)}
+              {label:'体重',key:'weight' as keyof CharacterProfile}, {label:'身体尺寸',key:'measurements' as keyof CharacterProfile},
+              {label:'秘密',key:'secret' as keyof CharacterProfile}, {label:'注意事项',key:'weakPoint' as keyof CharacterProfile},
+              {label:'个人愿望',key:'privateWish' as keyof CharacterProfile},
+            ].filter((f,i,all) => f.key !== 'name' && (tavernMode || !isPrivateProfileField(f.key, f.label)) && all.findIndex(x => x.key === f.key) === i).map(f => <label key={f.key} className="text-sm"><input type="checkbox" checked={form.hiddenFields?.includes(f.key) || false} onChange={e => setForm(p => ({...p, hiddenFields: e.target.checked ? [...(p.hiddenFields || []), f.key] : p.hiddenFields?.filter(k => k !== f.key)}))} />隐藏{f.label}</label>)}
+              {(form.customFields || []).filter(f => tavernMode || !isPrivateProfileField('', f.label)).map(f => <label key={`custom:${f.label}`} className="text-sm"><input type="checkbox" checked={form.hiddenFields?.includes(`custom:${f.label}`) || false} onChange={e => setForm(p => ({...p,hiddenFields:e.target.checked?[...(p.hiddenFields||[]),`custom:${f.label}`]:p.hiddenFields?.filter(k=>k!==`custom:${f.label}`)}))}/>隐藏{f.label || '自定义词条'}</label>)}
             </div>
           </details>
           {/* 立绘 / 头像（item 4、5）：静态图或 GIF 都行，浏览器选图上传即落盘 */}
@@ -563,7 +568,7 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
           </div>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {TEXT_FIELDS.filter(f => f.key !== 'about' && !form.hiddenFields?.includes(f.key)).map((f) => (
+            {TEXT_FIELDS.filter(f => f.key !== 'about' && !isPrivateProfileField(f.key, f.label) && !form.hiddenFields?.includes(f.key)).map((f) => (
               <Row key={f.key} label={f.label}>
                 <input
                   className="input"
@@ -580,7 +585,7 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
             </Row>
           ))}
 
-          {LONG_FIELDS.filter(f => !form.hiddenFields?.includes(f.key)).map((f) => (
+          {LONG_FIELDS.filter(f => !isPrivateProfileField(f.key, f.label) && !form.hiddenFields?.includes(f.key)).map((f) => (
             <Row key={f.key} label={f.label}>
               <textarea
                 className="textarea"
@@ -589,8 +594,18 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
               />
             </Row>
           ))}
+          {tavernMode && <section className="rounded-xl border p-3"><h3>个人隐私词条</h3>
+            {[...TEXT_FIELDS, ...LONG_FIELDS].filter(f => isPrivateProfileField(f.key, f.label) && !form.hiddenFields?.includes(f.key)).map(f => <Row key={f.key} label={f.label}>
+              <textarea className="textarea" value={(form[f.key] as string) ?? ''} onChange={e => set(f.key, e.target.value)} />
+            </Row>)}
+            {(form.customFields || []).map((field, index) => isPrivateProfileField('', field.label) && <div key={index} className="my-2 flex gap-2">
+              <input aria-label="隐私词条名称" className="input" value={field.label} onChange={e => setForm(f => ({...f,customFields:f.customFields?.map((x,i) => i === index ? {...x,label:e.target.value} : x)}))} />
+              <textarea aria-label="隐私词条内容" className="textarea" value={field.value} onChange={e => setForm(f => ({...f,customFields:f.customFields?.map((x,i) => i === index ? {...x,value:e.target.value} : x)}))} />
+              <button className="btn ghost sm" onClick={() => setForm(f => ({...f,customFields:f.customFields?.filter((_,i) => i !== index)}))}>删除</button>
+            </div>)}
+          </section>}
           <section className="rounded-xl border p-3"><h3>自定义词条</h3>
-            {(form.customFields || []).map((field, index) => <div key={index} className="my-2 flex gap-2">
+            {(form.customFields || []).map((field, index) => !isPrivateProfileField('', field.label) && <div key={index} className="my-2 flex gap-2">
               <input aria-label="词条名称" className="input" value={field.label} placeholder="词条名称" onChange={e => setForm(f => ({...f, customFields: f.customFields?.map((x,i) => i === index ? {...x,label:e.target.value} : x)}))} />
               <textarea aria-label="词条内容" className="textarea" value={field.value} placeholder="自己填写词条内容" onChange={e => setForm(f => ({...f, customFields: f.customFields?.map((x,i) => i === index ? {...x,value:e.target.value} : x)}))} />
               <button className="btn ghost sm" onClick={() => setForm(f => ({...f, customFields:f.customFields?.filter((_,i) => i !== index)}))}>删除</button>

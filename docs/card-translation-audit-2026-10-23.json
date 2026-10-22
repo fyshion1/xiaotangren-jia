@@ -1,0 +1,60 @@
+[
+  {
+    "file": "d0c1bb69b22167fc05709c09641e3d46_720.png",
+    "name": "芙宁娜",
+    "input_chars": 10001,
+    "mostly_chinese": false,
+    "result": "event: done",
+    "output_chars": 10954,
+    "chinese_letter_ratio": 0.1,
+    "reason": "",
+    "error": "",
+    "output_start": "【角色设定】\n# Role-Playing Settings in Genshin Impact Universe (《原神》宇宙角色扮演设定)\n\nrole_play_settings = {\n    \"character_role\": \"Furina (芙宁娜)\",\n    \"game_introduction\": \"Genshin Impact (原神)",
+    "seconds": 8.65
+  },
+  {
+    "file": "d334895a2deea0ca74c067153d812824_720.png",
+    "name": "芙宁娜",
+    "input_chars": 1537,
+    "mostly_chinese": true,
+    "result": "event: done",
+    "output_chars": 0,
+    "chinese_letter_ratio": 0.0,
+    "reason": "正文本来就是中文，不用翻",
+    "error": "",
+    "output_start": "",
+    "seconds": 0.01
+  },
+  {
+    "file": "e9a75296c4a1e2b52e9b01b083c242f0_0.png",
+    "exception": "ValueError",
+    "detail": "这张 PNG 里没有角色卡数据（不是酒馆导出的卡，或者卡没嵌进图里）",
+    "seconds": 0.0
+  },
+  {
+    "file": "南小鸟.png",
+    "name": "南小鸟",
+    "input_chars": 2004,
+    "mostly_chinese": false,
+    "result": "event: done",
+    "output_chars": 705,
+    "chinese_letter_ratio": 0.734,
+    "reason": "",
+    "error": "",
+    "output_start": "【角色设定】\n{{char}}来自动漫与偶像企划《Love Live!》。\n\n外貌：Kotori（南小鸟）身材纤细，皮肤白皙。她有着长长的灰褐色头发，扎成侧马尾，头顶有一小撮呆毛，眼睛呈榛色。她身高159厘米。三围是 B80、W58、H80。\n\n性格：Kotori（南小鸟）是一个女性化、努力、体贴、害羞且开朗的女孩。她以经常心不在焉而闻名，而且有时容易轻信他",
+    "seconds": 3.2
+  },
+  {
+    "file": "朝比奈花音.png",
+    "name": "朝比奈花音",
+    "input_chars": 4608,
+    "mostly_chinese": true,
+    "result": "event: done",
+    "output_chars": 0,
+    "chinese_letter_ratio": 0.0,
+    "reason": "正文本来就是中文，不用翻",
+    "error": "",
+    "output_start": "",
+    "seconds": 0.01
+  }
+]

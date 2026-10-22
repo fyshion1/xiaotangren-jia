@@ -11,7 +11,7 @@ User=fyshion
 WorkingDirectory=/opt/xiaotangren-jia/features/qq-bridge
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONIOENCODING=utf-8
-Environment=PYTHONPATH=/opt/xiaotangren-jia/packages/tool-runtime:/opt/xiaotangren-jia/features/qq-bridge
+Environment=PYTHONPATH=/opt/xiaotangren-jia/features/tools/src:/opt/xiaotangren-jia/features/qq-bridge
 ExecStart=/opt/xiaotangren-jia/backend/.venv/bin/python -m qqbridge run --characters auto
 Restart=on-failure
 RestartSec=5

@@ -17,15 +17,20 @@ class StartupSettings(BaseModel):
     frontend: StrictBool = True
     qq_bridge: StrictBool = True
     desktop_pet: StrictBool = True
+    autonomous_activity: StrictBool = False
 
     @model_validator(mode="after")
     def dependencies(self):
-        if not self.backend and (self.qq_bridge or self.desktop_pet):
-            raise ValueError("QQ 桥和桌宠需要后端，请同时开启后端或取消这两项")
+        if not self.backend and (self.qq_bridge or self.desktop_pet or self.autonomous_activity):
+            raise ValueError("功能服务需要后端，请同时开启后端或取消相关功能")
         return self
 
 
 def load_startup() -> StartupSettings:
+    from .expert_mode import enabled
+    if not enabled():
+        # Ordinary users always start installed services, regardless of old preferences.
+        return StartupSettings(autonomous_activity=False)
     try:
         return StartupSettings.model_validate_json(SETTINGS_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:

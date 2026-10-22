@@ -21,6 +21,7 @@ from .. import db
 from ..features_registry import get_feature
 from ..providers import openai
 from ..services import media_context, conversation_runtime
+from ..services import reply_suggestions
 from ..services.upstream_diagnostics import upstream_accessibility, _upstream_reason
 from ..services import agent_tools, memory_extract
 from .chat import ChatMessage, _resolve_persona, _to_openai_messages, apply_card_display_mode
@@ -72,6 +73,8 @@ def _ledger() -> None:
             request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
             user_id TEXT NOT NULL DEFAULT '', assistant_id TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'pending')""")
+        if 'reply_suggestions' not in {row['name'] for row in conn.execute('PRAGMA table_info(session_chat_turns)')}:
+            conn.execute("ALTER TABLE session_chat_turns ADD COLUMN reply_suggestions TEXT NOT NULL DEFAULT '[]'")
 
 
 def _get_message(mid: str, sid: str) -> dict | None:
@@ -138,6 +141,7 @@ class SessionTurn(BaseModel):
     uncensored: bool = False
     card_display_mode: Literal['chat', 'html'] | None = None
     history_end_id: str = ''
+    reply_suggestions: bool = False
 
 
 async def _extract(turns: list[dict], session: dict, cfg: dict) -> None:
@@ -204,10 +208,9 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
     if not text:
         raise HTTPException(422, "消息不能为空")
     if body.feature_id == 'core':
-        from ..config import get_settings
-        defaults = get_settings()
-        cfg = {'base_url': body.base_url or defaults.model_base_url, 'api_key': body.api_key or defaults.model_api_key,
-               'model': body.model or defaults.model_chat}
+        # Browser profiles are retired. Read the authoritative brain on every
+        # turn, so old tabs and stale request overrides cannot select another API.
+        cfg = db.get_brain_default()
     else:
         cfg = _feature(body.feature_id)
     if not cfg.get("base_url") or not cfg.get("model"):
@@ -220,6 +223,8 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
     if any(not url.startswith("/api/files/") for url in [*body.images, *([body.attachment] if body.attachment else [])]):
         raise HTTPException(422, "图片必须是已保存的本地附件引用")
     fingerprint_parts = [sid, body.feature_id, text]
+    if body.reply_suggestions:
+        fingerprint_parts.append('reply_suggestions')
     if body.card_display_mode:
         fingerprint_parts.append(body.card_display_mode)
     if body.saved_user_id:
@@ -239,7 +244,7 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
             saved = _get_message(old["assistant_id"], sid)
             if not saved:
                 raise HTTPException(409, "该轮消息已删除，请作为新消息发送")
-            return {**session, "assistant": saved, "replayed": True}
+            return {**session, "assistant": saved, "replayed": True, 'reply_suggestions': json.loads(old['reply_suggestions'])}
         user = _get_message(old["user_id"], sid) if old and old["user_id"] else None
         if not user and body.saved_user_id:
             user = _get_message(body.saved_user_id, sid)
@@ -272,6 +277,9 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
         history, attached = await asyncio.to_thread(media_context.prepare, history, session, text)
         messages = _to_openai_messages(history, session["character_ids"], uncensored=body.uncensored, persona=_resolve_persona(session["persona_id"]))
         apply_card_display_mode(messages, session['character_ids'], body.card_display_mode)
+        suggest = body.reply_suggestions and body.feature_id == 'core' and voice is None
+        if suggest:
+            reply_suggestions.add_instructions(messages)
         if messages and messages[0]['role'] == 'system':
             messages[0]['content'] += media_context.instructions(attached)
         elif attached:
@@ -287,6 +295,7 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
         parts = []
         raw_parts = []
         summary_stream = media_context.SummaryStream(bool(attached))
+        suggestion_stream = reply_suggestions.SuggestionStream(suggest)
         finish_reason = None
         try:
             progress.event('generation')
@@ -300,7 +309,7 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
                     persona_id=session['persona_id'], session_id=sid, feature_id=body.feature_id,
                     request_id=body.request_id, max_tokens=max_tokens, emit=emit)
                 raw_parts.append(result.content)
-                visible = summary_stream.feed(result.content)
+                visible = summary_stream.feed(suggestion_stream.feed(result.content))
                 parts.append(visible)
                 finish_reason = result.finish_reason
                 if emit:
@@ -314,7 +323,7 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
             async for event in text_events():
                 if event["type"] == "text":
                     raw_parts.append(event['text'])
-                    visible = summary_stream.feed(event['text'])
+                    visible = summary_stream.feed(suggestion_stream.feed(event['text']))
                     parts.append(visible)
                     if emit:
                         if visible:
@@ -324,7 +333,7 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
                     raise RuntimeError(f'上游 {code}' if isinstance(code, int) and 400 <= code <= 599 else '模型暂时未能回复')
                 elif event['type'] == 'done':
                     finish_reason = event.get('finish_reason')
-            tail = summary_stream.finish()
+            tail = summary_stream.feed(suggestion_stream.finish()) + summary_stream.finish()
             if tail:
                 parts.append(tail)
                 if emit:
@@ -365,7 +374,7 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
             if body.feature_id in ('core', 'desktop_pet') and voice is None:
                 from ..services.qq_web_sync import enqueue
                 enqueue(conn, assistant['id'], sid)
-            conn.execute("UPDATE session_chat_turns SET assistant_id=?,status='done' WHERE request_id=?", (assistant["id"], body.request_id))
+            conn.execute("UPDATE session_chat_turns SET assistant_id=?,status='done',reply_suggestions=? WHERE request_id=?", (assistant["id"], json.dumps(suggestion_stream.candidates, ensure_ascii=False), body.request_id))
         progress.event('persisted', {'message_id': assistant['id'], 'text': assistant['content']})
         if body.auto_memory:
             from ..services.memory_batch import enqueue
@@ -373,7 +382,8 @@ async def _run_session_turn(body: SessionTurn, background: BackgroundTasks, emit
             enqueue((session['persona_id'], sid), _extract,
                     [{"role": r["role"], "content": outbound(r)} for r in [*rows, assistant]], session, memory_cfg)
         _archive_messages([assistant], session)
-        return {**session, "user": user, "assistant": assistant, "replayed": False, 'finish_reason': finish_reason}
+        return {**session, "user": user, "assistant": assistant, "replayed": False, 'finish_reason': finish_reason,
+                'reply_suggestions': suggestion_stream.candidates}
 
 
 @router.post('/web-stream')
@@ -386,7 +396,7 @@ async def web_stream(body: SessionTurn):
         async def produce():
             try:
                 result = await _session_turn(body, background, queue.put)
-                await queue.put({'type': 'done', 'assistant': result['assistant'], 'finish_reason': result.get('finish_reason')})
+                await queue.put({'type': 'done', 'assistant': result['assistant'], 'finish_reason': result.get('finish_reason'), 'reply_suggestions': result.get('reply_suggestions', [])})
             except Exception as exc:
                 await queue.put({'type': 'error', 'message': exc.detail if isinstance(exc, HTTPException) else '回复未完成，请重试'})
             await queue.put(None)
