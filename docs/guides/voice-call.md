@@ -43,5 +43,5 @@ VOICE_FISH_ID=默认音色ID
 - 回复与分段带编号，浏览器播完分段后确认。正常回复等播放确认再落库；插话、挂断或失败只保留已确认播完的连续分段，并标注“语音被打断”。正在播放的一段如果半途停止，首版不会逐字推断其中已听到多少。
 - 开口打断依赖 ASR 首个有效候选，尚未识别出文字前不会仅因音量突然升高就打断。因此打断时延也取决于 ASR；长停顿被分成多句时，后一句会按新输入处理，尚未实现 Eidolon-SC 的“开口前补充合并”规则。
 - 本版采用同源 WebSocket PCM 传输，复用现有 Vite / HTTPS 隧道；没有采用调研中的 Pipecat/WebRTC。PCM 上行约 32 KB/s、下行约 48 KB/s（有声音时），没有 WebRTC 的 Opus 压缩和媒体拥塞控制。弱网应实测，上传积压会显式终止而不无限排队。
-- 本地 Paraformer 在线解码运行于 CPU；Piper 在接通时预热，通话时按块输出 22050 Hz PCM，不经过完整 WAV 接口。CosyVoice 试验独立环境及方案见 [本地连续语音评估](research/local-streaming-voice-options.md)。
+- 本地 Paraformer 在线解码运行于 CPU；Piper 在接通时预热，通话时按块输出 22050 Hz PCM，不经过完整 WAV 接口。CosyVoice 试验独立环境及方案见 本地连续语音评估。
 - 通话面板为前台模态窗口；关闭即挂断。没有自动重拨、跨页面持续通话、设备切换或角色表情同步。Edge/Piper 原朗读和 Web Speech 按住说话保持可用。
