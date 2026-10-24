@@ -23,7 +23,9 @@ import httpx
 
 # 本地模型目录（§16.7）：{root}/<模型名，/ 换成 __>/。模型文件不进 git。
 # 落点 backend/data/models/embedding/，由仓库根目录 download_embedding.sh 下载。
-DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "models" / "embedding"
+from ..data_paths import runtime_root
+
+DEFAULT_MODEL_DIR = runtime_root() / "models" / "embedding"
 
 # 本地模型懒加载缓存：{model_name: SentenceTransformer}
 _local_cache: dict[str, object] = {}

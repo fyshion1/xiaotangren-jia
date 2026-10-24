@@ -1,43 +1,19 @@
 @import "tailwindcss";
+@source "../../features/tavern/frontend";
+@source "../../features/xiaotangren-theme/frontend";
 
-/* ===== Nekopara 暖色烘焙坊主题 ===== */
 :root {
-  --bg: #fdf6ec;
-  --bg-soft: #f8ecd9;
-  --surface: #fffaf2;
-  --surface-2: #fff3e3;
-  --border: #efe0cb;
-  --border-strong: #e6d2b6;
-  --text: #46301f;
-  --text-2: #8a6f56;
-  --text-3: #b39a7d;
-  --pink: #f27e9e;
-  --pink-deep: #e15c85;
-  --pink-soft: #ffe1ea;
-  --mint: #6fc9b2;
-  --sky: #8ec6e8;
-  --shadow: 0 10px 30px rgba(140, 96, 58, 0.1);
-  --shadow-sm: 0 3px 12px rgba(140, 96, 58, 0.08);
-  color-scheme: light;
+ --bg:#f7f8fa; --bg-soft:#eef0f4; --surface:#fff; --surface-2:#f3f4f6;
+ --border:#dfe2e8; --border-strong:#c5cad4; --text:#202632; --text-2:#596273;
+ --text-3:#7a8393; --pink:#527ec3; --pink-deep:#3563a8; --pink-soft:#e6eefb;
+ --mint:#539d8b; --sky:#79a9ce; --shadow:0 8px 24px #0000000d;
+ --shadow-sm:0 2px 8px #0000000a; color-scheme:light;
 }
 .dark {
-  --bg: #1b1410;
-  --bg-soft: #231a14;
-  --surface: #2a2018;
-  --surface-2: #32261c;
-  --border: #3d2f23;
-  --border-strong: #4d3b2c;
-  --text: #f3e6d3;
-  --text-2: #c0a98e;
-  --text-3: #917c66;
-  --pink: #ff8fb0;
-  --pink-deep: #ff7ba5;
-  --pink-soft: #422428;
-  --mint: #74d4ba;
-  --sky: #92cdea;
-  --shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 4px 14px rgba(0, 0, 0, 0.32);
-  color-scheme: dark;
+ --bg:#181b20; --bg-soft:#20242b; --surface:#252a32; --surface-2:#2c323c;
+ --border:#3a424e; --border-strong:#515c6d; --text:#edf0f5; --text-2:#b3bdcb;
+ --text-3:#8f9bad; --pink:#8aafe8; --pink-deep:#a7c6f5; --pink-soft:#293e5c;
+ color-scheme:dark;
 }
 
 html,
@@ -894,3 +870,16 @@ body {
 
 .personal-libraries .personal-db-panel .db-tree{width:150px}.personal-libraries .personal-db-panel .panel-header{flex-wrap:wrap;gap:10px}.personal-libraries .personal-db-panel .db-toolbar{flex-wrap:wrap}.personal-libraries .personal-db-panel .db-meta-form{grid-template-columns:1fr}.storage-settings{min-width:0}.storage-settings .storage-panel{overflow-wrap:anywhere}.storage-settings select{max-width:100%}
 @media(max-width:767px){.personal-libraries .personal-db-panel .db-tree{width:100%}}
+
+/* Shared interaction baseline; final plugin layout awaits proposal selection. */
+.plugin-manager h2 { font-size: 21px; font-weight: 600; margin-bottom: 12px; }
+.plugin-manager > p { font-size: 13px; color: var(--text-2); margin: 8px 0; }
+.plugin-manager article h3 { font-weight: 600; margin-bottom: 6px; }
+.plugin-manager article p { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+.plugin-manager button { border: 1px solid var(--border-strong); padding: 7px 12px; border-radius: 6px; background: var(--surface); transition: background .12s, border-color .12s; }
+.plugin-manager button:hover:not(:disabled) { background: var(--surface-2); border-color: var(--pink-deep); }
+.plugin-manager button:active:not(:disabled) { background: var(--pink-soft); }
+.plugin-manager button:focus-visible { outline: 2px solid var(--pink-deep); outline-offset: 3px; }
+.plugin-manager button:disabled { opacity: .55; cursor: wait; }
+.plugin-feedback:not(:empty) { padding: 10px; border: 1px solid var(--border); border-radius: 6px; }
+.plugin-manager .plugin-feedback.error { color: #b34444; }

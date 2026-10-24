@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
 
@@ -30,7 +30,7 @@ try {
   let mode = false, reads = 0
   await page.route('**/api/settings', route => {
     if (route.request().method() === 'PUT') mode = route.request().postDataJSON().tavern_mode === 'true'
-    return route.fulfill({ json: { tavern_mode: String(mode) } })
+    return route.fulfill({ json: { tavern_installed:'true',tavern_mode: String(mode) } })
   })
   await page.route('**/api/worldbook*', route => {
     reads++

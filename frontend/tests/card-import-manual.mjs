@@ -1,7 +1,7 @@
 // Isolated component test: mock every API request; never spend tokens or write to the database.
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
 

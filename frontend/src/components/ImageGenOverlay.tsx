@@ -215,7 +215,7 @@ export default function ImageGenOverlay({
               rows={3}
               value={genPrompt}
               onChange={(e) => setGenPrompt(e.target.value)}
-              placeholder="如：大诗音穿着围裙在烘焙坊微笑着递上一块蛋糕…"
+              placeholder="例如：穿着围裙，微笑着递上一块蛋糕…"
             />
             <button
               type="button"

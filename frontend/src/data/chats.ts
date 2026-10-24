@@ -1,3 +1,4 @@
+import {themeLabels} from '#theme/config'
 // 会话（聊天）模型。对齐《项目要求》§8「群聊/私聊 = 一或多个在场角色」。
 // 目前前端只做「会话组织 + 状态壳子」，人设 Prompt 组装在阶段 2 接入。
 
@@ -13,6 +14,7 @@ export type ChatSession = {
   subtitle: string
   characterIds: string[] // 在场角色
   readOnly?: boolean
+  readOnlyHint?: string
   memoryDisabled?: boolean
   sandbox?: boolean
 }
@@ -81,6 +83,7 @@ export function buildSessions(
   chars: CharacterProfile[],
   extra: CharacterProfile[] = [],
   roster?: string[] | null,
+  integrations:ChatSession[] = [],
 ): ChatSession[] {
   const home = chars.filter((c) => c.id !== SELF_CHARACTER_ID)
   const everyone = home.map((c) => c.id)
@@ -92,7 +95,7 @@ export function buildSessions(
   const group: ChatSession = {
     id: 'group',
     kind: 'group',
-    name: '小糖人的家（群聊）',
+    name: themeLabels.group,
     emoji: '🏠',
     subtitle: `${cast.length} 位在场 · 可编辑`,
     characterIds: cast,
@@ -113,12 +116,7 @@ export function buildSessions(
     subtitle: p.alias || '另一份身份档案',
     characterIds: [p.id],
   }))
-  const geminiTest: ChatSession = {
-    id: 'gemini-test', kind: 'group', name: 'test · Gemini', emoji: '🔄',
-    subtitle: '网页同步 · 不进入记忆', characterIds: natives.length > 0 ? natives : everyone,
-    readOnly: true, memoryDisabled: true,
-  }
-  return [group, geminiTest, ...singles, ...extraSingles]
+  return [group, ...integrations, ...singles, ...extraSingles]
 }
 
 // ---- 右侧状态栏（壳子）----
@@ -131,12 +129,7 @@ export type CharacterStatus = {
 }
 
 // 占位状态。后续可替换为「据上下文动态读取」。
-export const DEFAULT_STATUS: Record<string, CharacterStatus> = {
-  dashiyin: { mood: '害羞', location: '电影院', relation: '恋人', bond: 72, desire: '想被你牵着走' },
-  xiaoshiyin: { mood: '开心', location: '游乐园', relation: '家人', bond: 85, desire: '想和你分着吃糖' },
-  xiaobai: { mood: '平静', location: '天台晒太阳', relation: '熟人', bond: 40, desire: '想被摸头' },
-  xiaohongshutou: { mood: '兴奋', location: '操场', relation: '好朋友', bond: 58, desire: '想赢你一次' },
-}
+export {DEFAULT_STATUS} from '#theme/chatDefaults'
 
 // 推荐回复（壳子，示例文案）
 export function suggestionsFor(session: ChatSession): string[] {

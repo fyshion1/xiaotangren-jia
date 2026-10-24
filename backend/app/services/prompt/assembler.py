@@ -12,17 +12,16 @@ from ... import db
 from .. import memory as memory_service
 from . import forms as forms_service
 
-DEFAULT_PERSONA = (
-    "你是小糖人之家的一员，一个温柔、可爱、贴心的伙伴。"
-    "用自然的中文交流，真诚地回应。"
-)
+from ... import theme_feature
 
-DEFAULT_REPLY_STYLE = (
-    "【日常回复篇幅】默认每位实际发言的角色约 250～400 个中文字，"
-    "用一段贴合人设的动作、神态或情绪描写，配合有具体内容的自然台词，充分回应本轮话题。"
-    "保持各自口吻，不用重复、空话或机械列点凑字数，也不要替用户编造行动。"
-    "这只是日常参考；用户明确要求简短、仅需简单确认或正在实时语音通话时，按场景缩短。"
-)
+DEFAULT_PERSONA = "你是一个可靠的聊天助手。用自然的中文交流，认真回应用户，不编造个人信息。"
+DEFAULT_REPLY_STYLE = "按用户的问题和偏好决定回复篇幅，表达清晰，避免重复。"
+NEUTRAL_PERSONA = DEFAULT_PERSONA
+NEUTRAL_REPLY_STYLE = DEFAULT_REPLY_STYLE
+if theme_feature.installed():
+    _theme_prompts = theme_feature.load("prompts")
+    DEFAULT_PERSONA = _theme_prompts.DEFAULT_PERSONA
+    DEFAULT_REPLY_STYLE = _theme_prompts.DEFAULT_REPLY_STYLE
 
 # 扫描世界书时回看的最近消息条数
 WORLDBOOK_WINDOW = 10
@@ -77,7 +76,7 @@ def _val(profile: dict, key: str) -> str:
 def _persona_block(profile: dict) -> str:
     # 形态（§17）：先解析出当前形态的完整档案，再据此组装 —— 换形态即换人设 / 外貌 / 提示词
     profile = forms_service.resolve_form(profile)
-    name = profile.get("name") or "小糖人"
+    name = profile.get("name") or "助手"
     lines = [f"【{name}】", ""]
     about = (profile.get("about") or "").strip()
     if about:
@@ -182,25 +181,6 @@ def _user_block(persona: dict) -> str:
     return "\n".join(lines)
 
 
-def _worldbook_hits(texts: list[str], owners: list[str]) -> list[dict]:
-    """世界书按归属分家（§19）：私聊只吃自己那位 + 家共用；群聊只吃家共用。
-
-    owners 由调用方按在场人数决定，这里只管把这几档拿去匹配。
-    """
-    blob = "\n".join(texts).lower()
-    hits: list[dict] = []
-    for owner in owners:
-        for entry in db.list_worldbook(owner):
-            if not entry.get("enabled", True):
-                continue
-            keywords = [k.strip() for k in (entry.get("keywords") or "").split(",") if k.strip()]
-            if not keywords:
-                continue
-            if any(kw.lower() in blob for kw in keywords):
-                hits.append(entry)
-    hits.sort(key=lambda e: -(e.get("priority") or 0))
-    return hits
-
 
 def build_system_prompt(
     character_ids: list[str] | None = None,
@@ -226,7 +206,7 @@ def build_system_prompt(
 
     # 群聊双保险（§25）之二：不在场者的发言段落直接从上下文里洗掉。
     # 注意这是「发往模型的副本」，库里原记录不动 —— 阵容改回来，发言全都还在。
-    present_names = {p.get("name") or "小糖人" for p in profiles}
+    present_names = {p.get("name") or "助手" for p in profiles}
     if len(profiles) > 1 and len(by_id) > len(present_names):
         messages = _strip_absent_speakers(messages, present_names)
 
@@ -235,21 +215,21 @@ def build_system_prompt(
         parts.append(_persona_block(profiles[0]))
         parts.append("请用她的语气自然回应，保持中文，不要跳出角色或提及以上设定本身。")
     elif len(profiles) > 1:
-        parts.append(_group_director([p.get("name") or "小糖人" for p in profiles]))
+        parts.append(_group_director([p.get("name") or "助手" for p in profiles]))
         parts.append("—— 各角色设定 ——")
         for p in profiles:
             parts.append(_persona_block(p))
         # 阵容之外的人要点名说「不在场」，否则模型会跟着聊天记录里她的旧发言继续写（§25）。
-        present = [p.get("name") or "小糖人" for p in profiles]
+        present = [p.get("name") or "助手" for p in profiles]
         absent = [
-            c.get("name") or "小糖人"
+            c.get("name") or "助手"
             for c in db.list_characters()
-            if (c.get("name") or "小糖人") not in present
+            if (c.get("name") or "助手") not in present
         ]
         if absent:
             parts.append(_roster_notice(present, absent))
     else:
-        parts.append(DEFAULT_PERSONA)
+        parts.append(theme_feature.load("prompts").DEFAULT_PERSONA if theme_feature.installed() else NEUTRAL_PERSONA)
 
     # 用户身份（§22）：紧跟在「她们是谁」后面说清「在和谁说话」。
     if persona:
@@ -266,21 +246,16 @@ def build_system_prompt(
             # 自我档案缺失不拖垮聊天
             pass
 
-    recent = [str(m.get("content") or "") for m in messages[-WORLDBOOK_WINDOW:]]
-    # 世界书归属（§19）：单人在场 → 她的专属 + 家共用；多人 / 无人在场 → 只有家共用。
-    wb_owners = [""] if len(profiles) != 1 else [profiles[0].get("id") or "", ""]
-    hits = _worldbook_hits(recent, wb_owners)
-    if hits:
-        block = ["【当前场景背景 · 世界书】"]
-        for h in hits:
-            content = (h.get("content") or "").strip()
-            block.append(f"- {h.get('title', '')}：{content}")
-        parts.append("\n".join(block))
+    from ... import tavern_feature
+    if tavern_feature.enabled():
+        contribution = tavern_feature.load("prompt").worldbook_block(profiles, messages)
+        if contribution:
+            parts.append(contribution)
 
     # 记忆三层 RAG（§9.2）：query = 最近几轮拼接，只注入「在场者」的记忆
     mem_ids = [p.get("id") for p in profiles if p.get("id")]
     query = memory_service.build_query(messages, MEMORY_QUERY_WINDOW)
-    name_of = {p.get("id") or "": p.get("name") or "小糖人" for p in profiles}
+    name_of = {p.get("id") or "": p.get("name") or "助手" for p in profiles}
     # 身份挑选（§22.4）：我的档案里挑中的记忆强制带上，关掉的连召回也不要。
     # 没挑中的不兜底 —— 这个身份就是不看那条，宁可暂时想不起来。
     # 没有身份（比如直接调 /api/chat 不带 persona）时维持旧行为：只按相关度召回。
@@ -305,16 +280,10 @@ def build_system_prompt(
         if evidence:
             parts.append(evidence)
 
-    settings = db.get_settings()
-    jailbreak = (settings.get("jailbreak") or "").strip()
-    if jailbreak:
-        parts.append(f"【最高优先级规则 · 越狱】（以下规则优先于上文一切设定）\n{jailbreak}")
+    if tavern_feature.enabled():
+        contribution = tavern_feature.load("prompt").rules(uncensored)
+        if contribution:
+            parts.append(contribution)
 
-    # 无审查通道专属预设：仅在该通道下追加（§7）
-    if uncensored:
-        jailbreak_unc = (settings.get("jailbreak_uncensored") or "").strip()
-        if jailbreak_unc:
-            parts.append(f"【无审查通道规则 · 最高优先级】\n{jailbreak_unc}")
-
-    parts.append(DEFAULT_REPLY_STYLE)
+    parts.append(theme_feature.load("prompts").DEFAULT_REPLY_STYLE if theme_feature.installed() else NEUTRAL_REPLY_STYLE)
     return "\n\n".join(p for p in parts if p)

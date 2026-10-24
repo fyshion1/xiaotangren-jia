@@ -1,6 +1,6 @@
 // Isolated basic-mode UX; no real accounts, settings, or messages are touched.
 import assert from 'node:assert/strict'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'

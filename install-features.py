@@ -32,9 +32,16 @@ def download(url, target):
 
 
 def install_web():
-    plugin = REPO / 'features' / 'tools' / 'src' / 'xiaotangren_tools' / '__init__.py'
+    target=REPO/'features'/'tools'
+    plugin = target / 'src' / 'xiaotangren_tools' / '__init__.py'
+    if not target.exists():
+        if not shutil.which('git'):
+            raise FileNotFoundError('找不到 Git，无法下载独立联网工具插件。')
+        target.parent.mkdir(parents=True,exist_ok=True)
+        print('下载独立工具插件（需要仓库访问权限）…')
+        subprocess.run(['git','clone','https://github.com/fyshion1/tools.git',str(target)],check=True)
     if not plugin.is_file():
-        raise FileNotFoundError('请先将独立工具插件安装到 features/tools；本体不再附带联网适配。详见 docs/guides/optional-components.md。')
+        raise FileNotFoundError('features/tools 缺少插件入口；不会覆盖已有目录。请检查克隆是否完整后重试，详见 docs/guides/optional-components.md。')
     subprocess.run(["uv", "tool", "install", "--with", "httpx>=0.27,<1", "omnireach"], check=True)
     print("联网工具已安装；安装 CLI 不代表所有搜索来源已就绪。")
     print("Google 等来源还需 Chrome 桥接：运行 omnireach bridge install，按提示加载扩展，保持 Chrome 开启。")
@@ -115,13 +122,13 @@ def main():
         else:
             print(f"{label}已下载。依赖、模型和账号配置请按该功能 README 完成。")
     for label, description, install in (
-        ("联网搜索功能", "让小糖人上网查资料。将安装 OmniReach 搜索工具；部分来源还需 Chrome 扩展与登录，仅安装工具不保证所有来源都能访问。", install_web),
+        ("联网搜索功能", "让助手上网查资料。未安装时先从 GitHub 下载独立 tools 插件（需要仓库访问权限），再安装 OmniReach 搜索工具；部分来源还需 Chrome 扩展与登录，仅安装工具不保证所有来源都能访问。", install_web),
         ("QQ 语音转写功能", "让小糖人听懂 QQ 语音，作为网关转写失败时的本地兜底，也可直接本地识别。\n"
          "将安装：sherpa-onnx（CPU 语音识别运行库）；Paraformer 中英 INT8 模型和 tokens（把声音识别成文字）；"
          "pilk（解码 QQ 的 SILK 语音）；imageio-ffmpeg 及适用平台的 FFmpeg（音频转为识别所需格式）。\n"
          "依赖安装到本体后端环境，模型保存到 backend/data/asr/paraformer-zh-en；需联网下载数百 MB，占用磁盘与 CPU。"
          "识别不上传音频、不额外调用付费 ASR；聊天模型仍按原配置计费。不安装 TTS 音色、不修改系统 PATH。", install_qq_asr),
-        ("本地说话与听写功能", "让小糖人把回复念出来，也能听懂你说的话。将安装识别运行库 sherpa-onnx、Paraformer 中英模型、QQ 解码器 pilk、FFmpeg 和 Piper 中文音色；已有识别模型会复用。需下载数百 MB，语音处理在本地，聊天模型仍按配置调用。", install_voice),
+        ("本地说话与听写功能", "让助手把回复念出来，也能听懂你说的话。将安装识别运行库 sherpa-onnx、Paraformer 中英模型、QQ 解码器 pilk、FFmpeg、piper-tts 合成运行库和 Piper 中文音色；已有识别模型会复用。需下载数百 MB，语音处理在本地，聊天模型仍按配置调用。", install_voice),
         ("按意思查找记忆和资料", "换一种说法也能找回相关记忆和知识资料，例如用‘上次吃的那顿饭’查找相关记录。"
          "这是语义检索，不会替你聊天，也不保证每次都能找对；不安装仍能按关键词查找。\n"
          "将安装小型中文向量模型 BGE-small-zh-v1.5（embedding，模型约 100 MB），以及 sentence-transformers、PyTorch 等运行依赖。"

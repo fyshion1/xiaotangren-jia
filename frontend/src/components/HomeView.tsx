@@ -1,5 +1,5 @@
+import {emptyProfile} from '../lib/emptyProfile'
 import { useTavernMode } from '../lib/tavernMode'
-import ProfileSection from '../visual/ProfileSection'
 import CharacterStage from '../visual/CharacterStage'
 import { useEffect, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
@@ -13,12 +13,12 @@ import CharacterEditor from './CharacterEditor'
 import SelfProfilePanel from './SelfProfilePanel'
 import PersonaMemorySection from './PersonaMemorySection'
 import PersonalDatabasePanel from './PersonalDatabasePanel'
-import PatrolPanel from './PatrolPanel'
 import WorldbookPanel from './WorldbookPanel'
 import JailbreakPanel from './JailbreakPanel'
 import Avatar from './Avatar'
 
 type Props = {
+  onCreateCharacter?:()=>void
   characters: CharacterProfile[]
   initialCharId?: string
   /** 私人空间（§22）：characters 换成「你的身份档案列表」，多出一排身份卡片。 */
@@ -44,43 +44,7 @@ type Props = {
   onDeleteImportedCard?: (c: CharacterProfile) => void | Promise<void>
 }
 
-function emptyProfile(): Omit<CharacterProfile, 'id'> {
-  return {
-    name: '',
-    jp: '',
-    alias: '',
-    emoji: '🌟',
-    about: '',
-    birthday: '',
-    age: '',
-    height: '',
-    bloodType: '',
-    constellation: '',
-    personality: [],
-    likes: [],
-    dislikes: [],
-    catchphrase: '',
-    bodyType: '',
-    eyeColor: '',
-    hairstyle: '',
-    hairColor: '',
-    bust: '',
-    hip: '',
-    clothing: '',
-    occupation: '',
-    relationships: '',
-    specialFeatures: '',
-    weight: '',
-    measurements: '',
-    secret: '',
-    weakPoint: '',
-    privateWish: '',
-    relation: '',
-    // 新档案默认**不当**可聊角色（§22）：多数身份只是「换个视角说话」，
-    // 想让她现身当角色，去编辑面板把开关打开。
-    asCharacter: false,
-  }
-}
+
 
 export default function HomeView({
   characters,
@@ -94,6 +58,7 @@ export default function HomeView({
   onBecomePersona,
   onDeletePersona,
   onDeleteImportedCard,
+  onCreateCharacter,
 }: Props) {
   // 私人空间（§22）：characters 传进来的就是身份档案列表，active 跟着「当前身份」走。
   // 列表为空时（后端不可用）下面整块不渲染，不会白屏。
@@ -167,7 +132,7 @@ export default function HomeView({
   const onDelete = async (p: CharacterProfile) => {
     if (!onDeletePersona) return
     const ok = window.confirm(
-      `删掉「${p.name}」这份身份档案？\n\n它名下的聊天记录会一起清掉（每个身份各自一条）。\n小糖人们的记忆、画廊、世界书不受影响。`,
+      `删掉「${p.name}」这份身份档案？\n\n它名下的聊天记录会一起清掉（每个身份各自一条）。\n其他角色的记忆、画廊、世界书不受影响。`,
     )
     if (!ok) return
     await onDeletePersona(p.id)
@@ -221,6 +186,7 @@ export default function HomeView({
       ) : (
         <div className="mb-6 flex flex-wrap gap-3">
           <label className="member"><input type="checkbox" checked={showHidden} onChange={e => setShowHidden(e.target.checked)} />显示已隐藏角色</label>
+          {onCreateCharacter&&<button className="btn ghost sm" onClick={onCreateCharacter}>＋ 创建助手</button>}
           {list.map((c) => (
             <button key={c.id} className={`member ${c.id === active?.id ? 'on' : ''}`} onClick={() => setActiveId(c.id)}>
               <Avatar name={c.name} avatar={c.avatar} emoji={c.emoji} size={30} className="ear" />
@@ -246,6 +212,11 @@ export default function HomeView({
           extra={
             space ? (
               <PersonaActions p={active} onDelete={onDeletePersona ? onDelete : undefined} />
+            ) : active.characterPackId ? (
+              <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-4">
+                <p className="text-xs text-[var(--text-3)]">来自角色包，档案与图片已归入用户数据。移除档案会保留图片、聊天和记忆。</p>
+                <button className="self-start rounded border border-[var(--border)] px-3 py-2 text-sm" onClick={() => void onDeleteImportedCard?.(active)}>移除角色档案</button>
+              </div>
             ) : active.imported ? (
               /* 导入的角色卡：家里四位是种子数据、删了会被补种回来，所以只有她能删。
                  删完 App 会把 characters 换掉，active 自动回落到列表第一位（见上面 active 的兜底）。 */
@@ -273,7 +244,6 @@ export default function HomeView({
         <PersonaMemorySection personaId={active.id} personaName={active.name} highlight={Boolean(focusMemory)} />
         <PersonalDatabasePanel personaId={active.id} />
       </div>}
-      {space && <ProfileSection title="巡检与成果"><PatrolPanel /></ProfileSection>}
 
       {/* 这位角色的专属画廊（§9.4 归属）；家共用的那部分在「糖人小窝」 */}
       {active && <GalleryGrid owner={active.id} />}
@@ -342,7 +312,7 @@ function PersonaActions({ p, onDelete }: { p: CharacterProfile; onDelete?: (p: C
         <div className="rounded-xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] p-3">
           <div className="mb-1 text-[12px] font-semibold text-[var(--pink-deep)]">与大家的关系（喂给模型）</div>
           <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-[var(--text-2)]">
-            {p.relation?.trim() || '还没写。填上之后，小糖人会用这个身份对应的方式对待你。'}
+            {p.relation?.trim() || '尚未填写。填写后，角色可以据此识别当前身份关系。'}
           </p>
         </div>
         <div className="rounded-xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_70%,transparent)] p-3">

@@ -8,7 +8,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, StrictBool, model_validator
 
-SETTINGS_PATH = Path(__file__).resolve().parents[1] / "data" / "launcher.json"
+from .data_paths import runtime_root
+
+SETTINGS_PATH = runtime_root() / "launcher.json"
 
 
 class StartupSettings(BaseModel):

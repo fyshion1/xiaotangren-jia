@@ -116,7 +116,7 @@ export default function PersonaMemorySection({personaId,personaName,highlight}:P
   }
   return <section id="persona-memory" className="self-profile-panel persona-memory-panel">
     <header className="panel-header"><b>个人记忆库</b><button className="btn sm ghost" disabled={busy} onClick={()=>void perform(load)}>刷新</button></header>
-    <p className="memory-library-description">{personaName || '你'}与小糖人的经历、羁绊和未来。聊天全量归档，AI 自动整理，你决定留下什么。</p>
+    <p className="memory-library-description">{personaName || '你'}与角色的经历、羁绊和未来。聊天全量归档，AI 自动整理，你决定留下什么。</p>
     <div className="memory-stage-line"><b>01 按天原文</b><span>→ 清洗 →</span><b>02 AI 整理</b><span>→</span><b>03 审核与注入</b></div>
     <nav className="memory-tabs">{([['activity','当天经历与来源'],['source','01 源记忆'],['work','02 AI 处理'],['long',`03 记忆注入${candidates.length ? ` · 待审核 ${candidates.length}`:''}`],['legacy','旧记忆']] as const).map(([id,label])=><button className={tab===id?'active':''} key={id} onClick={()=>setTab(id)}>{label}</button>)}</nav>
     {tab==='activity' && <SharedActivityMemory key={personaId} personaId={personaId}/>}

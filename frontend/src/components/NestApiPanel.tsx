@@ -1,6 +1,6 @@
 // 小窝 · 通用 API 中心（§9.6）。
 //
-// 两层配置：全局「小窝大脑默认」（**带视觉路**）+ 每个功能可单独覆盖任意字段。
+// 两层配置：全局「默认模型配置」（**带视觉路**）+ 每个功能可单独覆盖任意字段。
 // 聊天页与所有小窝功能统一使用这里的配置。
 //
 // 功能清单来自后端注册表，前端不写死 —— 加功能只要在后端 features_registry.py 加一条。
@@ -93,7 +93,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const KIND_LABEL: Record<string, string> = {
-  game: '游戏', media: '媒体', im: '聊天软件', home: '小窝', other: '其他',
+  game: '游戏', media: '媒体', im: '聊天软件', home: '工作区', other: '其他',
 }
 
 /** Base URL 的比较键：末尾斜杠不算区别（下拉/试模型按它查缓存）。 */
@@ -181,7 +181,7 @@ export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) 
     try {
       const r = await saveNestBrainDefault(brain)
       setBrain(r.config || {}); setBrainConfigured(true)
-      flash('小窝大脑默认已保存')
+      flash('默认模型配置已保存')
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(false) }
   }
@@ -205,7 +205,7 @@ export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) 
     setBusy(true); setErr('')
     try {
       const eff = await clearNestFeatureConfig(activeId, effective.override.id)
-      setEffective(eff); flash('已删除独立配置，回落小窝大脑默认')
+      setEffective(eff); flash('已删除独立配置，回落默认模型配置')
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(false) }
   }
@@ -303,13 +303,13 @@ export default function NestApiPanel({ bare = false }: { bare?: boolean } = {}) 
       {!bare && (
         <>
           <div className="mb-1 flex items-center justify-between gap-2">
-            <h2 className="font-bold">🧠 小窝大脑 API</h2>
+            <h2 className="font-bold">模型连接 API</h2>
             <span className={`text-[11px] ${brainConfigured ? 'text-[var(--text-3)]' : 'text-[var(--pink-deep)]'}`}>
               {brainConfigured ? '已配置' : '还没配，功能默认没得上游'}
             </span>
           </div>
           <p className="mb-3 text-[12px] text-[var(--text-2)]">
-            小窝里所有功能共用这一份「大脑」配置，<b>聊天页也使用这里的配置</b>。默认带视觉路（看图 / 看视频抽帧）。
+            所有功能共用这一份模型配置，<b>聊天页也使用这里的配置</b>。默认带视觉路（看图 / 看视频抽帧）。
           </p>
         </>
       )}

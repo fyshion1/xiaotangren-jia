@@ -20,7 +20,9 @@ from .. import db
 from ..config import get_settings
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_ROOT = Path(os.getenv("PERSONAL_DATABASE_ROOT", str(_PROJECT_ROOT / "个人数据库"))).resolve()
+from ..data_paths import personal_database_root
+
+_ROOT = personal_database_root()
 _HIDDEN_DIRS = {".versions", ".archive", ".obsidian", ".trash"}
 
 _CONFIG_KEY = "harvest_watch_dirs"
@@ -35,6 +37,8 @@ _WATCH_EXTS = {
 }
 
 _stop = threading.Event()
+_worker = None
+_worker_lock = threading.Lock()
 _last_scan = ""
 _last_error = ""
 
@@ -81,6 +85,9 @@ def _fingerprint(path: Path) -> str:
 def scan() -> int:
     """扫一遍监测目录，新文件生成待确认事件。返回本次新增的事件数。"""
     global _last_scan, _last_error
+    from .. import personal_space
+    if not personal_space.enabled('personal_database'):
+        return 0
     now = datetime.now()
     try:
         known = {k["path"] for k in db.list_harvest_known()}
@@ -125,22 +132,35 @@ def _loop(interval: int) -> None:
 
 
 def start() -> None:
+    global _worker
+    from .. import personal_space
+    if not personal_space.enabled('personal_database'):
+        return
     settings = get_settings()
     if not settings.harvest_enabled:
         return
-    if _stop.is_set():  # 重复 start（reload）时重置
+    with _worker_lock:
+        if _worker is not None and _worker.is_alive():
+            return
         _stop.clear()
-    threading.Thread(target=_loop, args=(settings.harvest_interval,), name="harvest-watcher", daemon=True).start()
+        _worker = threading.Thread(target=_loop, args=(settings.harvest_interval,), name="harvest-watcher", daemon=True)
+        _worker.start()
 
 
-def stop() -> None:
+def stop() -> bool:
     _stop.set()
+    worker = _worker
+    if worker is not None and worker is not threading.current_thread():
+        worker.join(timeout=5)
+        return not worker.is_alive()
+    return True
 
 
 def status() -> dict:
     settings = get_settings()
+    from .. import personal_space
     return {
-        "enabled": settings.harvest_enabled,
+        "enabled": settings.harvest_enabled and personal_space.enabled('personal_database'),
         "interval": settings.harvest_interval,
         "watch_dirs": get_watch_dirs(),
         "last_scan": _last_scan,

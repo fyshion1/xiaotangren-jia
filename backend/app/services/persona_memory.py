@@ -28,6 +28,9 @@ _KINDS = (KIND_MEMORY, KIND_DB)
 
 def db_pool() -> list[dict]:
     """个人数据库 03 里可选（已批准）的条目。"""
+    from .. import personal_space
+    if not personal_space.enabled('personal_database'):
+        return []
     root = sp.external_ai_layer_root()
     items: list[dict] = []
     if not root.is_dir():

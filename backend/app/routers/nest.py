@@ -49,7 +49,9 @@ router = APIRouter(prefix="/nest", tags=["nest"])
 # 后端在 backend/ 下跑，仓库根是它的上一级；`data/nest_runs/` 存每个进程的输出日志。
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FEATURES_DIR = REPO_ROOT / "features"
-RUNS_DIR = REPO_ROOT / "backend" / "data" / "nest_runs"
+from ..data_paths import runtime_root
+
+RUNS_DIR = runtime_root() / "nest_runs"
 
 # 合并配置时，功能覆盖可用的字段（普通路 + 视觉路）。
 _OVERRIDE_FIELDS = (
@@ -127,14 +129,18 @@ def _effective_config(feature_id: str) -> dict:
 @router.get("/features")
 async def list_features() -> dict:
     """功能的唯一清单（来自代码注册表）。前端小窝按它渲染入口列表 + 设置表单。"""
+    from ..features_registry import folder_has_payload
     items = [feature for feature in all_features()
-             if (feature["folder"] and (FEATURES_DIR / feature["folder"]).is_dir())
-             or feature["id"] == "gemini_sync"]
+             if feature['folder'] and folder_has_payload(FEATURES_DIR / feature['folder'])]
     from ..expert_mode import enabled, plugin_installed
     if not enabled():
         items = [feature for feature in items if feature['id'] != 'tools']
     if not enabled() or not plugin_installed():
         items = [feature for feature in items if feature['id'] != 'autonomous_activity']
+    from .. import plugin_state
+    items = [f for f in items if plugin_state.enabled(f["id"]) and plugin_state.visible(f["id"])]
+    # Personal-space editors have their own slots, not activity launch cards.
+    items = [f for f in items if f['id'] not in ('personal_profile','personal_database')]
     priority = {"desktop_pet": 0, "qq_bridge": 1}
     items.sort(key=lambda feature: priority.get(feature["id"], 2))
     return {"items": items, "contract_version": "0.2.2"}
@@ -1031,6 +1037,9 @@ class RunIn(BaseModel):
 
 
 def _runner(feature_id: str) -> dict:
+    from ..plugin_state import enabled
+    if not enabled(feature_id):
+        raise HTTPException(409, "插件已关闭，请在插件管理中启用")
     runner = runner_of(feature_id)
     if not runner:
         raise HTTPException(404, "这个功能没有启动入口（实现是独立项目，还没接进来）")

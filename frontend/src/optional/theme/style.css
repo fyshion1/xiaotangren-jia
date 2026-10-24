@@ -1,0 +1,17 @@
+/* Neutral core styles live in index.css. */
+.topbar { background: var(--surface); }
+.visual-nav-link { padding: 6px 10px; border-radius: 6px; }
+.visual-nav-link[aria-current="page"] { background: var(--pink-soft); color: var(--pink-deep); }
+.visual-nav-link small { display: none; }
+.core-character { padding: 20px; border: 1px solid var(--border); border-radius: 8px; }
+.core-character h1 { font-size: 22px; margin-bottom: 12px; }
+.core-character p { white-space: pre-wrap; margin-bottom: 12px; }
+.nest-hero { padding: 20px 0; font-size: 22px; font-weight: 600; }
+.visual-original-profile { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.visual-original-profile summary { cursor: pointer; }
+.visual-original-profile summary span { margin-left: 12px; color: var(--text-3); }
+
+/* No decorative theme surfaces in the neutral core. */
+body { background: var(--bg); }
+.nest-room-nav strong, .nest-room-heading h2 { font-family: inherit; }
+.nest-room-nav > button, .nest-setting-nav > button { border-radius: 6px; }

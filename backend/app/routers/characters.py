@@ -9,6 +9,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 
 from .. import db
+from ..services import assets
 from pydantic import BaseModel, Field
 
 router = APIRouter()
@@ -67,11 +68,19 @@ async def create_character(body: dict) -> dict:
     char_id = (body.get("id") or "").strip()
     if not char_id or db.get_character(char_id) is not None:
         char_id = f"char-{uuid.uuid4().hex[:10]}"
+    try:
+        body = assets.prepare_profile(body)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     db.upsert_character(char_id, body)
     return db.get_character(char_id) or {}
 
 
 @router.put("/characters/{char_id}")
 async def update_character(char_id: str, body: dict) -> dict:
+    try:
+        body = assets.prepare_profile(body)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     db.upsert_character(char_id, body)
     return db.get_character(char_id) or {}

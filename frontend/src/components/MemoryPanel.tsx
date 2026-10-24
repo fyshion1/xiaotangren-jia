@@ -25,7 +25,7 @@ export default function MemoryPanel({ context, lastSent, historyLimit, onInspect
       <nav className="memory-tabs"><button className={tab === 'context' ? 'active' : ''} onClick={() => setTab('context')}>下一轮上下文</button><button className={tab === 'sent' ? 'active' : ''} onClick={() => setTab('sent')}>最近实际发送</button></nav>
       <div className="context-scroll">
         {tab === 'context' && (context.length ? context.map((m,i) => <article className={`context-message ${m.role}`} key={i}>
-          <div className="context-message-label"><span>{m.role === 'user' ? '你' : '小糖人'}</span><small>#{i + 1}</small></div>
+          <div className="context-message-label"><span>{m.role === 'user' ? '你' : '角色'}</span><small>#{i + 1}</small></div>
           <details open={m.role === 'user' || m.content.length < 220}><summary>{m.role === 'user' ? '原始消息' : '对话内容'} · {m.content.length} 字</summary><p>{m.content}</p></details>
           {!!m.images?.length && <div className="context-images">{m.images.map((url,j) => <a href={url} target="_blank" rel="noreferrer" key={j}><img src={url} alt={`上下文图片 ${j+1}`}/></a>)}</div>}
         </article>) : <div className="memory-empty">还没有对话，聊点今天发生的事吧。</div>)}

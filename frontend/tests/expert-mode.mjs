@@ -1,7 +1,7 @@
 // Real settings navigation and unlock controls, with an isolated local API fixture.
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
 
@@ -22,6 +22,7 @@ try {
   browser = await chromium.launch({headless:true, executablePath:process.argv[2]})
   const page = await browser.newPage()
   let expert = false, installed = true, networkInstalled = false
+  let tavernInstalled = true, tavernEnabled = false
   const channels = {core:true,qq_bridge:true,desktop_pet:true}
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
@@ -39,6 +40,9 @@ try {
     } else if (path.startsWith('/api/tools/network')) {
       if (request.method() === 'PUT') channels[path.split('/').pop()] = request.postDataJSON().enabled
       data = {installed:networkInstalled,channels}
+    } else if (path === '/api/settings') {
+      if (request.method() === 'PUT') tavernEnabled = request.postDataJSON().tavern_mode === 'true'
+      data = {tavern_installed:String(tavernInstalled),tavern_mode:String(tavernEnabled)}
     } else if (path === '/api/nest/features') data = {items:[]}
     else if (path === '/api/compute/config') data = {mode:'delegated',worker_url:'http://127.0.0.1:8010',has_token:true,profile:'full'}
     else if (path.startsWith('/api/gallery')) data = []
@@ -52,6 +56,9 @@ try {
   const nav = page.getByRole('navigation', {name:'小窝设置分类'})
   for (const name of ['自主活动与沙盒','工具中心','进程管理','功能偏好']) assert.equal(await nav.getByRole('button',{name,exact:true}).count(),0,name)
   assert.equal(await page.getByRole('checkbox',{name:'联网搜索',exact:true}).count(),0)
+  await nav.getByRole('button',{name:'酒馆模式',exact:true}).click()
+  await page.getByRole('checkbox',{name:'启用酒馆模式',exact:true}).check()
+  assert.equal(tavernEnabled,true)
   assert.equal(await nav.getByRole('button',{name:'委托计算',exact:true}).count(),0)
   const version = page.getByRole('button',{name:'版本 0.1.0'})
   for (let i=0;i<7;i++) await version.click()
@@ -99,6 +106,12 @@ try {
   await page.getByRole('button',{name:/小窝设置/}).click()
   await nav.getByRole('button',{name:'进程管理',exact:true}).waitFor()
   assert.equal(await nav.getByRole('button',{name:'自主活动与沙盒',exact:true}).count(),0)
+  tavernInstalled=false
+  await page.evaluate(() => localStorage.setItem('xtr.tavern-mode','true'))
+  await page.reload()
+  await page.getByRole('button',{name:/小窝设置/}).click()
+  await nav.getByRole('button',{name:'外观与入场',exact:true}).waitFor()
+  assert.equal(await nav.getByRole('button',{name:'酒馆模式',exact:true}).count(),0)
   assert.deepEqual(errors,[])
   console.log('Expert mode passed: hidden unlock, wrong phrase, gated navigation, plugin iframe, revocation, optional installation, channel-specific network controls.')
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)) }

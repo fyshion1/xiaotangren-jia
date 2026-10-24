@@ -19,7 +19,8 @@ type Props = {
   session: ChatSession
   characters: CharacterProfile[]
   onVoiceCall: () => void
-  onVideoCall: () => void
+  voiceInstalled?: boolean
+  ttsAvailable?: boolean
   voiceName: string
   onPickVoice: () => void
   onGeneratePhoto: () => void
@@ -40,7 +41,8 @@ export default function StatusSidebar({
   session,
   characters,
   onVoiceCall,
-  onVideoCall,
+  voiceInstalled = false,
+  ttsAvailable = false,
   voiceName,
   onPickVoice,
   onGeneratePhoto,
@@ -64,12 +66,11 @@ export default function StatusSidebar({
         <button className="status-action" onClick={onGeneratePhoto} title="生成照片">
           <span className="text-[16px]">🎨</span>生成照片
         </button>
-        <button className="status-action" onClick={onVoiceCall} title="语音通话"><UiIcon name="phone"/>语音通话</button>
-        <button className="status-action" onClick={onVideoCall} title="视频通话"><UiIcon name="video"/>视频通话</button>
+        {voiceInstalled && session.kind === 'single' && !session.readOnly && <button className="status-action" onClick={onVoiceCall} title="语音通话设置"><UiIcon name="phone"/>语音通话</button>}
       </div>}
 
       {/* 引擎+音色切换 */}
-      {!session.sandbox && <div className="mt-2 px-4">
+      {!session.sandbox && ttsAvailable && <div className="mt-2 px-4">
         <button
           onClick={onPickVoice}
           className="w-full rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] text-[var(--text-2)] transition hover:border-[var(--pink)] hover:text-[var(--pink-deep)]"
@@ -182,7 +183,7 @@ export default function StatusSidebar({
               </div>
             )}
             <p className="mt-2 text-[11px] leading-snug text-[var(--text-3)]">
-              ＊ 到这儿来的角色：羁绊 / 心情那套数值只给自家四位算，她这儿就照原文摆词条。
+              这里展示角色档案中已填写的信息。
             </p>
           </div>
         ) : (

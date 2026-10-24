@@ -2,7 +2,9 @@
 from array import array
 from pathlib import Path
 
-MODEL = Path(__file__).resolve().parents[2] / 'data/asr/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01'
+from ..data_paths import runtime_root
+
+MODEL = runtime_root() / 'asr/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01'
 SUFFIX = 'epoch-99-avg-1-chunk-16-left-64.int8.onnx'
 
 

@@ -17,8 +17,11 @@
 
 ```
 features/
+├── xiaotangren-theme/       # 可选小糖人主题、素材、默认角色与设定（独立项目）
 ├── README.md                 # 本文件（本体仓库收录的唯一文件）
 ├── tools/                    # 可选工具运行包与工具适配（独立项目）
+├── personal-profile/         # 可选额外个人档案（本机模块，待独立发布）
+├── personal-database/        # 可选个人数据库（本机模块，待独立发布）
 ├── autonomous-activity/      # 自主活动与沙盒（独立专家插件仓库）
 ├── desktop-pet/             # Electron 桌面聊天（独立 git 仓库）
 ├── project-costs/           # 项目实付费用、账单导入与人工确认对账（独立 git 仓库）
@@ -37,7 +40,24 @@ git init dont-starve-together   # 或 git clone <远端> 进来
 目录名对应后端 `backend/app/features_registry.py` 里那条功能的 `folder` 字段。
 本体仓库的 `.gitignore` 已经写死 `/features/*`（只放行本 README），所以不用担心误提交。
 
+## 声明式角色包
+
+角色模板与图片可以独立打为 `features/<包目录>/character-pack.zip`，在插件管理页预览后导入。
+这类包不运行代码，不要求主题或酒馆插件；导入后角色与图片归用户数据层管理，卸载包记录仍保留个人资料。
+格式、制作工具、GitHub 发行目录配置见[角色包说明](../docs/guides/character-packs.md)。
+本机预览样包 `xiaotangren-characters` 不包含私人数据库，授权待整理，尚未公开发布；本体仓库不包含其内容。
+
+## 个人资料插件与本体记忆
+
+`personal-profile` 提供额外 Markdown 档案管理，`personal-database` 提供个人文件与知识资料管理。
+它们是可选插件，缺席不影响基础身份、聊天与原生记忆；关闭暂停对应私人资料来源读取，卸载保留文件。
+两个插件已推送至同名私有仓库，尚未公开发行，主仓库不包含其代码。安装和隐私边界见[个人资料插件说明](../docs/guides/personal-data-plugins.md)。
+
 ## 功能怎么接大脑
+
+酒馆兼容能力已迁到独立可信插件 `features/tavern`：卡片导入、HTML/正则显示、
+世界书与提示词扩展均为可选。未安装也可构建本体，原有用户数据保留。
+安装和版本要求见[酒馆插件说明](../docs/guides/tavern-feature.md)。
 
 工具插件（`features/tools`）也是可信本机插件：本体只保留配置与加载接口，不自带工具执行或第三方联网实现。工具中心按插件抽屉展示，联网排第一。
 
@@ -64,6 +84,8 @@ git init dont-starve-together   # 或 git clone <远端> 进来
 具体契约与本机启动方式见 [`docs/plans/desktop-pet-mvp.md`](../docs/plans/desktop-pet-mvp.md)。
 
 ## 给第三方留的口子
+
+Gemini 网页同步现为独立可选插件，目录 `features/gemini-sync`，包括后端同步实现、设置面板、只读会话和浏览器扩展。未安装不显示同步功能；安装方法见该插件 README。
 
 契约是通用的（就是 HTTP + JSON），所以**别人写的功能也能接这套大脑**，
 你写的功能换个大脑（比如别人自建的同构服务）也能跑 —— 只要对上契约。

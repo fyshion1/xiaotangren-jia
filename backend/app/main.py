@@ -21,7 +21,6 @@ from .routers import (
     session_chat,
     gallery,
     game,
-    gemini_sync,
     imagegen,
     images,
     imports,
@@ -79,10 +78,14 @@ async def lifespan(_: FastAPI):
         await reminder_service.stop()
 
 
-app = FastAPI(title="小糖人之家 后端", version="0.1.0", lifespan=lifespan)
+from . import theme_feature
+
+app = FastAPI(title=theme_feature.app_name() + " 后端", version="0.1.0", lifespan=lifespan)
 
 from .services.runtime_profile import LightweightGuard
 app.add_middleware(LightweightGuard)
+from .plugin_state import PluginGuard
+app.add_middleware(PluginGuard)
 from .routers import compute as compute_router
 app.include_router(compute_router.router, prefix="/api")
 
@@ -107,6 +110,8 @@ from .routers import project_costs as project_costs_router
 app.include_router(project_costs_router.router, prefix="/api")
 from .routers import expert
 app.include_router(expert.router, prefix="/api")
+from .routers import plugins
+app.include_router(plugins.router, prefix="/api")
 optional_plugins.mount(app)
 from .routers import reminders as reminders_router
 app.include_router(reminders_router.router, prefix="/api")
@@ -125,10 +130,17 @@ app.include_router(game.router, prefix="/api")
 app.include_router(nest.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
 app.include_router(qq_bridge.router, prefix="/api")
-app.include_router(gemini_sync.router, prefix="/api")
+from . import gemini_sync_feature
+gemini_sync_feature.mount(app)
 app.include_router(agents.router, prefix="/api")
+from .routers import character_packs as character_packs_router
+app.include_router(character_packs_router.router, prefix="/api")
+from .routers import assets as assets_router
+app.include_router(assets_router.router, prefix="/api")
 app.include_router(characters.router, prefix="/api")
 app.include_router(profiles.router, prefix="/api")
+from .routers import personal_space
+app.include_router(personal_space.router, prefix="/api")
 app.include_router(self_router.router, prefix="/api")
 from .routers import personal_db
 app.include_router(personal_db.router, prefix="/api")
@@ -150,7 +162,13 @@ app.mount("/api/media-files", StaticFiles(directory=str(media.ROOT)), name="medi
 @app.get("/api/health")
 async def health() -> dict:
     """顶栏那颗灯靠它 —— 「大脑活着没有、这一个是第几次起来的、活了多久」。"""
-    return {"status": "ok", "name": "小糖人之家", "profile": settings.runtime_profile, **runtime.info()}
+    return {"status": "ok", "name": theme_feature.app_name(), "profile": settings.runtime_profile, **runtime.info()}
+
+
+@app.get('/api/components')
+async def component_inventory() -> dict:
+    from .components import inventory
+    return inventory()
 
 
 @app.post("/api/system/restart")

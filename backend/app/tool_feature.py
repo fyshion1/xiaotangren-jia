@@ -11,7 +11,8 @@ PACKAGE = 'xiaotangren_tools'
 
 
 def installed() -> bool:
-    return (FEATURES_DIR / 'tools' / 'src' / PACKAGE / '__init__.py').is_file()
+    from .plugin_state import enabled
+    return enabled('tools') and (FEATURES_DIR / 'tools' / 'src' / PACKAGE / '__init__.py').is_file()
 
 
 def load(name='integration'):

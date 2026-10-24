@@ -3,6 +3,10 @@ import httpx
 BASE_URL = 'http://127.0.0.1:18793'
 
 async def request(method, path, persona, *, content=None, content_type=None, params=None, request_key=None):
+    from ..plugin_state import enabled
+    if not enabled('project_costs'):
+        from fastapi import HTTPException
+        raise HTTPException(409, '项目费用插件已关闭')
     headers = {'X-Costs-Persona': persona}
     if content_type:
         headers['Content-Type'] = content_type

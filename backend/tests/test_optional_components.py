@@ -17,9 +17,23 @@ class OptionalComponentTests(unittest.TestCase):
     def test_web_install_requires_separate_tools_feature(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(installer, 'REPO', Path(folder)), \
              patch.object(installer.subprocess, 'run') as run:
+            (Path(folder)/'features/tools').mkdir(parents=True)
             with self.assertRaises(FileNotFoundError):
                 installer.install_web()
             run.assert_not_called()
+
+    def test_selected_web_downloads_missing_tools_before_cli(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(installer,'REPO',Path(folder)), \
+             patch.object(installer.shutil,'which',return_value='git'):
+            def execute(args,**kwargs):
+                if args[:2]==['git','clone']:
+                    entry=Path(args[-1])/'src/xiaotangren_tools/__init__.py'
+                    entry.parent.mkdir(parents=True)
+                    entry.touch()
+            with patch.object(installer.subprocess,'run',side_effect=execute) as run:
+                installer.install_web()
+                self.assertEqual(run.call_args_list[0].args[0][:2],['git','clone'])
+                self.assertEqual(run.call_args_list[1].args[0][:3],['uv','tool','install'])
 
     def test_default_answers_install_nothing(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(installer, "REPO", Path(folder)), \
@@ -122,5 +136,5 @@ class OptionalComponentTests(unittest.TestCase):
         with patch.object(tools.db, "list_profiles", return_value=[]), \
                 patch.object(tools.tools, "settings", return_value=tools.tools.ToolSettings()):
             for installed in (False, True):
-                with patch.object(tools.tools.web_search, "available", return_value=installed):
+                with patch.object(tools.tool_feature, "network_available", return_value=installed):
                     self.assertIs(asyncio.run(tools.get_config())["web_search_installed"], installed)

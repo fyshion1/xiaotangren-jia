@@ -17,7 +17,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-ATTACHMENTS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "attachments"
+from ..data_paths import runtime_root
+
+ATTACHMENTS_DIR = runtime_root() / "attachments"
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20MB
 # 画廊视频（§9.4）：一般 30 秒出头、100MB 以内。这里只做「存得住 + 播得出」，

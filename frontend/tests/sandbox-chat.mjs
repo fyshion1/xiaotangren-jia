@@ -1,6 +1,6 @@
 // Isolated conversation UI; every API request is intercepted, no paid model or QQ.
 import { chromium } from '@playwright/test'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'

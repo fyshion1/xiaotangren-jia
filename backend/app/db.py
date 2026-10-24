@@ -16,9 +16,11 @@ from pathlib import Path
 
 from .seed_characters import SEED_CHARACTERS
 from .seed_profiles import MAIN_PERSONA_ID, SEED_PROFILES
-from .seed_worldbook import SEED_WORLDBOOK
+from . import tavern_feature
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+from .data_paths import runtime_root
+
+DATA_DIR = runtime_root()
 DB_PATH = DATA_DIR / "xiaotangren.db"
 
 _lock = threading.Lock()
@@ -374,19 +376,26 @@ def _backfill_profile_fields(conn: sqlite3.Connection) -> None:
 def init_db() -> None:
     """建表 + 迁移 + 逐条幂等补种。在启动时调用一次。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    from .services import assets
+    assets.backup_before_migration(DB_PATH, DATA_DIR)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
         _migrate(conn)
+        # Only a fresh neutral installation needs a generic default assistant.
+        from . import theme_feature
+        character_seeds = SEED_CHARACTERS
+        if not theme_feature.installed() and conn.execute("SELECT 1 FROM characters LIMIT 1").fetchone():
+            character_seeds = []
         # 逐条补种：老库也能长出新增的角色（如后来加的小糖人），但已存在的一律不覆盖 ——
         # 用户可能在编辑器里改过，种子不该把改动冲掉。
         conn.executemany(
             "INSERT INTO characters (id, data) VALUES (?, ?) ON CONFLICT(id) DO NOTHING",
-            [(c["id"], json.dumps(c, ensure_ascii=False)) for c in SEED_CHARACTERS],
+            [(c["id"], json.dumps(c, ensure_ascii=False)) for c in character_seeds],
         )
         # 旧部署只补缺失图片键；显式清空或自定义的图片属于用户编辑，保持原样。
-        for seed in SEED_CHARACTERS:
+        for seed in character_seeds:
             row = conn.execute("SELECT data FROM characters WHERE id = ?", (seed["id"],)).fetchone()
             if row is None:
                 continue
@@ -410,15 +419,9 @@ def init_db() -> None:
         )
         # 补种只覆盖「整行不存在」的情况，补不了「行在、但缺新字段」（老库升级路径）。
         _backfill_profile_fields(conn)
-        if conn.execute("SELECT COUNT(*) FROM worldbook").fetchone()[0] == 0:
-            conn.executemany(
-                "INSERT INTO worldbook (id, title, keywords, content, enabled, priority) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [
-                    (e["id"], e["title"], e["keywords"], e["content"], e["enabled"], e["priority"])
-                    for e in SEED_WORLDBOOK
-                ],
-            )
+        if tavern_feature.installed():
+            tavern_feature.load("seed").initialize(conn)
+        assets.preserve_profile_art(conn, DATA_DIR)
         conn.commit()
     finally:
         conn.close()
@@ -535,82 +538,6 @@ def list_session_ids(prefix: str) -> list[str]:
 
 
 # ---- 世界书（worldbook）----
-
-
-def _row_to_entry(row: sqlite3.Row) -> dict:
-    return {
-        "id": row["id"],
-        "title": row["title"],
-        "keywords": row["keywords"],
-        "content": row["content"],
-        "enabled": bool(row["enabled"]),
-        "priority": row["priority"],
-        # 归属：'' = 家共用（群聊 / 未指定时用），<角色 id> = 那位角色的专属（§19）
-        "owner": row["owner"] or "",
-        "updated_at": row["updated_at"],
-    }
-
-
-def list_worldbook(owner: str | None = None) -> list[dict]:
-    """owner=None 取全部；给了值就只取那一档（'' 即家共用）。"""
-    with _tx() as conn:
-        if owner is None:
-            rows = conn.execute("SELECT * FROM worldbook ORDER BY priority DESC, rowid").fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM worldbook WHERE owner = ? ORDER BY priority DESC, rowid",
-                (owner,),
-            ).fetchall()
-    return [_row_to_entry(r) for r in rows]
-
-
-def get_worldbook(entry_id: str) -> dict | None:
-    with _tx() as conn:
-        row = conn.execute("SELECT * FROM worldbook WHERE id = ?", (entry_id,)).fetchone()
-    return _row_to_entry(row) if row else None
-
-
-def create_worldbook(entry: dict) -> dict:
-    entry_id = f"wb-{uuid.uuid4().hex[:10]}"
-    with _tx() as conn:
-        conn.execute(
-            "INSERT INTO worldbook (id, title, keywords, content, enabled, priority, owner) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                entry_id,
-                entry["title"],
-                entry["keywords"],
-                entry["content"],
-                int(entry["enabled"]),
-                int(entry["priority"]),
-                entry.get("owner") or "",
-            ),
-        )
-    row = get_worldbook(entry_id)
-    assert row is not None
-    return row
-
-
-def update_worldbook(entry_id: str, entry: dict) -> None:
-    with _tx() as conn:
-        conn.execute(
-            "UPDATE worldbook SET title=?, keywords=?, content=?, enabled=?, priority=?, "
-            "owner=?, updated_at=datetime('now') WHERE id=?",
-            (
-                entry["title"],
-                entry["keywords"],
-                entry["content"],
-                int(entry["enabled"]),
-                int(entry["priority"]),
-                entry.get("owner") or "",
-                entry_id,
-            ),
-        )
-
-
-def delete_worldbook(entry_id: str) -> None:
-    with _tx() as conn:
-        conn.execute("DELETE FROM worldbook WHERE id = ?", (entry_id,))
 
 
 # ---- 键值设置（settings）----
@@ -1669,3 +1596,28 @@ def update_harvest_event(
     with _tx() as conn:
         cur = conn.execute(f"UPDATE harvest_events SET {', '.join(sets)} WHERE id = ?", args)
         return bool(cur.rowcount)
+
+
+def list_worldbook(*args, **kwargs):
+    """Compatibility API; implementation belongs to the optional feature."""
+    return getattr(tavern_feature.load("storage"), "list_worldbook")(*args, **kwargs)
+
+
+def get_worldbook(*args, **kwargs):
+    """Compatibility API; implementation belongs to the optional feature."""
+    return getattr(tavern_feature.load("storage"), "get_worldbook")(*args, **kwargs)
+
+
+def create_worldbook(*args, **kwargs):
+    """Compatibility API; implementation belongs to the optional feature."""
+    return getattr(tavern_feature.load("storage"), "create_worldbook")(*args, **kwargs)
+
+
+def update_worldbook(*args, **kwargs):
+    """Compatibility API; implementation belongs to the optional feature."""
+    return getattr(tavern_feature.load("storage"), "update_worldbook")(*args, **kwargs)
+
+
+def delete_worldbook(*args, **kwargs):
+    """Compatibility API; implementation belongs to the optional feature."""
+    return getattr(tavern_feature.load("storage"), "delete_worldbook")(*args, **kwargs)

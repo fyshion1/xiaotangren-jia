@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 
 const root = fileURLToPath(new URL('../', import.meta.url))

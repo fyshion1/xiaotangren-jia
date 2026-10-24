@@ -15,14 +15,8 @@ export type ModelBinding = {
   vrm?: string
 }
 
-export const MODEL_BINDINGS: Record<string, ModelBinding> = {
-  // 只是把管线跑通，**不是**大诗音的形象：Live2D 接 Cubism 官方样例 Haru，
-  // 3D 接 VRM 1.0 的约束样例（机械性测试模型）。
-  dashiyin: {
-    live2d: 'cubism-haru',
-    vrm: 'vrm1-constraint-sample',
-  },
-}
+export {MODEL_BINDINGS} from '#theme/modelBindings'
+import {MODEL_BINDINGS} from '#theme/modelBindings'
 
 export function modelBindingFor(charId: string | undefined): ModelBinding {
   if (!charId) return {}

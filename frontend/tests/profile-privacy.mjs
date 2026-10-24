@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 
 const bundle = await build({stdin:{contents:`
@@ -33,7 +33,7 @@ try {
   let mode=false
   await page.route('**/api/**',route=>{
     if(route.request().method()==='PUT') mode=route.request().postDataJSON().tavern_mode==='true'
-    return route.fulfill({json:{tavern_mode:String(mode)}})
+    return route.fulfill({json:{tavern_installed:'true',tavern_mode:String(mode)}})
   })
   await page.goto(`http://127.0.0.1:${server.address().port}`)
   const card=page.locator('#card'),editor=page.locator('#editor')

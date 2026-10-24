@@ -44,7 +44,14 @@ THEMES = {'政治制度': ('政治', '制度', '官员'), '财政货币': ('货�
 
 
 def root() -> Path:
+    require_available()
     return Path(os.environ.get('PERSONAL_DATABASE_ROOT', str(Path(__file__).resolve().parents[3] / '个人数据库'))).resolve()
+
+
+def require_available():
+    from .. import personal_space
+    if not personal_space.enabled('personal_database'):
+        raise RuntimeError('个人数据库插件未安装或已关闭，不读取资料目录或索引')
 
 
 def safe(rel: str) -> Path:
@@ -65,6 +72,7 @@ def safe(rel: str) -> Path:
 
 @contextmanager
 def store():
+    require_available()
     db.DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db.DATA_DIR / 'knowledge.db', timeout=30)
     conn.row_factory = sqlite3.Row

@@ -18,6 +18,8 @@ from app.services import memory_workflow as work
 
 class PersonaMemoryTests(unittest.TestCase):
     def setUp(self):
+        available=patch('app.personal_space.enabled',return_value=True)
+        available.start();self.addCleanup(available.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")

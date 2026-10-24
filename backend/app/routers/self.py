@@ -6,13 +6,18 @@ import io
 import time
 import zipfile
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..services import self_profile as sp
 
-router = APIRouter()
+def require_plugin():
+    from .. import personal_space
+    if not personal_space.enabled('personal_profile'):
+        raise HTTPException(409, '个人档案插件未安装或已关闭，不读取额外档案资料')
+
+router = APIRouter(dependencies=[Depends(require_plugin)])
 
 
 # ── 请求模型 ──────────────────────────────────────────────────────────────────

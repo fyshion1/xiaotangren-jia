@@ -16,6 +16,25 @@
 """
 
 from __future__ import annotations
+from pathlib import Path
+from . import theme_feature
+
+
+def folder_has_payload(folder: Path, depth: int = 0) -> bool:
+    """A README/empty checkout is not an installed plugin; readiness is checked separately."""
+    ignored = {'node_modules','.git','.venv','venv','data','logs','docs','tests','__pycache__','dist','build'}
+    try:
+        for item in folder.iterdir():
+            if item.is_symlink() or item.name in ignored:
+                continue
+            if item.is_file() and (item.name in {'plugin.json','package.json','pyproject.toml'}
+                                   or item.suffix.lower() in {'.py','.js','.mjs','.cjs','.ts','.tsx'}):
+                return True
+            if depth < 2 and item.is_dir() and folder_has_payload(item,depth+1):
+                return True
+    except OSError:
+        pass
+    return False
 
 # NotRequired 在 Python 3.11 才进 typing；本项目跑 3.10，从 typing_extensions 拿（已装）。
 try:
@@ -124,6 +143,18 @@ class Feature(TypedDict):
 # ---- 功能清单 ----
 # 顺序 = 前端展示顺序。加新功能就往这里加一条，并在 features/<folder>/ 建独立仓库。
 FEATURES: list[Feature] = [
+    {"id": "personal_database", "name": "个人数据库", "emoji": "📚", "kind": "other",
+     "status": "available", "desc": "可选的个人文件管理与资料收录；停用后停止资料目录巡检及个人数据库条目读取，聊天记忆仍由本体提供。",
+     "needs_vision": False, "folder": "personal-database", "runner": None, "settings": []},
+    {"id": "personal_profile", "name": "个人档案管理", "emoji": "📋", "kind": "other",
+     "status": "available", "desc": "私人空间的 Markdown 额外档案；停用暂停读取和注入，资料及原有勾选保留，原生记忆不受影响。",
+     "needs_vision": False, "folder": "personal-profile", "runner": None, "settings": []},
+    {"id": "xiaotangren_theme", "name": "小糖人主题与设定", "emoji": "🎨", "kind": "other",
+     "status": "available", "desc": "可选外观、角色图片、默认角色和交流风格；安装变更后需重启并重新构建前端。",
+     "needs_vision": False, "folder": "xiaotangren-theme", "runner": None, "settings": []},
+    {"id": "tavern", "name": "酒馆模式", "emoji": "🎴", "kind": "other",
+     "status": "available", "desc": "可选角色卡导入、显示与世界书",
+     "needs_vision": False, "folder": "tavern", "runner": None, "settings": []},
     {
         "id": "tools", "name": "工具插件", "emoji": "🧰", "kind": "other",
         "status": "available", "desc": "按插件授权工具能力。联网依赖需另外安装，不随本体提供。",
@@ -172,7 +203,7 @@ FEATURES: list[Feature] = [
             {"key": "theme", "label": "气泡配色", "type": "select", "group": "气泡",
              "default": "lilac", "options": [{"value": "lilac", "label": "丁香紫"}, {"value": "rose", "label": "樱花粉"}, {"value": "mint", "label": "薄荷绿"}, {"value": "night", "label": "静夜"}, {"value": "paper", "label": "奶油纸笺"}], "desc": "桌面气泡底部也可直接切换。"},
             {"key": "character", "label": "陪在桌边的角色", "type": "character", "group": "陪伴",
-             "default": "dashiyin", "desc": "使用小窝角色的人设与记忆；样例模型只作临时形象。"},
+             "default": theme_feature.default_character_id(), "desc": "使用小窝角色的人设与记忆；样例模型只作临时形象。"},
             {"key": "session", "label": "桌面消息发到哪里", "type": "select", "group": "陪伴",
              "default": "single", "options": [{"value": "single", "label": "她的私聊"}, {"value": "group", "label": "家庭群聊"}],
              "desc": "沿用当前用户身份与现有聊天记录。群聊沿用小窝成员名单。"},
@@ -528,9 +559,9 @@ FEATURES: list[Feature] = [
         "emoji": "🔗",
         "kind": "other",
         "status": "available",
-        "desc": "采集本机浏览器已打开的 Gemini 会话文字，推进 test 群聊。浏览器扩展在 extensions/ 里。",
+        "desc": "可选插件：同步手动开启的 Gemini 网页会话文字，不调用模型或写入记忆。浏览器扩展位于插件目录。",
         "needs_vision": False,
-        "folder": "",
+        "folder": "gemini-sync",
         "runner": None,
     },
     {

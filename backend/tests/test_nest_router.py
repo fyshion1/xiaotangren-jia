@@ -7,13 +7,18 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app import db
+from app import db, plugin_state
 from app.routers import nest
 
 
 class NestRouterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        for obj, name, value in [(db, 'DATA_DIR', Path(self.tmp.name)),
+                                 (plugin_state, 'STATE_PATH', Path(self.tmp.name) / 'plugins.json')]:
+            isolated = patch.object(obj, name, value)
+            isolated.start()
+            self.addCleanup(isolated.stop)
         self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
         self.path.start()
         self.addCleanup(self.path.stop)
@@ -25,6 +30,7 @@ class NestRouterTests(unittest.TestCase):
         for feature in nest.all_features():
             if feature["folder"]:
                 (features_dir / feature["folder"]).mkdir(parents=True)
+                (features_dir / feature['folder'] / 'main.py').touch()
         feature_patch = patch.object(nest, "FEATURES_DIR", features_dir)
         feature_patch.start()
         self.addCleanup(feature_patch.stop)
@@ -40,11 +46,15 @@ class NestRouterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(nest, "FEATURES_DIR", Path(directory)):
             def ids():
                 return [f["id"] for f in self.client.get("/api/nest/features").json()["items"]]
-            self.assertEqual(ids(), ["gemini_sync"])
+            self.assertEqual(ids(), [])
             (Path(directory) / "qq-bridge").mkdir()
             (Path(directory) / "desktop-pet").mkdir()
-            self.assertEqual(ids(), ["desktop_pet", "qq_bridge", "gemini_sync"])
+            self.assertEqual(ids(), [])
+            (Path(directory) / 'qq-bridge/main.py').touch()
+            (Path(directory) / 'desktop-pet/main.py').touch()
+            self.assertEqual(ids(), ["desktop_pet", "qq_bridge"])
             (Path(directory) / "japanese-lab").mkdir()
+            (Path(directory) / 'japanese-lab/main.py').touch()
             self.assertIn("japanese_lab", ids())
             self.assertNotIn("english_study", ids())
 
@@ -295,6 +305,11 @@ class NestChatMemoryRecallTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        for obj, name, value in [(db, 'DATA_DIR', Path(self.tmp.name)),
+                                 (plugin_state, 'STATE_PATH', Path(self.tmp.name) / 'plugins.json')]:
+            isolated = patch.object(obj, name, value)
+            isolated.start()
+            self.addCleanup(isolated.stop)
         env = patch.dict('os.environ', {'PERSONAL_MEMORY_ROOT': str(Path(self.tmp.name) / 'memory')})
         env.start(); self.addCleanup(env.stop)
         self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
@@ -381,6 +396,11 @@ class FeatureSettingsTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        for obj, name, value in [(db, 'DATA_DIR', Path(self.tmp.name)),
+                                 (plugin_state, 'STATE_PATH', Path(self.tmp.name) / 'plugins.json')]:
+            isolated = patch.object(obj, name, value)
+            isolated.start()
+            self.addCleanup(isolated.stop)
         self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
         self.path.start()
         self.addCleanup(self.path.stop)
@@ -496,6 +516,11 @@ class ToolTurnTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        for obj, name, value in [(db, 'DATA_DIR', Path(self.tmp.name)),
+                                 (plugin_state, 'STATE_PATH', Path(self.tmp.name) / 'plugins.json')]:
+            isolated = patch.object(obj, name, value)
+            isolated.start()
+            self.addCleanup(isolated.stop)
         self.path = patch.object(db, "DB_PATH", Path(self.tmp.name) / "test.db")
         self.path.start()
         self.addCleanup(self.path.stop)

@@ -11,16 +11,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from xiaotangren_tools import ToolContext, ToolExecutor, ToolPolicy, ToolRegistry
 
-from app import db
+from app import db, plugin_state
 from app.routers import knowledge as routes, personal_db
 from app.services import knowledge as k, knowledge_tools, agent_tools
 
 
 class KnowledgeTests(unittest.TestCase):
     def setUp(self):
+        available=patch('app.personal_space.enabled',return_value=True)
+        available.start();self.addCleanup(available.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name)
+        state=patch.object(plugin_state,'STATE_PATH',self.base/'plugin-state.json')
+        state.start();self.addCleanup(state.stop)
         self.root = self.base / 'database'
         for obj, name, value in [(db, 'DATA_DIR', self.base / 'data'), (db, 'DB_PATH', self.base / 'app.db'),
                                  (personal_db, '_ROOT', self.root), (personal_db, '_VERSION_DIR', self.root / '.versions')]:

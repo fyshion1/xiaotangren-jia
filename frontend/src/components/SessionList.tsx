@@ -1,4 +1,5 @@
 import { useTavernMode } from '../lib/tavernMode'
+import {themeLabels} from '#theme/config'
 import UiIcon from '../visual/UiIcon'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { ChatSession } from '../data/chats'
@@ -107,10 +108,10 @@ export default function SessionList({ sessions, activeId, onSelect, onImport, ch
           <button
             className="session-item w-full"
             onClick={onOpenNest}
-            title="糖人小窝：全家的共同回忆（共用画廊）+ 以后的小游戏 / 互动小家"
+            title={themeLabels.settings}
           >
             <span className="session-emoji"><UiIcon name="home"/></span>
-            <span className="text-[13px] text-[var(--text-2)]">糖人小窝</span>
+            <span className="text-[13px] text-[var(--text-2)]">{themeLabels.settings}</span>
           </button>
         )}
         {tavernMode && <button

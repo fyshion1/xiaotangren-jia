@@ -2,15 +2,23 @@ from __future__ import annotations
 import hashlib, os, shutil, uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from ..services import memory_workflow as workflow
 from docx import Document
 from openpyxl import load_workbook
 
-router = APIRouter(prefix="/personal-db", tags=["personal-db"])
+def require_plugin():
+    from .. import personal_space
+    if not personal_space.enabled('personal_database'):
+        raise HTTPException(409, '个人数据库插件未安装或已关闭；不会读取个人资料目录')
+
+
+router = APIRouter(prefix="/personal-db", tags=["personal-db"], dependencies=[Depends(require_plugin)])
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_ROOT = Path(os.getenv("PERSONAL_DATABASE_ROOT", str(_PROJECT_ROOT / "个人数据库"))).resolve()
+from ..data_paths import personal_database_root
+
+_ROOT = personal_database_root()
 _VERSION_DIR = _ROOT / ".versions"
 _EDITABLE, _READABLE = {".md", ".docx"}, {".md", ".txt", ".csv", ".json", ".xlsx", ".docx"}
 _HIDDEN_DIRS = {".versions", ".archive", ".obsidian", ".trash"}

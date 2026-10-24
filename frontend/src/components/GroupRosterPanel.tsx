@@ -83,7 +83,7 @@ export default function GroupRosterPanel({ open, onClose, castable, roster, onSa
       >
         <header className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5">
           <span className="text-[15px] font-semibold text-[var(--text)]">👥 群聊成员</span>
-          <span className="text-[11px] text-[var(--text-3)]">谁在「小糖人的家」里</span>
+          <span className="text-[11px] text-[var(--text-3)]">当前群聊成员</span>
           <button onClick={onClose} className="ml-auto text-[var(--text-3)] hover:text-[var(--text)]">
             ✕
           </button>
@@ -112,7 +112,7 @@ export default function GroupRosterPanel({ open, onClose, castable, roster, onSa
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] font-medium text-[var(--text)]">{c.name}</span>
                     <span className="block truncate text-[11px] text-[var(--text-3)]">
-                      {c.alias || (c.imported ? '导入的角色卡 · 默认不进群' : '小糖人')}
+                      {c.alias || (c.imported ? '导入的角色卡 · 默认不进群' : '角色')}
                     </span>
                   </span>
                   <span className={`text-[11px] ${on ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)]'}`}>

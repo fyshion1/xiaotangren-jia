@@ -17,7 +17,9 @@ from pathlib import Path
 
 from .. import db
 
-ROOT = Path(__file__).resolve().parents[3] / "个人记忆库"
+from ..data_paths import personal_memory_root
+
+ROOT = personal_memory_root()
 SOURCE = "01_源记忆"
 WORK = "02_AI记忆处理层"
 LONG = "03_长期记忆池"
@@ -42,7 +44,7 @@ def isolated_store(directory: Path):
 
 
 def root() -> Path:
-    return _store_root.get() or Path(os.getenv("PERSONAL_MEMORY_ROOT", str(ROOT))).resolve()
+    return _store_root.get() or (personal_memory_root() if "PERSONAL_MEMORY_ROOT" in os.environ else Path(ROOT).resolve())
 
 
 def now() -> str:

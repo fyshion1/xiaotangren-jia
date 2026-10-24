@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 
 const bundle=await build({stdin:{contents:`
@@ -36,7 +36,7 @@ try {
     }
     if(path.startsWith('/api/profiles/active/')){switches.push(path);return route.fulfill({json:{active_id:'persona-test'}})}
     if(path==='/api/profiles/persona-test' && request.method()==='PUT') {const body=request.postDataJSON();updates.push(body);return route.fulfill({json:body})}
-    return route.fulfill({json:{tavern_mode:'false'}})
+    return route.fulfill({json:{tavern_installed:'true',tavern_mode:'false'}})
   })
   await page.goto(`http://127.0.0.1:${server.address().port}`)
   const add=page.getByTitle('添加一份新的身份档案',{exact:true})

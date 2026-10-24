@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import db
 from ..services import harvest
 
-router = APIRouter(prefix="/patrol", tags=["patrol"])
+def require_plugin():
+    from .. import personal_space
+    if not personal_space.enabled('personal_database'):
+        raise HTTPException(409, '个人数据库插件未安装或已关闭')
+
+router = APIRouter(prefix="/patrol", tags=["patrol"], dependencies=[Depends(require_plugin)])
 
 
 class WatchDirsBody(BaseModel):

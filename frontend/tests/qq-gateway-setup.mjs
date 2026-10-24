@@ -1,6 +1,6 @@
 // Mock-only onboarding acceptance; never downloads or starts a real gateway.
 import { chromium } from '@playwright/test'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'

@@ -1,8 +1,7 @@
 // 与后端通信封装（/api，经 Vite 代理转发到后端 :8000；手机访问时也是同源，无需改地址）。
 import type { CharacterProfile } from '../data/characters'
-import type { WorldbookEntry } from '../data/worldbook'
 
-async function asJson<T>(url: string, init?: RequestInit): Promise<T> {
+export async function asJson<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init)
   if (!resp.ok) {
     let detail = ''
@@ -80,33 +79,7 @@ export async function createCharacter(char: Omit<CharacterProfile, 'id'> & { id?
   })
 }
 
-/** owner 不传 = 全部（编辑面板）；传 '' = 家共用那一档（群聊）；传角色 id = 那位的专属。 */
-export async function fetchWorldbook(owner?: string): Promise<WorldbookEntry[]> {
-  const qs = owner === undefined ? '' : `?owner=${encodeURIComponent(owner)}`
-  return asJson<WorldbookEntry[]>(`/api/worldbook${qs}`)
-}
-
-export async function createWorldbookEntry(
-  entry: Omit<WorldbookEntry, 'id' | 'updated_at'>,
-): Promise<WorldbookEntry> {
-  return asJson<WorldbookEntry>('/api/worldbook', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(entry),
-  })
-}
-
-export async function updateWorldbookEntry(entry: WorldbookEntry): Promise<WorldbookEntry> {
-  return asJson<WorldbookEntry>(`/api/worldbook/${entry.id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(entry),
-  })
-}
-
-export async function deleteWorldbookEntry(id: string): Promise<void> {
-  await asJson(`/api/worldbook/${id}`, { method: 'DELETE' })
-}
+export { fetchWorldbook, createWorldbookEntry, updateWorldbookEntry, deleteWorldbookEntry } from '#tavern/api/worldbook'
 
 export type Settings = Record<string, string>
 

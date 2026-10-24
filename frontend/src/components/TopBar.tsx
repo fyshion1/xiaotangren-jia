@@ -1,3 +1,4 @@
+import {themeLabels} from '#theme/config'
 import BrainHealthDot from './BrainHealthDot'
 import {useDesignChoice} from '../visual/designChoices'
 import TopbarAccent from '../visual/TopbarAccent'
@@ -20,7 +21,7 @@ type Props = {
 // short：手机端只显示短标 + emoji（§19.24）—— 全称四个字一排塞不下，
 // 会各自折成两行，把顶栏撑成屏幕的三分之一。桌面端仍显示全称。
 const NAV: { v: View; label: string; short: string; en: string }[] = [
-  { v: 'nest', label: '糖人小窝', short: '小窝', en: 'SUGAR HOME' },
+  { v: 'nest', label: themeLabels.settings, short: themeLabels.shortSettings, en: themeLabels.settingsEnglish },
   { v: 'space', label: '私人空间', short: '空间', en: 'MY SPACE' },
   { v: 'home', label: '角色介绍', short: '介绍', en: 'CHARACTER' },
   { v: 'chat', label: '聊天', short: '聊天', en: 'CONVERSATION' },
@@ -32,7 +33,7 @@ export default function TopBar({ theme, view, onToggleTheme, onView }: Props) {
   return (
     // shrink-0（§19.24）：顶栏是列式 flex 的第一项，不写的话会被内容区挤扁。
     <header data-topbar={topbarChoice} className="topbar z-10 shrink-0 border-b border-[var(--border)]">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-1.5 sm:px-4 sm:py-2.5">
+      <div className="core-bar-inner mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-1.5 sm:px-4 sm:py-2.5">
         <div className="flex min-w-0 items-center gap-2 text-[15px] font-bold tracking-wide sm:gap-2.5 sm:text-[17px]">
           {view === 'chat' ? (
             <button aria-label="返回最近聊天" onClick={() => window.dispatchEvent(new Event('xtr-mobile-sessions'))} className="md:hidden text-xl leading-none">◁</button>

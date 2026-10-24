@@ -28,7 +28,9 @@ from pathlib import Path
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────────
 
-_SELF_PROFILE_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "self_profile"
+from ..data_paths import runtime_root
+
+_SELF_PROFILE_ROOT = runtime_root() / "self_profile"
 _SHARED_DIR = "_shared"
 
 # ── 安全工具 ───────────────────────────────────────────────────────────────────
@@ -262,6 +264,9 @@ def get_injectable_texts(persona_id: str, char_ids_present: list[str]) -> list[d
     2. persona_id/ 里 inject=true 的（该身份专属）
     按 created_at 排序（先写的优先）。
     """
+    from .. import personal_space
+    if not personal_space.enabled('personal_profile'):
+        return []
     texts: list[dict] = []
 
     # 已批准的个人数据库 AI 注入层：只读取 approved + inject=true 的 Markdown。

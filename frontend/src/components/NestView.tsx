@@ -1,4 +1,8 @@
+import CharacterAssetsPanel from './CharacterAssetsPanel'
+import PluginManager from './PluginManager'
+import {themeInstalled} from '#theme/config'
 import { useTavernMode } from '../lib/tavernMode'
+import TavernSettings from './TavernSettings'
 import UiIcon from '../visual/UiIcon'
 import NestHero from '../visual/NestHero'
 import NestWelcomeSettings from '../visual/NestWelcomeSettings'
@@ -101,12 +105,14 @@ const STATUS_FILTERS: { id: '' | 'available' | 'planned'; label: string }[] = [
 
 export default function NestView() {
   const expert = useExpertMode()
-  const [tavernMode, setTavernMode] = useTavernMode()
+  const [, , tavernInstalled] = useTavernMode()
 
-  const [modeError, setModeError] = useState('')
   const nestChoice='n3'
-  const [area,setArea]=useState(() => window.location.hash === '#project-costs' ? 'play' : ['#tool-center', '#autonomous-activity'].includes(window.location.hash) ? 'settings' : 'memories')
-  const [setting,setSetting]=useState(() => window.location.hash === '#autonomous-activity' ? 'autonomy' : window.location.hash === '#tool-center' ? 'tools' : 'appearance')
+  const [area,setArea]=useState(() => window.location.hash === '#project-costs' ? 'play' : ['#tool-center', '#autonomous-activity', '#plugins', '#character-assets'].includes(window.location.hash) ? 'settings' : 'memories')
+  const [setting,setSetting]=useState(() => window.location.hash === '#character-assets' ? 'assets' : window.location.hash === '#plugins' ? 'plugins' : window.location.hash === '#autonomous-activity' ? 'autonomy' : window.location.hash === '#tool-center' ? 'tools' : 'appearance')
+  useEffect(() => {
+    if (!themeInstalled && setting === 'appearance') setSetting('brain')
+  }, [setting])
   useEffect(() => {
     if (!expert.loaded) return
     if (!expert.enabled && ["autonomy", "tools", "processes", "runner", "compute"].includes(setting)) setSetting("appearance")
@@ -117,6 +123,8 @@ export default function NestView() {
   }, [expert.loaded, expert.enabled, area])
   useEffect(() => {
     const openTools = () => {
+      if (window.location.hash === '#character-assets') {setArea('settings');setSetting('assets')}
+      if (window.location.hash === '#plugins') {setArea('settings');setSetting('plugins')}
       if (window.location.hash === '#tool-center') { setArea('settings'); setSetting('tools') }
       if (window.location.hash === '#autonomous-activity') { setArea('settings'); setSetting('autonomy') }
       if (window.location.hash === '#project-costs') { setArea('play'); setOpenIds(ids => ids.includes('project_costs') ? ids : [...ids.slice(-(MAX_WORKBENCH - 1)), 'project_costs']); setActivePanel('project_costs') }
@@ -125,6 +133,11 @@ export default function NestView() {
     return () => window.removeEventListener('hashchange', openTools)
   }, [])
   const [features, setFeatures] = useState<NestFeature[]>([])
+  useEffect(() => {
+    const refresh = () => { void fetchNestFeatures().then(list => {setFeatures(list); setOpenIds(ids=>ids.filter(id=>list.some(f=>f.id===id)))}) }
+    window.addEventListener('plugins-changed', refresh)
+    return () => window.removeEventListener('plugins-changed', refresh)
+  }, [])
   const [featureError, setFeatureError] = useState(false)
   const [toast, setToast] = useState('')
   // 「让功能跑起来」面板当前选中的功能 id（点卡片时滚过去并选中它）。
@@ -195,6 +208,14 @@ export default function NestView() {
   }
 
   const openFeature = (f: NestFeature) => {
+    if (f.id === 'xiaotangren_theme' && themeInstalled) {
+      setArea('settings'); setSetting('appearance')
+      return
+    }
+    if (f.id === 'tavern' && tavernInstalled) {
+      setArea('settings'); setSetting('tavern')
+      return
+    }
     if (f.id === 'tools' && expert.enabled) {
       setArea('settings'); setSetting('tools')
       return
@@ -222,7 +243,7 @@ export default function NestView() {
     if (f.runner && f.runner.commands.length > 0) {
       setRunnerId(f.id)
       openTools()
-      flash(`「${f.name}」在「小窝设置 → 运行与日志」里已选中 —— 选谁去看、怎么跑、日志都在那儿。`)
+      flash(`「${f.name}」在「设置 → 运行与日志」里已选中 —— 选谁去看、怎么跑、日志都在那儿。`)
       return
     }
     // 其余都是独立项目：本体只提供大脑 API，不实现它的逻辑。
@@ -243,16 +264,16 @@ export default function NestView() {
         </div>
       )}
 
-      <nav className="nest-room-nav" aria-label="小窝分区">{([
-        ['memories','gallery','共同回忆','相片与收藏'],['play','game','一起玩','学习与陪伴'],['feed','inbox','小窝动态','她们的新发现'],['settings','settings','小窝设置','偏好与连接']
+      <nav className="nest-room-nav" aria-label="功能分区">{([
+        ['memories','gallery',themeInstalled?'共同回忆':'媒体库','相片与收藏'],['play','game',themeInstalled?'一起玩':'功能','已安装的扩展'],['feed','inbox',themeInstalled?'小窝动态':'动态','运行结果与发现'],['settings','settings','设置','偏好与连接']
       ] as const).filter(([id]) => id !== 'feed' || expert.enabled).map(([id,icon,label,note])=><button key={id} aria-current={area===id?'page':undefined} onClick={()=>setArea(id)}><UiIcon name={icon} size={25}/><span><strong>{label}</strong><small>{note}</small></span></button>)}</nav>
       {expert.enabled && <div className="tool-entry-bar"><button type="button" onClick={() => { setArea('settings'); setSetting('tools') }}>✦ 工具中心</button><span>按插件管理能力与最近执行记录</span></div>}
       {area==='play'&&<div className="nest-play-room">
-      <div className="nest-room-heading"><div><span className="nest-section-note">留一点时间，一起做点喜欢的事</span><h2>一起玩</h2></div></div>
+      <div className="nest-room-heading"><div><span className="nest-section-note">{themeInstalled?'留一点时间，一起做点喜欢的事':'已安装的扩展'}</span><h2>{themeInstalled?'一起玩':'功能'}</h2></div></div>
       {/* ---- 一起玩：抽屉。收起时只露一行「最近用的」，点开才列全部 + 能搜 ---- */}
       <NestDrawer
-        title="🎮 一起玩"
-        hint="选一件想和她们一起做的事"
+        title={themeInstalled?"🎮 一起玩":"功能目录"}
+        hint={themeInstalled?"选一件想和她们一起做的事":"选择一个已安装的扩展"}
         badge={features.length > 0 ? `${features.length} 个项目` : ''}
         open={catalogOpen}
         onToggle={() => setCatalogOpen((v) => !v)}
@@ -304,7 +325,7 @@ export default function NestView() {
                     <span className="mt-0.5 block text-[12px] leading-relaxed text-[var(--text-2)]">{f.desc}</span>
                     <span className="mt-0.5 block text-[11px] text-[var(--text-3)]">
                       {f.needs_vision ? '👁 用视觉' : '🙈 不用视觉'} · {f.folder ? `features/${f.folder}` : '在本体内'}
-                      {f.runner ? ' · 🚀 可在小窝里启动' : ''}
+                      {f.runner ? ' · 可在此启动' : ''}
                       {openable ? ' · 点一下开在工作台' : ''}
                     </span>
                   </span>
@@ -380,24 +401,26 @@ export default function NestView() {
 
       </div>}
 
-      {area==='memories'&&<section className="nest-room" aria-label="共同回忆">
-        <div className="nest-room-heading"><div><span className="nest-section-note">我们的相册</span><h2>共同回忆</h2><p>全家的合照、喜欢的画，还有值得留下的片刻。</p></div><button className="nest-text-action" onClick={()=>{setArea('settings');setSetting('appearance')}}><UiIcon name="paint"/>页头与入场设置 →</button></div>
-        <NestStickerEditor/><GalleryGrid owner="" variant="home" bare />
+      {area==='memories'&&<section className="nest-room" aria-label={themeInstalled?"共同回忆":"媒体库"}>
+        <div className="nest-room-heading"><div><span className="nest-section-note">{themeInstalled?'我们的相册':'资源管理'}</span><h2>{themeInstalled?'共同回忆':'媒体库'}</h2><p>{themeInstalled?'全家的合照、喜欢的画，还有值得留下的片刻。':'浏览与管理共享图片和收藏。'}</p></div>{themeInstalled && <button className="nest-text-action" onClick={()=>{setArea('settings');setSetting('appearance')}}><UiIcon name="paint"/>页头与入场设置 →</button>}</div>
+        {themeInstalled && <NestStickerEditor/>}<GalleryGrid owner="" variant="home" bare />
       </section>}
-      {expert.enabled && area==='feed'&&<section className="nest-room" aria-label="小窝动态"><div className="nest-room-heading"><div><span className="nest-section-note">带回来与你分享</span><h2>小糖人找到了什么</h2><p>功能带回来的发现，收藏或留下你的反馈。</p></div></div><NestFeedPanel features={features} bare /></section>}
+      {expert.enabled && area==='feed'&&<section className="nest-room" aria-label="动态"><div className="nest-room-heading"><div><span className="nest-section-note">运行结果</span><h2>{themeInstalled?'小糖人找到了什么':'扩展动态'}</h2><p>功能带回来的发现，收藏或留下你的反馈。</p></div></div><NestFeedPanel features={features} bare /></section>}
       {area==='settings'&&<div id="nest-tools" className="nest-settings-layout">
-        <nav className="nest-setting-nav" aria-label="小窝设置分类">{([
-          ['tavern','card','酒馆模式'],['appearance','paint','外观与入场'],['autonomy','rocket','自主活动与沙盒'],['tools','tools','工具中心'],['brain','memory','小窝大脑'],['runner','rocket','运行与日志'],['processes','settings','进程管理'],['storage','settings','存储管理'],['compute','rocket','委托计算']
-        ] as const).filter(([id]) => !['tools','processes','runner','autonomy','compute'].includes(id) || (expert.enabled && (id !== 'autonomy' || expert.autonomy_installed))).map(([id,icon,label])=><button key={id} aria-current={setting===id?'page':undefined} onClick={()=>setSetting(id)}><UiIcon name={icon}/>{label}</button>)}</nav>
+        <nav className="nest-setting-nav" aria-label="设置分类">{([
+          ['plugins','settings','插件管理'],['assets','gallery','角色资源'],['tavern','card','酒馆模式'],['appearance','paint','外观与入场'],['autonomy','rocket','自主活动与沙盒'],['tools','tools','工具中心'],['brain','memory','模型连接'],['runner','rocket','运行与日志'],['processes','settings','进程管理'],['storage','settings','存储管理'],['compute','rocket','委托计算']
+        ] as const).filter(([id]) => (id !== 'appearance' || themeInstalled) && (id !== 'tavern' || tavernInstalled) && (!['tools','processes','runner','autonomy','compute'].includes(id) || (expert.enabled && (id !== 'autonomy' || expert.autonomy_installed)))).map(([id,icon,label])=><button key={id} aria-current={setting===id?'page':undefined} onClick={()=>{setSetting(id); if(id==='plugins') window.location.hash='plugins'; if(id==='assets') window.location.hash='character-assets'}}><UiIcon name={icon}/>{label}</button>)}</nav>
         <section className="nest-setting-content" aria-label="设置内容">
-          {setting==='tavern'&&<section><h2>酒馆模式</h2><label className="mt-4 flex items-center gap-2"><input type="checkbox" checked={tavernMode} onChange={e => { setModeError(''); void setTavernMode(e.target.checked).catch(err => setModeError(String(err))) }}/>启用酒馆模式</label><p className="mt-2 text-sm">开启后显示角色世界书、导入角色卡会话和导入入口；关闭后保留已有数据。</p>{modeError&&<p role="alert">{modeError}</p>}</section>}
-          {setting==='appearance' &&<NestWelcomeSettings/>}
+          {setting==='plugins' && <PluginManager/>}
+          {setting==='assets' && <CharacterAssetsPanel/>}
+          {tavernInstalled && setting==='tavern'&&<TavernSettings/>}
+          {themeInstalled && setting==='appearance' &&<NestWelcomeSettings/>}
           {expert.enabled && expert.autonomy_installed && setting==='autonomy'&&<PluginPanel featureId="autonomous_activity" title="自主活动与沙盒"/>}
           {expert.enabled && setting==='tools'&&<ToolCenter/>}
           {expert.enabled && setting==='processes'&&<ProcessPanel/>}
           {expert.enabled && setting==='compute'&&<ComputeSettings/>}
           {setting==='storage'&&<StoragePanel embedded/>}
-          {setting==='brain'&&<><div className="nest-room-heading"><div><h2>小窝大脑</h2><p>聊天与小窝功能共用的模型配置。</p></div></div><NestApiPanel bare/></>}
+          {setting==='brain'&&<><div className="nest-room-heading"><div><h2>模型连接</h2><p>聊天与扩展共用的模型配置。</p></div></div><NestApiPanel bare/></>}
           {expert.enabled && setting==='runner'&&<NestRunnerPanel features={features} activeId={runnerId} onActiveChange={setRunnerId} bare/>}
           <ExpertModeControl/>
         </section>

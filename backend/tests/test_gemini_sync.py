@@ -6,21 +6,25 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app import db
-from app.routers import gemini_sync
+from app import db,gemini_sync_feature,plugin_state
 
 
+@unittest.skipUnless(gemini_sync_feature.installed(),'optional Gemini sync plugin not installed')
 class GeminiSyncTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        state_patch=patch.object(plugin_state,'STATE_PATH',Path(tmp.name)/'plugin-state.json')
+        state_patch.start();self.addCleanup(state_patch.stop)
         for name, value in [("DATA_DIR", Path(tmp.name)), ("DB_PATH", Path(tmp.name) / "test.db")]:
             p = patch.object(db, name, value)
             p.start()
             self.addCleanup(p.stop)
         db.init_db()
+        for identifier,name in [('test-shion','大诗音'),('test-koshion','小诗音'),('test-shiro','小白')]:
+            db.upsert_character(identifier,{'name':name})
         app = FastAPI()
-        app.include_router(gemini_sync.router, prefix="/api")
+        gemini_sync_feature.mount(app)
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
         self.token = self.client.get("/api/gemini-sync/pairing").json()["token"]
@@ -88,7 +92,8 @@ class GeminiSyncTests(unittest.TestCase):
         self.assertEqual(db.list_memories(), [])
 
     def test_reprocess_preserves_ids_order_and_unlabelled_repetition(self):
-        from app.services.gemini_sync import clean_user_text, reprocess_existing
+        service=gemini_sync_feature.load('service')
+        clean_user_text,reprocess_existing=service.clean_user_text,service.reprocess_existing
 
         self.assertEqual(clean_user_text("你好\n\n你好"), "你好\n\n你好")
         self.sync([{"id": "1", "role": "assistant", "content": "🐾 治愈系小白：\n你好"}])

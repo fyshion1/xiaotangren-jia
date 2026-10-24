@@ -3,12 +3,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import db
+from app import db, theme_feature
+from app.services import assets
 
 
 class CharacterArtTests(unittest.TestCase):
     def test_fresh_and_existing_install_have_portable_art_without_overwriting_edits(self):
-        public = Path(__file__).resolve().parents[2] / "frontend/public"
+        if not theme_feature.installed():
+            self.skipTest('optional character art theme not installed')
+        public = theme_feature.FEATURE_DIR / "public"
         with tempfile.TemporaryDirectory() as folder, patch.object(db, "DATA_DIR", Path(folder)), \
                 patch.object(db, "DB_PATH", Path(folder) / "test.db"):
             db.init_db()
@@ -16,8 +19,9 @@ class CharacterArtTests(unittest.TestCase):
                 character = db.get_character(character_id)
                 for field in ("avatar", "portrait"):
                     url = character[field]
-                    self.assertTrue(url.startswith("/characters/"))
-                    self.assertTrue((public / url.lstrip("/")).is_file())
+                    self.assertTrue(url.startswith("/api/assets/"))
+                    identifier = url.split("/")[3]
+                    self.assertTrue(assets.asset_path(Path(folder), identifier, "webp").is_file())
             character = db.get_character("dashiyin")
             del character["portrait"]
             character["avatar"] = "/my-custom-avatar.png"
@@ -28,7 +32,7 @@ class CharacterArtTests(unittest.TestCase):
             db.upsert_character("xiaobai", cleared)
             db.init_db()
             updated = db.get_character("dashiyin")
-            self.assertEqual(updated["portrait"], "/characters/dashiyin-portrait.webp")
+            self.assertTrue(updated["portrait"].startswith("/api/assets/"))
             self.assertEqual(updated["avatar"], "/my-custom-avatar.png")
             self.assertEqual(updated["name"], "我的名字")
             self.assertEqual(db.get_character("xiaobai")["portrait"], "")

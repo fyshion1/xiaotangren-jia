@@ -44,7 +44,7 @@ try {
   const errors = []
   p.on('pageerror', (e) => errors.push(e.message))
 
-  let settings = {tavern_mode:'false'}
+  let settings = {tavern_installed:'true',tavern_mode:'false'}
   const img = '/visual/images/gal-193cace93192.png'
   const chars = ['dashiyin','xiaohongshutou','imported-test'].map((id,i)=>({id,name:['大诗音','小红薯头','导入测试'][i],jp:i?'':'かほるずき しおん',emoji:'🌸',about:'原有人设',personality:[],likes:[],dislikes:[],portrait:img,forms:[{id:'test-form',name:'测试形态',fields:{likes:[]}}],imported:i===2}))
   chars[2].greeting = '你好，朋友！'

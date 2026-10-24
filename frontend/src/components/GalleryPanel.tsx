@@ -177,7 +177,7 @@ export default function GalleryPanel({
       await updateGallery(id, { in_memory: next })
       await reload()
       onChanged?.()
-      flash(next ? '已进小糖人记忆 ✓' : '已移出记忆（图还在画廊里）')
+      flash(next ? '已加入角色记忆 ✓' : '已移出记忆（图还在画廊里）')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -258,7 +258,7 @@ export default function GalleryPanel({
                     t === 'public'
                       ? '公开层：介绍页 / 小窝默认展示的那些'
                       : t === 'private'
-                        ? '私密层：展示端默认不列出（防别人瞥屏）；仍可进小糖人记忆'
+                        ? '私密层：展示端默认不列出（防别人瞥屏）；仍可加入角色记忆'
                         : '两层一起看'
                   }
                 >
@@ -411,7 +411,7 @@ export default function GalleryPanel({
                         className="input min-h-[64px] w-full resize-y text-[13px]"
                         value={editing.text}
                         onChange={(e) => setEditing({ id: g.id, text: e.target.value })}
-                        placeholder="写一段描述，例如：大诗音系着围裙在烘焙坊里端着刚烤好的小饼干"
+                        placeholder="写一段描述，例如：在厨房里端着刚烤好的饼干"
                       />
                     ) : (
                       <div className="text-[13px] leading-snug text-[var(--text)]">
@@ -455,7 +455,7 @@ export default function GalleryPanel({
                           </button>
                           <label
                             className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-2)]"
-                            title="关掉后这张图不再进小糖人的长期记忆，但图片仍留在画廊里"
+                            title="关掉后这张图不再进角色的长期记忆，但图片仍留在画廊里"
                           >
                             <input
                               type="checkbox"
@@ -463,11 +463,11 @@ export default function GalleryPanel({
                               disabled={busyId === g.id}
                               onChange={(e) => void toggleMemory(g.id, e.target.checked)}
                             />
-                            进小糖人记忆
+                            加入角色记忆
                           </label>
                           <label
                             className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-2)]"
-                            title="收进私密层：介绍页 / 小窝默认不列出它（防别人瞥屏）。不影响的记忆 —— 私密 ≠ 瞒着小糖人"
+                            title="收进私密层：介绍页 / 小窝默认不列出它（防别人瞥屏）。不影响的记忆 —— 私密不等于停止记忆注入"
                           >
                             <input
                               type="checkbox"
@@ -521,7 +521,7 @@ export default function GalleryPanel({
           归属：私聊里 ⭐ / 上传的图自动归到对方名下，「家 · 共用」则是全家的共同回忆（见「糖人小窝」）。
           改了归属，它的照片记忆会跟着搬 —— 专属归属的记忆只有那个人在场时才检索得到。
           层级（§26）：<b>私密</b>只是「介绍页 / 小窝默认不列出它」，防的是别人瞥屏，
-          和「进小糖人记忆」是两回事 —— 私密图照样能被小糖人想起来。
+          和「加入角色记忆」是两回事 —— 私密图片仍可按设置参与记忆召回。
           照片记忆（A 方案）：描述以「你有一张照片：…」的形式进 §9.2 的检索，只在话题相关时自然流露。
           多模态 CLIP 直检索（B 方案）已在后端留了 Provider 接口占位，默认不启用。
         </p>

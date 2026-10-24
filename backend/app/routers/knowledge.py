@@ -1,14 +1,19 @@
 """Local reference-library API. Identity comes from the app, never request bodies."""
 import html
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .. import db
 from ..services import knowledge as service
 
-router = APIRouter(prefix='/knowledge', tags=['knowledge'])
+def require_plugin():
+    from .. import personal_space
+    if not personal_space.enabled('personal_database'):
+        raise HTTPException(409, '个人数据库插件未安装或已关闭')
+
+router = APIRouter(prefix='/knowledge', tags=['knowledge'], dependencies=[Depends(require_plugin)])
 
 
 def actor():

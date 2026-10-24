@@ -125,6 +125,7 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
             p.start()
             self.addCleanup(p.stop)
         db.init_db()
+        db.upsert_character('dashiyin', {'name': '测试助手'})
         db.set_brain_default({'base_url': 'http://brain.test/v1', 'model': 'test', 'api_key': 'test-key'})
         self.saved = []
         p = patch.object(session_chat, '_archive_messages', lambda rows, _: self.saved.extend(rows))

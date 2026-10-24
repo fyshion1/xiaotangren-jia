@@ -159,7 +159,7 @@ export default function PortraitCarousel({ characters, onOpenImage }: Props) {
                这里给他留一格，切过来能看见「还没图」而不是一张裂图。 */
             <div className="flex h-[180px] flex-col items-center justify-center gap-1 text-[var(--text-3)]">
               <Avatar name={curChar?.name ?? ''} avatar={curChar?.avatar} emoji={curChar?.emoji} size={44} />
-              <span className="text-[13px] text-[var(--text-2)]">{curChar?.name ?? '这位小糖人'}</span>
+              <span className="text-[13px] text-[var(--text-2)]">{curChar?.name ?? '这位角色'}</span>
               <span className="text-[11px]">还没有立绘或画廊图</span>
             </div>
           )}

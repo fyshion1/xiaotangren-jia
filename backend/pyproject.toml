@@ -13,8 +13,6 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-multipart>=0.0.9",
-    "edge-tts>=7.2",
-    "piper-tts>=1.8",
     "pillow>=10.3",
     "python-docx>=1.1",
     "openpyxl>=3.1",
@@ -35,9 +33,13 @@ dev = [
     "ruff>=0.6",
 ]
 local-voice = [
+    "piper-tts>=1.8",
     "sherpa-onnx>=1.13.8",
     "pilk>=0.2.4",
     "imageio-ffmpeg>=0.6,<1",
+]
+online-voice = [
+    "edge-tts>=7.2",
 ]
 qq-asr = [
     "sherpa-onnx>=1.13.8",

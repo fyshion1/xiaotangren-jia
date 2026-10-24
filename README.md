@@ -1,15 +1,18 @@
-# 小糖人之家
+# Shionarium · 源码试用版
 
-本地优先的 AI 角色陪伴与多模态聊天项目。围绕大诗音、小诗音、小白、小红薯头等角色，提供私聊、群聊、角色卡、个人记忆、知识资料、语音和外部功能接入。
+本地优先的 AI 聊天与记忆框架，从“小糖人之家”拆分而来。本体提供通用聊天、档案和记忆能力；小糖人品牌外观、字体、角色图片及默认设定由可选项目 `features/xiaotangren-theme` 提供。未安装主题时使用中性界面、助手和用户默认档案，已有角色、聊天与记忆继续保留。见[主题拆分说明](docs/guides/theme-feature.md)。
 
-这是一份给朋友试用的源码版指南，按 **2026-10-22** 的项目实现整理。推荐先在电脑上跑通网页聊天，再按需配置语音、QQ、桌宠和自主活动。模型服务和可选功能需要自行配置，不附带可直接使用的 API 额度。
+这是仍在迭代的源码试用版，安装指南更新于 **2026-10-24**。推荐先在 Windows 电脑或 Windows 平板上跑通网页聊天，再按需配置语音、QQ、桌宠和自主活动。模型服务和可选功能需要自行配置，不附带可直接使用的 API 额度。插件接口与部署体验仍会调整，请先用测试数据体验并备份需要保留的资料。
+
+本体原创代码采用 [Apache-2.0](LICENSE)，允许依许可修改、商用与再分发。第三方代码、素材、模型和独立插件分别遵循各自许可，适用范围见 [LICENSE_SCOPE.md](LICENSE_SCOPE.md)。
 
 ## 现在可以体验什么
 
 | 功能 | 当前范围与前提 |
 | --- | --- |
-| 角色聊天 | 单角色私聊、多人群聊、流式回复、身份档案、世界书、提示词查看、开场白与角色编辑。需要可用的聊天模型。 |
-| 酒馆角色卡 | 导入角色卡、预览并确认字段、展示富文本与 HTML 内容；兼容范围见[角色卡预览说明](docs/guides/card-html-preview.md)。 |
+| 角色聊天 | 单角色私聊、多人群聊、流式回复、身份档案、提示词查看与角色编辑。需要可用的聊天模型。 |
+| 小糖人主题（可选） | 独立项目 `features/xiaotangren-theme` 提供现有配色、装饰、素材和默认角色设定；安装变更后需重启后端并重新构建前端。 |
+| 酒馆兼容插件（可选） | 独立项目 `features/tavern` 提供角色卡导入、开场白、HTML/正则显示和世界书；未安装不影响本体。见[安装说明](docs/guides/tavern-feature.md)与[兼容范围](docs/guides/card-html-preview.md)。 |
 | 图片与视频 | 上传附件、看图、视频关键帧、画廊收藏和存储管理。看图需要视觉模型；视频处理还需 FFmpeg。 |
 | 个人记忆 | 原始聊天归档、清洗、每日事件整理、长期记忆候选、人工审核、注入与来源管理。AI 整理会调用模型。 |
 | 个人数据库与知识资料 | 管理个人事实、知识文档、出处检索与待确认草案；支持独立 Embedding API。 |
@@ -36,6 +39,8 @@ python install-features.py
 
 下载询问依次提供 **桌宠、QQ 桥、联网搜索、QQ 语音转写、本地说话与听写、按意思查找记忆和资料**，全部默认不安装（直接回车）。提示先解释能做什么，再介绍依赖。QQ 语音转写不下载朗读音色；完整本地语音另含中文音色。「按意思查找」安装本地 embedding 模型，模型约 100 MB，但运行依赖可能占 GB 级空间；不安装仍可关键词检索。安装及首次配置见[可选组件说明](docs/guides/optional-components.md)。其他功能不在安装器中提供选项，请到 [GitHub](https://github.com/fyshion1) 按需求查看各仓库。下载不等于已完成账号配置；私有仓库需要访问权限。以后也可再次运行 `python install-features.py`，已有目录会跳过。
 
+维护者首次部署验收记录、已发现问题及尚未推送的候选版本边界，见[从 GitHub 开始的首次部署验收](docs/guides/fresh-github-install-2026-10-24.md)。
+
 已有项目时先保存自己的改动，再运行 `git pull`。不要用另一台机器的私人数据覆盖自己的配置。
 
 首次创建的私人空间使用“主人”和“自定义身份”两个中性模板，不预填生日、身体数据、职业或亲密关系。可在私人空间自行编辑，身体尺寸字段默认隐藏，可在编辑器中取消隐藏。更新程序会保留已有档案；旧档案的称呼和介绍需要在私人空间自行修改。
@@ -44,7 +49,7 @@ python install-features.py
 
 ```powershell
 cd backend
-uv sync --locked --python 3.11
+uv sync --locked --inexact --python 3.11
 Copy-Item .env.example .env
 notepad .env
 ```
@@ -70,7 +75,7 @@ npm ci
 cd ..
 ```
 
-启动脚本不会代替上述依赖安装。以后更新代码，如果依赖清单有变化，重新执行后端 `uv sync --locked` 和前端 `npm ci`。
+启动脚本不会代替上述依赖安装。以后更新代码，如果依赖清单有变化，重新执行后端 `uv sync --locked --inexact` 和前端 `npm ci`。`--inexact` 保留安装器此前选装的语音、转写或记忆依赖；普通 `uv sync` 会移除未在本次命令中指定的可选依赖。
 
 ### 4. 启动小窝
 
@@ -80,6 +85,8 @@ cd ..
 ```powershell
 .\start.bat
 ```
+
+需要同时验收一份全新副本时，可在该副本运行 `.\start.bat --backend-port 18002 --frontend-port 15174`，前端代理会跟随本窗口的后端端口。副本需独立安装依赖，不复制 `.env`、数据目录、模型或私人插件；不要在同一目录重复启动。
 
 打开 **http://localhost:5173**。后端地址为 `http://127.0.0.1:8000`，健康检查为 `http://127.0.0.1:8000/api/health`，接口文档为 `http://127.0.0.1:8000/docs`。
 
@@ -94,7 +101,7 @@ cd ..
 ```bash
 # 终端一：仓库根目录
 cd backend
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+uv run --no-sync uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 ```bash
@@ -127,7 +134,7 @@ npm run dev
 基础安装不包含 `sentence-transformers` 本地向量依赖。未配置向量服务时可使用关键词检索；需要语义检索可选：
 
 - 在「个人数据库 → Embedding 设置」配置外部 Embedding API，不必下载本地向量模型。
-- 本地方案：在 `backend/` 执行 `uv sync --locked --extra memory`，再按需运行根目录 `download_embedding.sh` 下载模型。此方案会安装较大的机器学习依赖。
+- 本地方案：在 `backend/` 执行 `uv sync --locked --inexact --extra memory`，再按需运行根目录 `download_embedding.sh` 下载模型。此方案会安装较大的机器学习依赖。
 
 更换 Embedding 来源或模型后，通过界面重建索引。**不需要删除聊天数据库或记忆表。** 重建会向所选服务发送参与索引的文本，使用自己的测试资料即可。
 
@@ -135,14 +142,14 @@ npm run dev
 
 ### 语音、视频和生图
 
-- **朗读**：Edge 需要网络；Piper 需要本地音色，可运行 `download_piper_voices.bat` 或 `bash download_piper_voices.sh` 下载。
-- **持续通话**：目前支持单角色私聊。可用本地 Paraformer/Piper 或云端 ASR/TTS；新 clone 不含本机已下载的识别与音色文件。本地语音可选依赖安装命令为 `uv sync --locked --extra local-voice`（在 `backend/` 执行），模型位置与服务配置见[通话说明](docs/voice-call.md)和[本地语音评估](docs/research/local-streaming-voice-options.md)。同时使用多个可选依赖时合并传入各个 `--extra`。
+- **朗读**：基础安装不含 Edge/Piper 运行库。按需在 `backend/` 执行 `uv sync --locked --inexact --extra online-voice` 安装 Edge 在线朗读；需要联网。Piper 随安装器的本地说话与听写选项安装，需要本地音色。
+- **持续通话**：目前支持单角色私聊。可用本地 Paraformer/Piper 或云端 ASR/TTS；新 clone 不含本机已下载的识别与音色文件。本地语音可选依赖安装命令为 `uv sync --locked --inexact --extra local-voice`（在 `backend/` 执行），模型位置与服务配置见[通话说明](docs/voice-call.md)和[本地语音评估](docs/research/local-streaming-voice-options.md)。未安装语音运行库、未配置云端语音时，聊天页不显示通话、音色和语音输入入口；安装后需要重启后端并刷新页面。入口可见表示可以配置，不保证识别与合成链路均已就绪。按住说话使用浏览器识别服务，不能当成本地 Paraformer。视频通话尚未实现，不显示占位按钮。
 - **视频**：安装 FFmpeg 并加入 PATH，先用短视频测试；视觉模型仍需另外配置。见[聊天附件说明](docs/guides/chat-media.md)。
 - **生图**：ComfyUI 需要 API 格式工作流及实际安装的模型；示例中的 checkpoint 名称要按自己的环境修改。第三方生图需要支持 `/images/generations` 的服务与 `IMAGE_BASE_URL`、`MODEL_IMAGE` 配置。见[工作流示例](backend/examples/comfyui/README.md)。
 
 ### QQ、桌宠和其他独立功能
 
-**`features/` 中的应用是独立 Git 仓库，本体 clone 不会将它们下载，也没有自动安装全部功能的子模块。** 功能页仅显示已放入对应目录的独立功能，未安装的日语、英语等不显示；本体自带的 Gemini 同步入口保留。
+**`features/` 中的应用是独立 Git 仓库，本体 clone 不会将它们下载，也没有自动安装全部功能的子模块。** 功能页仅显示已安装并开启的独立功能，未安装的日语、英语和 Gemini 同步等不显示；Gemini 同步实现已迁至独立插件。
 
 2026-10-22 已将桌宠首次提交 `101df58` 推送到私有仓库 [fyshion1/desktop-pet](https://github.com/fyshion1/desktop-pet)，QQ 桥更新 `bf8f092` 已推送到私有仓库 [fyshion1/qq-bridge](https://github.com/fyshion1/qq-bridge)。朋友需先取得两个仓库的访问权限并接受邀请。本体与两个功能分别提交、分别更新；仅拉取本体不会更新它们。
 
@@ -206,6 +213,9 @@ QQ 需要桥客户端、网关与登录配置；桌宠需要独立桌面应用�
 低配置 Debian 主机、静态前端托管与独立算力端可参考[委托模式与 Debian 部署](docs/guides/delegated-mode.md)，样例在 `deploy/`。这部分不属于基础网页测试的必需步骤。
 
 ## 数据、备份与素材
+
+角色图片现由本体用户资源层持久保存，入口为「设置 → 角色资源」（`/#character-assets`）；已有头像、立绘会从主题素材、上传附件或内嵌图片转存，源文件保留，修改前生成数据库快照。关闭主题不再中断已保存图片的服务。人设仍以角色编辑器保存的档案为准。见[资源管理与 API](docs/guides/user-assets.md)。
+
 
 聊天记录主要位于 `backend/data/xiaotangren.db`，附件、配置和下载模型位于 `backend/data/`；个人资料与正式记忆还使用仓库根目录的 `个人数据库/`、`个人记忆库/` 等本地目录。网页保存的部分偏好在当前浏览器中，不会随 Git 同步。
 

@@ -28,7 +28,9 @@ router = APIRouter()
 _EDGE_MIN_GAP = 0.25
 _edge_last_at = 0.0
 
-PIPER_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "tts" / "piper"
+from ..data_paths import runtime_root
+
+PIPER_DIR = runtime_root() / "tts" / "piper"
 
 # edge-tts 只留晓晓（用户钦点的舒服女声）。
 EDGE_VOICES: list[dict] = [
@@ -51,17 +53,21 @@ class TTSRequest(BaseModel):
 
 @router.get("/voice/engines")
 async def list_engines() -> list[dict]:
+    from ..components import package_present, piper_ready
     return [
-        {"id": "edge", "name": "Edge 在线（晓晓）", "desc": "微软在线音 · 免费 · 需网络", "available": True},
-        {"id": "piper", "name": "Piper 本地（轻量）", "desc": "本地离线合成 · 低算力友好", "available": True},
+        {"id": "edge", "name": "Edge 在线（晓晓）", "desc": "微软在线音 · 需另装 online-voice · 需网络", "available": package_present('edge_tts')},
+        {"id": "piper", "name": "Piper 本地（轻量）", "desc": "本地离线合成 · 需安装运行库与音色", "available": piper_ready()},
     ]
 
 
 @router.get("/voice/voices")
 async def list_voices(engine: str = "edge") -> list[dict]:
+    from ..components import package_present
     if engine == "edge":
-        return EDGE_VOICES
+        return EDGE_VOICES if package_present('edge_tts') else []
     if engine == "piper":
+        if not package_present('piper'):
+            return []
         return [
             {"id": vid, "name": name}
             for vid, name in PIPER_VOICES
@@ -101,6 +107,7 @@ def _piper_synthesize(model_id: str, text: str) -> bytes:
 
 @router.post("/voice/tts")
 async def tts(req: TTSRequest) -> Response:
+    from ..components import package_present, piper_ready
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="要朗读的文本为空")
@@ -109,6 +116,8 @@ async def tts(req: TTSRequest) -> Response:
 
     try:
         if engine == "edge":
+            if not package_present('edge_tts'):
+                raise HTTPException(status_code=409, detail="未安装在线朗读组件。请安装 online-voice 可选依赖并重启后端。")
             import edge_tts
             voice = voice or "zh-CN-XiaoxiaoNeural"
             # 暂停一下再合成（§19.18）：edge-tts 每次都要新开一条 WebSocket，
@@ -131,6 +140,8 @@ async def tts(req: TTSRequest) -> Response:
             return Response(content=bytes(buf), media_type="audio/mpeg")
 
         if engine == "piper":
+            if not piper_ready():
+                raise HTTPException(status_code=409, detail="本地朗读运行库或音色未就绪。请运行 install-features.py 选择本地说话与听写。")
             voice = voice or "zh_CN-huayan-medium"
             wav_bytes = await asyncio.to_thread(_piper_synthesize, voice, text)
             return Response(content=wav_bytes, media_type="audio/wav")

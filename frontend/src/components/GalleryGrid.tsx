@@ -143,7 +143,7 @@ export default function GalleryGrid({ owner, variant = 'character', bare = false
           <>
             <h2 className="text-[20px] font-extrabold tracking-wide">{isHome ? '共同回忆 · 画廊' : '画廊'}</h2>
             <span className="text-[13px] text-[var(--text-3)]">
-              {isHome ? 'Home Gallery' : 'Gallery'} · {hasReal ? `已收藏 ${items.length} 项` : isHome ? '全家的合照都放这儿' : 'CG / 立绘 · 在个人介绍下方'}
+              {isHome ? 'Home Gallery' : 'Gallery'} · {hasReal ? `已收藏 ${items.length} 项` : isHome ? '共享媒体会显示在这里' : 'CG / 立绘 · 在个人介绍下方'}
             </span>
           </>
         )}
@@ -152,7 +152,7 @@ export default function GalleryGrid({ owner, variant = 'character', bare = false
           className="btn ml-auto text-[13px]"
           disabled={uploading}
           onClick={() => fileRef.current?.click()}
-          title={isHome ? '上传到「家 · 共用」（可多选照片 / 视频）' : '上传到这位小糖人的专属画廊（可多选照片 / 视频）'}
+          title={isHome ? '上传到共享媒体库（可多选照片 / 视频）' : '上传到当前角色的媒体库（可多选照片 / 视频）'}
         >
           {uploading ? '上传中…' : '＋ 上传图片 / 视频'}
         </button>
@@ -175,7 +175,7 @@ export default function GalleryGrid({ owner, variant = 'character', bare = false
           公开层是空的 —— 这里的图都收在私密层了（下面那条展开）。
         </div>
       ) : publicItems.some(g=>g.kind!=='video') ? (
-        <><GalleryComposition images={publicItems.filter(g=>g.kind!=='video').map(g=>g.orig)} labels={publicItems.filter(g=>g.kind!=='video').map(g=>g.description)} name={isHome?'全家':characters.find(c=>c.id===owner)?.name||'角色'} onOpen={src=>{const g=publicItems.find(g=>g.orig===src);if(g)setLightbox(g)}}/>{publicItems.some(g=>g.kind==='video')&&<div className="grid grid-cols-2 gap-4 sm:grid-cols-3">{publicItems.filter(g=>g.kind==='video').map(renderCell)}</div>}</>
+        <><GalleryComposition images={publicItems.filter(g=>g.kind!=='video').map(g=>g.orig)} labels={publicItems.filter(g=>g.kind!=='video').map(g=>g.description)} name={isHome?'共享媒体':characters.find(c=>c.id===owner)?.name||'角色'} onOpen={src=>{const g=publicItems.find(g=>g.orig===src);if(g)setLightbox(g)}}/>{publicItems.some(g=>g.kind==='video')&&<div className="grid grid-cols-2 gap-4 sm:grid-cols-3">{publicItems.filter(g=>g.kind==='video').map(renderCell)}</div>}</>
       ) : (
         <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-6">
           {hasReal
@@ -226,10 +226,10 @@ export default function GalleryGrid({ owner, variant = 'character', bare = false
       <p className="mt-3 text-[12px] text-[var(--text-3)]">
         {hasReal
           ? isHome
-            ? '这里是全家的共同回忆（归属「家 · 共用」的图）。每张的描述会作为「照片记忆」被小糖人们想起来；管理在聊天的 🖼 画廊里。标 🔒 的收在私密层，默认不铺开。'
-            : '这是这位小糖人的专属画廊 —— 你和她之间的图都在这。描述可作为「照片记忆」被她想起来。管理（上传 / 自动描述 / 删除 / 改归属 / 公开·私密）在聊天的 🖼 画廊里。标 🔒 的收在私密层，默认不铺开。'
+            ? '这里展示共享媒体。图片描述可用于照片记忆；在聊天的画廊中管理。私密内容默认折叠。'
+            : '这里展示当前角色的媒体。图片描述可用于照片记忆；在聊天的画廊中上传、修改描述或调整可见性。私密内容默认折叠。'
           : isHome
-            ? '小窝的画廊还空着 —— 在聊天的 🖼 画廊里上传图片并把归属设为「家 · 共用」，全家共同的回忆就会在这里长出来。'
+            ? '共享媒体库暂无内容。在聊天的画廊中上传图片并设置为共享，即可在这里查看。'
             : '画廊还是空的 —— 和她的私聊里对图片气泡点 ⭐，或在 🖼 画廊里上传图片，都会自动归到她名下。'}
       </p>
 

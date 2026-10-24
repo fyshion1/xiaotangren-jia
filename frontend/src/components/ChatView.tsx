@@ -5,6 +5,10 @@ import KnowledgeText from './KnowledgeText'
 import {useDesignChoice} from '../visual/designChoices'
 import {useDismissableDetails} from '../visual/useDismissableDetails'
 import UiIcon from '../visual/UiIcon'
+import {available as geminiInstalled} from '#gemini-sync/availability'
+import {integrationSessions} from '#gemini-sync/sessions'
+import {useOptionalPlugin} from '../plugins/useOptionalPlugin'
+import {useComponents} from '../hooks/useComponents'
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CharacterProfile } from '../data/characters'
 import type { ChatMessage } from '../data/chats'
@@ -279,7 +283,7 @@ function WaitingBubble({ cast }: { cast: CharacterProfile[] }) {
     const timer = window.setInterval(() => setTick((v) => v + 1), 2600)
     return () => window.clearInterval(timer)
   }, [])
-  const who = cast.length > 1 ? '她们' : cast[0]?.name || '小糖人'
+  const who = cast.length > 1 ? '她们' : cast[0]?.name || '角色'
   return (
     <div className="flex flex-col gap-1.5">
       {cast.length > 1 && (
@@ -401,7 +405,8 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     const timer = window.setInterval(refresh, 15000)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [activePersonaId, expert.enabled, expert.autonomy_installed])
-  const sessions = useMemo(() => [...buildSessions(visibleCharacters, [], roster).filter(s => tavernMode || !visibleCharacters.find(c => s.kind === 'single' && c.id === s.characterIds[0])?.imported), ...lifeSessions], [visibleCharacters, roster, lifeSessions, tavernMode])
+  const geminiEnabled=useOptionalPlugin('gemini_sync',geminiInstalled)
+  const sessions = useMemo(() => [...buildSessions(visibleCharacters, [], roster,geminiEnabled?integrationSessions(visibleCharacters.map(character=>character.id)):[]).filter(s => tavernMode || !visibleCharacters.find(c => s.kind === 'single' && c.id === s.characterIds[0])?.imported), ...lifeSessions], [visibleCharacters, roster, lifeSessions, tavernMode,geminiEnabled])
   const [activeId, setActiveId] = useState<string>(initialSessionId ?? sessions[0]?.id ?? 'group')
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0]
   // 本会话在场的角色（群聊 = 全部成员，私聊 = 一位）—— 立绘轮播与状态栏共用
@@ -440,6 +445,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const streamController = useRef<AbortController | null>(null)
   useEffect(() => () => { streamController.current?.abort() }, [sessionKey])
   const [voiceCallOpen, setVoiceCallOpen] = useState(false)
+  const {voice:voiceComponents}=useComponents()
   const [config, setConfig] = useState<ModelConfig>(loadConfig)
   useEffect(() => {
     let live = true
@@ -521,7 +527,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   // 安全上下文，`http://192.168.x.x` 下浏览器会直接拒绝。别让按钮点下去只报一句错 ——
   // 直接换成提示，把「走 https 隧道才能用麦克风」这件事讲清楚。
   const micAvailable =
-    asr.available &&
+    voiceComponents.installed && asr.available &&
     (typeof window === 'undefined' ||
       window.isSecureContext ||
       ['localhost', '127.0.0.1'].includes(window.location.hostname))
@@ -872,10 +878,15 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const loadEngines = useCallback(async () => {
     try {
       const resp = await fetch('/api/voice/engines')
-      if (resp.ok) setEngines((await resp.json()) as EngineOption[])
+      if (resp.ok) {
+        const list=(await resp.json()) as EngineOption[]
+        setEngines(list)
+        return list
+      }
     } catch {
       /* ignore */
     }
+    return [] as EngineOption[]
   }, [])
 
   const pickEngine = useCallback(
@@ -900,6 +911,17 @@ export default function ChatView({ characters, personas = [], activePersona, ini
     const list = await fetchVoices(speakEngine)
     setVoices(list)
   }, [loadEngines, fetchVoices, speakEngine])
+
+  useEffect(()=>{
+    if(!voiceComponents.tts_available)return
+    let live=true
+    void loadEngines().then(list=>{
+      if(!live || list.some(engine=>engine.id===speakEngine && engine.available))return
+      const next=list.find(engine=>engine.available)
+      if(next)void pickEngine(next.id)
+    })
+    return ()=>{live=false}
+  },[voiceComponents.tts_available,speakEngine,loadEngines,pickEngine])
 
   const stopSpeak = useCallback(() => {
     playTokenRef.current += 1 // 作废所有在途请求
@@ -1589,11 +1611,11 @@ export default function ChatView({ characters, personas = [], activePersona, ini
             })()}
           {/* 群聊阵容（§25）：只改默认群聊的成员，存后端设置，刷新保持 */}
           <span className="visual-chat-title">{active.name}</span>
-          {active.kind === 'single' && !active.sandbox && !active.readOnly && <button type="button" aria-label="语音通话" title="和她语音通话" disabled={streaming} onClick={openVoiceCall} className="shrink-0 rounded-full p-2 text-[var(--pink-deep)] disabled:opacity-40"><UiIcon name="phone" size={20}/></button>}
+          {voiceComponents.installed && active.kind === 'single' && !active.sandbox && !active.readOnly && <button type="button" aria-label="语音通话" title="语音通话设置" disabled={streaming} onClick={openVoiceCall} className="shrink-0 rounded-full p-2 text-[var(--pink-deep)] disabled:opacity-40"><UiIcon name="phone" size={20}/></button>}
           <div className="chat-primary-actions" aria-label="常用聊天功能">
             <button type="button" title={active.kind==='group' ? '改群聊成员' : '查看当前成员'} aria-label="成员" onClick={() => active.kind==='group' ? setRosterOpen(true) : setNotice('当前成员：'+activeCharacters.map(c=>c.name).join('、'))}><UiIcon name="characters" size={17}/><span>成员</span>{active.kind==='group'&&<small>{active.characterIds.length}</small>}</button>
             <button type="button" aria-label="提示词" disabled={active.sandbox} title="查看当前提示词，不消耗 token" onClick={() => setPromptOpen(true)}><UiIcon name="search" size={17}/><span>提示词</span></button>
-            <button type="button" aria-label="无审查" disabled={active.sandbox} title={config.channel==='uncensored'?'无审查通道已启用；点击切回常规':'点击切换到无审查通道'} aria-pressed={config.channel==='uncensored'} onClick={() => saveConfig({...config,channel:config.channel==='uncensored'?'normal':'uncensored'})}><UiIcon name={config.channel==='uncensored'?'unlock':'lock'} size={17}/><span>无审查</span></button>
+            {tavernMode && <button type="button" aria-label="无审查" disabled={active.sandbox} title={config.channel==='uncensored'?'无审查通道已启用；点击切回常规':'点击切换到无审查通道'} aria-pressed={config.channel==='uncensored'} onClick={() => saveConfig({...config,channel:config.channel==='uncensored'?'normal':'uncensored'})}><UiIcon name={config.channel==='uncensored'?'unlock':'lock'} size={17}/><span>无审查</span></button>}
           </div>
           <details ref={chatToolsRef} className="visual-chat-tools" data-tools={toolsChoice}><summary aria-label="工具与设置"><UiIcon name="tools" size={17}/><span>{toolsChoice==='t2'?'更多':'工具与设置'}</span><i aria-hidden="true">{toolsChoice==='t3'?'···':'⌄'}</i></summary><div className="visual-tools-content">
             <button
@@ -1623,7 +1645,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                   ? 'border-[var(--pink)] bg-[var(--pink-soft)] text-[var(--pink-deep)]'
                   : 'border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-2)] hover:border-[var(--pink)]'
               }`}
-              title="多选删除：勾选要删的消息（你自己的和小糖人的都行），真删（连带图片文件 / 画廊收藏 / 照片记忆）"
+              title="多选删除：勾选要删的消息（你自己的和角色的都行），真删（连带图片文件 / 画廊收藏 / 照片记忆）"
             >
               <UiIcon name="delete"/> 删除
             </button>
@@ -1686,7 +1708,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               {selectMode ? `已选 ${selectedSeqs.size} 条` : ''}
             </span>
             <span className="text-[11px] opacity-80">
-              在消息上右键可以「删除这条」或进入多选（多选时点整条消息即可勾选）；你的消息和小糖人的回复都能删。改自己的话用气泡下的「✎ 编辑」。
+              在消息上右键可以「删除这条」或进入多选（多选时点整条消息即可勾选）；你的消息和角色的回复都能删。改自己的话用气泡下的「✎ 编辑」。
             </span>
             <div className="ml-auto flex items-center gap-1.5">
               <button
@@ -1717,7 +1739,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
               <div className="rounded-full bg-[var(--pink-soft)] px-3 py-1 text-[var(--pink-deep)]">
                 {active.kind === 'group' ? '🏠' : active.characterIds[0] ? visibleCharacters.find((c) => c.id === active.characterIds[0])?.emoji : '🎴'}
               </div>
-              和 {active.kind === 'group' ? '大家' : active.name} 说点什么吧（先点 <UiIcon name="settings"/> 填好模型）
+              和 {active.kind === 'group' ? '大家' : active.name} 说点什么吧（先点 <UiIcon name="settings" className="inline-block align-middle"/> 填好模型）
             </div>
           )}
           {messages.map((m, i) => {
@@ -1898,7 +1920,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                           <div className="whitespace-pre-wrap"><KnowledgeText text={s.text} /></div>
                           {m.role === 'assistant' && s.text.trim() && (
                             <div className="mt-1 flex items-center gap-2">
-                              <button
+                              {voiceComponents.tts_available && <button
                                 onClick={() => speakText(segText, segKey)}
                                 className={`text-[11px] transition hover:text-[var(--pink-deep)] ${
                                   playingKey === segKey ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)]'
@@ -1906,7 +1928,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                                 title="朗读 / 停止这一段"
                               >
                                 {playingKey === segKey ? '⏹ 停止' : '🔈 朗读'}
-                              </button>
+                              </button>}
                               {!active.memoryDisabled && <RememberButton
                                 done={Boolean(remembered[segKey])}
                                 onClick={() => void rememberThis(segKey, segText)}
@@ -2005,7 +2027,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                       <WaitingBubble cast={activeCharacters} />
                     ) : (
                       <>
-                        {m.role === 'assistant' && activeCharacters.length === 1 && activeCharacters[0].imported
+                        {tavernMode && m.role === 'assistant' && activeCharacters.length === 1 && activeCharacters[0].imported
                           ? <CardChatMessage text={m.content} character={activeCharacters[0]}
                               mode={tavernMode ? cardDisplayMode : 'chat'} depth={messages.length - 1 - i} streaming={streaming && isLast} />
                           : <div className="whitespace-pre-wrap"><KnowledgeText text={m.content} /></div>}
@@ -2030,7 +2052,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                     )}
                     {m.role === 'assistant' && m.content.trim() && (
                       <div className="mt-1 flex items-center gap-2">
-                        <button
+                        {voiceComponents.tts_available && <button
                           onClick={() => speakText(m.content, `${sessionKey}:${i}`)}
                           className={`text-[11px] transition hover:text-[var(--pink-deep)] ${
                             playingKey === `${sessionKey}:${i}` ? 'text-[var(--pink-deep)]' : 'text-[var(--text-3)]'
@@ -2038,7 +2060,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                           title="朗读 / 停止这条回复"
                         >
                           {playingKey === `${sessionKey}:${i}` ? '⏹ 停止' : '🔈 朗读'}
-                        </button>
+                        </button>}
                         {!active.memoryDisabled && <RememberButton
                           done={Boolean(remembered[`${sessionKey}:${i}`])}
                           onClick={() => void rememberThis(`${sessionKey}:${i}`, m.content)}
@@ -2085,7 +2107,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           <button className="composer-candidate-toggle" type="button" aria-expanded={suggestionsEnabled} aria-controls="visual-reply-candidates" onClick={() => {const enabled = !suggestionsEnabled;setSuggestionsEnabled(enabled);try {localStorage.setItem('xtr.visual.suggestions-enabled',String(enabled))} catch {}}}>{suggestionsEnabled ? '收起候选' : '启用候选'}</button>
         </section>}
 
-        {active?.readOnly ? <footer className="border-t border-[var(--border)] px-4 py-3 text-sm text-[var(--text-2)]">Gemini 网页同步测试：请在 Gemini 中继续对话。这里每 3 秒更新，不生成回复，不写入记忆。</footer> : <footer className="chat-composer-footer border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+        {active?.readOnly ? <footer className="border-t border-[var(--border)] px-4 py-3 text-sm text-[var(--text-2)]">{active.readOnlyHint||'只读会话，请在来源应用中继续对话。'}</footer> : <footer className="chat-composer-footer border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3">
           {/* 待发出去的图（§19.17）：选图 / Ctrl+V 后先挂在这里，
               配文可以接着打，按发送（或回车）才真的发出去。 */}
           {pendingMedia.length > 0 && <div className="flex flex-wrap gap-2 p-2">
@@ -2099,13 +2121,13 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={e => {void attachFiles(Array.from(e.target.files || []));e.target.value=''}}/>
           <input ref={videoRef} type="file" accept="video/*" className="hidden" onChange={e => {void attachFiles(Array.from(e.target.files || []));e.target.value=''}}/>
           <div className="composer-input-row">
-            <button type="button" className={'composer-hold '+(asr.listening ? 'is-listening' : '')} aria-label="按住说话" title="按住说话，松手停止；识别结果先填入输入框" disabled={streaming}
+            {voiceComponents.installed && <button type="button" className={'composer-hold '+(asr.listening ? 'is-listening' : '')} aria-label="按住说话" title="浏览器语音识别，可能使用浏览器厂商的在线服务；松手停止，结果填入输入框" disabled={streaming}
               onPointerDown={e => {e.preventDefault();if(!micAvailable){setNotice('当前浏览器暂不支持语音输入，请使用支持语音识别的浏览器并允许麦克风权限。');return}e.currentTarget.setPointerCapture(e.pointerId);if(!asr.listening)startAsr()}}
               onPointerUp={() => asr.stop()} onPointerCancel={() => asr.stop()} onLostPointerCapture={() => asr.stop()}
               onKeyDown={e => {if((e.key===' '||e.key==='Enter')&&!e.repeat){e.preventDefault();if(micAvailable)startAsr();else setNotice('当前浏览器暂不支持语音输入。')}}}
               onKeyUp={e => {if(e.key===' '||e.key==='Enter'){e.preventDefault();asr.stop()}}} onBlur={() => asr.stop()}>
               <UiIcon name="mic" size={21}/><span>{asr.listening ? '松手停止' : '按住说'}</span>
-            </button>
+            </button>}
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -2124,7 +2146,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 const files = Array.from(e.clipboardData.files).filter(f => /^(image|video)\//.test(f.type))
                 if (files.length) { e.preventDefault(); void attachFiles(files) }
               }}
-              placeholder={pendingMedia.length ? '给附件配句话，回车一起发送' : '和小糖人说点什么…'}
+              placeholder={pendingMedia.length ? '给附件配句话，回车一起发送' : '输入消息…'}
               aria-label="聊天输入框" title="电脑端 Enter 发送，Shift+Enter 换行；支持粘贴图片与视频" className="input composer-textarea"
             />
             <button
@@ -2152,12 +2174,12 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           <div className="mobile-settings-card">
             <span className="eyebrow">功能</span>
             <div className="mobile-settings-grid">
-              {active.kind === 'single' && !active.sandbox && !active.readOnly && <button className="status-action" onClick={openVoiceCall} disabled={streaming}><UiIcon name="phone"/>语音通话</button>}
+              {voiceComponents.installed && active.kind === 'single' && !active.sandbox && !active.readOnly && <button className="status-action" onClick={openVoiceCall} disabled={streaming}><UiIcon name="phone"/>语音通话</button>}
               {active.kind === 'group' && (
                 <button
                   className="status-action"
                   onClick={() => setRosterOpen(true)}
-                  title="改群聊成员：谁在「小糖人的家」里（§25）"
+                  title="管理当前群聊成员"
                 >
                   <span className="text-[16px]">👥</span>成员
                 </button>
@@ -2190,7 +2212,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 className={`status-action disabled:opacity-40 ${selectMode ? 'on' : ''}`}
                 onClick={() => setSelectMode((v) => !v)}
                 disabled={streaming || messages.length === 0}
-                title="多选删除：勾选要删的消息（你自己的和小糖人的都行），真删（连带图片文件 / 画廊收藏 / 照片记忆）"
+                title="多选删除：勾选要删的消息（你自己的和角色的都行），真删（连带图片文件 / 画廊收藏 / 照片记忆）"
               >
                 <span className="text-[16px]"><UiIcon name="delete"/></span>删除
               </button>
@@ -2205,7 +2227,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           </div>
 
           {/* 通道切换（§7）：仅切换提示词预设，模型来源统一使用小窝大脑 */}
-          <div className="mobile-settings-card mt-3">
+          {tavernMode && <div className="mobile-settings-card mt-3">
             <span className="eyebrow">通道</span>
             <div className="flex gap-1.5">
               {(['normal', 'uncensored'] as Channel[]).map((ch) => (
@@ -2223,7 +2245,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
                 </button>
               ))}
             </div>
-          </div>
+          </div>}
         </div>
       </section>
 
@@ -2243,7 +2265,8 @@ export default function ChatView({ characters, personas = [], activePersona, ini
           characters={visibleCharacters}
           voiceName={engines.find((e) => e.id === speakEngine)?.name ?? '晓晓'}
           onVoiceCall={openVoiceCall}
-          onVideoCall={() => setNotice('视频通话尚未接入，功能仍在规划中。')}
+          voiceInstalled={voiceComponents.installed}
+          ttsAvailable={voiceComponents.tts_available}
           onPickVoice={openVoicePicker}
           onGeneratePhoto={() => setGenOpen(true)}
         />
@@ -2260,7 +2283,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
       {expert.enabled && toolCenterOpen && <ToolDialog onClose={() => setToolCenterOpen(false)}><ToolCenter personaId={activePersonaId} sessionId={sessionKey} onExample={text => { setInput(text); setToolCenterOpen(false) }} /></ToolDialog>}
       {voiceCallOpen && active?.kind === 'single' && <VoiceCallPanel
         key={`${sessionKey}:voice`}
-        name={activeCharacters[0]?.name || '小糖人'}
+        name={activeCharacters[0]?.name || '角色'}
         setup={{ character_id: active.characterIds[0], persona_id: activePersonaId, session_id: sessionKey,
           base_url: route.chat.baseUrl, api_key: route.chat.apiKey, model: route.chat.model,
           max_tokens: config.maxTokens || null, uncensored: config.channel === 'uncensored', auto_memory: autoMemory && !active.memoryDisabled }}

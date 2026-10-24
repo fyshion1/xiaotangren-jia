@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 
 const backend = fileURLToPath(new URL('../../backend/', import.meta.url))

@@ -1,3 +1,4 @@
+import {themeInstalled} from '#theme/config'
 import { useRef, useState } from 'react'
 import { setExpertMode, useExpertMode } from '../lib/expertMode'
 
@@ -19,7 +20,7 @@ export default function ExpertModeControl() {
       const now = Date.now()
       clicks.current = { count: now - clicks.current.time > 2000 ? 1 : clicks.current.count + 1, time: now }
       if (clicks.current.count >= 7) { setUnlock(true); clicks.current.count = 0 }
-    }}>糖人小窝 · v0.1.0</button>
+    }}>{themeInstalled?'糖人小窝':'工作区'} · v0.1.0</button>
     {enabled && <button className="btn ghost sm" disabled={busy} onClick={() => void save(false)}>{busy ? '正在关闭…' : '关闭专家模式'}</button>}
     </div>
     {unlock && !enabled && <form className="mt-3 flex flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); void save(true) }}>

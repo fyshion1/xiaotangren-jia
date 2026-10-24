@@ -59,19 +59,10 @@ def _role_of(role: str) -> str:
     return role if role in {"user", "assistant"} else "user"
 
 
-def apply_card_display_mode(messages: list[dict], character_ids: list[str], mode: str | None) -> None:
-    if mode not in {'chat', 'html'} or len(character_ids) != 1:
-        return
-    character = db.get_character(character_ids[0])
-    if not character or not character.get('imported'):
-        return
-    instruction = ('本轮使用仅聊天模式。像朋友发消息一样用自然中文回应，保持角色个性；'
-                   '只输出聊天正文，不输出 HTML、CSS、JavaScript、代码围栏、状态面板或卡片模板。') if mode == 'chat' else (
-                   '本轮使用角色卡 HTML 渲染模式。遵循卡内已有的显示格式与模板；没有格式要求时自然回应，不必另造模板。')
-    if messages and messages[0].get('role') == 'system':
-        messages[0]['content'] += '\n\n' + instruction
-    else:
-        messages.insert(0, {'role': 'system', 'content': instruction})
+def apply_card_display_mode(messages, character_ids, mode):
+    from .. import tavern_feature
+    if tavern_feature.enabled():
+        tavern_feature.load("display").apply_card_display_mode(messages, character_ids, mode)
 
 
 def _resolve_persona(persona_id: str | None) -> dict | None:

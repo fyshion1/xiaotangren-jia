@@ -25,6 +25,13 @@ from app.routers import system
 
 
 class StartupSettingsTests(unittest.TestCase):
+    def test_isolated_launcher_routes_frontend_to_its_own_backend(self):
+        from app.launcher import Launcher
+        owner=Launcher(prefs.StartupSettings(),backend_port=18002,frontend_port=15174)
+        owner.control=Mock(server_port=19001)
+        self.assertEqual(owner.environment()['SHIONARIUM_BACKEND_URL'],'http://127.0.0.1:18002')
+        self.assertEqual(owner.environment()['PORT'],'18002')
+
     def setUp(self):
         mode = patch("app.expert_mode.enabled", return_value=True)
         mode.start(); self.addCleanup(mode.stop)
@@ -159,9 +166,12 @@ def backend_fixture(port: int):
         def do_POST(self):
             if self.path == "/hang":
                 state["hung"] = True
-            else:
+            elif self.path == "/api/system/restart":
                 runtime.restart()
                 runtime.exit_soon()
+            else:
+                self.send_error(404)
+                return
             self.reply({"ok": True})
 
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
@@ -174,6 +184,18 @@ def owner_fixture(path: str, port: int):
     module.LOGS = Path(path).parent
 
     class Owner(Launcher):
+        def restart_backend(self):
+            super().restart_backend()
+            if self.backend_ready:
+                # Publish readiness only after the owner has cleared its restart
+                # guard. A new worker may answer health before its owner sees it.
+                Path(path + '.ready').write_text(str(self.backend_servers[0].pid))
+
+        def start_feature(self, feature):
+            # This fixture owns only its backend and companion. Installed local
+            # features must not inject extra requests/restarts into this test.
+            pass
+
         def start_backend(self):
             self.backend_ready = False
             self.spawn("backend", [sys.executable, "-m", "tests.test_launcher", "--backend-fixture", str(port)], module.BACKEND)
@@ -285,7 +307,8 @@ class WindowsLifecycleTests(unittest.TestCase):
                     while time.monotonic() < deadline:
                         try:
                             health = request_json(port, "/api/health", timeout=1)
-                            if health["pid"] != old:
+                            ready = Path(str(path) + '.ready')
+                            if health["pid"] != old and ready.is_file() and ready.read_text() == str(health["pid"]):
                                 break
                         except (OSError, ValueError):
                             pass

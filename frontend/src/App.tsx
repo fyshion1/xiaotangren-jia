@@ -1,5 +1,7 @@
+import UiIcon from './visual/UiIcon'
 import { useCallback, useEffect, useState } from 'react'
 import TopBar from './components/TopBar'
+import CreateAssistantDialog from './components/CreateAssistantDialog'
 import HomeView from './components/HomeView'
 import ChatView from './components/ChatView'
 import NestView from './components/NestView'
@@ -9,6 +11,7 @@ import { PERSONA_FALLBACK, PROFILE_FALLBACK } from './data/characters'
 import { MAIN_PERSONA_ID } from './data/chats'
 import { deleteTavernCard } from './api/cardImport'
 import {
+  asJson,
   createProfile,
   deleteProfile,
   fetchCharacters,
@@ -31,14 +34,15 @@ function initialTheme(): Theme {
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme)
-  const [view, setView] = useState<View>(() => ['#tool-center', '#autonomous-activity', '#project-costs'].includes(window.location.hash) ? 'nest' : 'chat')
+  const [view, setView] = useState<View>(() => ['#tool-center', '#autonomous-activity', '#project-costs', '#plugins', '#character-assets'].includes(window.location.hash) ? 'nest' : 'chat')
   useEffect(() => {
-    const openTools = () => { if (['#tool-center', '#autonomous-activity', '#project-costs'].includes(window.location.hash)) setView('nest') }
+    const openTools = () => { if (['#tool-center', '#autonomous-activity', '#project-costs', '#plugins', '#character-assets'].includes(window.location.hash)) setView('nest') }
     window.addEventListener('hashchange', openTools)
     return () => window.removeEventListener('hashchange', openTools)
   }, [])
   const [characters, setCharacters] = useState<CharacterProfile[]>([])
   const [charsReady, setCharsReady] = useState(false)
+  const [creatingAssistant,setCreatingAssistant]=useState(false)
   // 个人档案（§22）：用户自己的身份，放在「私人空间」里切换。与 characters 分开存，
   // 因为两者语义不同 —— 前者是「被聊的小糖人」，后者是「正在说话的你」。
   const [personas, setPersonas] = useState<CharacterProfile[]>([])
@@ -73,7 +77,7 @@ export default function App() {
       })
       .catch(() => {
         if (!alive) return
-        setCharacters(PROFILE_FALLBACK) // 后端拉不到也先渲染出四位角色，避免白屏
+        setCharacters(PROFILE_FALLBACK) // 使用当前主题或中性本体的离线占位
         setCharsReady(true)
       })
     // 档案列表 + 当前身份一起拉。失败就保持默认（大老大），聊天照常可用。
@@ -113,6 +117,14 @@ export default function App() {
    */
   const onDeleteImportedCard = useCallback(
     async (c: CharacterProfile) => {
+      if (c.characterPackId) {
+        if (!window.confirm(`移除角色“${c.name}”的档案？图片、聊天和记忆会保留，重新导入角色包可恢复同一档案 ID。`)) return
+        try {
+          await asJson(`/api/character-packs/characters/${encodeURIComponent(c.id)}`, {method:'DELETE',headers:{'X-Exploration-Dashboard':'1'}})
+          setCharacters(list => list.filter(item => item.id !== c.id))
+        } catch (error) { window.alert(`移除失败：${String(error)}`) }
+        return
+      }
       const ok = window.confirm(
         `删掉导入的「${c.name}」？\n\n` +
           `和她单独聊的那些记录、你让她记住的事、导入时存下的立绘，会一起清掉。\n` +
@@ -177,6 +189,12 @@ export default function App() {
     setView('chat')
   }, [])
 
+  useEffect(() => {
+    const refresh = () => { void refreshCharacters().catch(error => console.error('角色列表刷新失败', error)) }
+    window.addEventListener('characters-changed', refresh)
+    return () => window.removeEventListener('characters-changed', refresh)
+  }, [refreshCharacters])
+
   const activePersona = personas.find((p) => p.id === activePersonaId) ?? personas[0]
 
   // 聊天页「🧠 记忆」跳私人空间（§22.4）：带一个自增计数，哪怕已经在私人空间也会重新滚过去。
@@ -196,6 +214,13 @@ export default function App() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {!charsReady ? (
           <div className="flex min-h-full items-center justify-center text-sm text-[var(--text-3)]">加载中…</div>
+        ) : characters.length===0 && (view==='chat'||view==='home') ? (
+          <main className="core-empty flex flex-col items-center justify-center min-h-full p-8 text-center">
+            <span className="core-empty-icon"><UiIcon name="chat" size={30}/></span>
+            <h1>创建你的第一位助手</h1>
+            <p>这里还没有助手。取一个名字，写下你希望的交流方式，就可以开始聊天了。</p>
+            <button className="btn" onClick={()=>setCreatingAssistant(true)}><UiIcon name="plus" size={17}/>创建助手</button>
+          </main>
         ) : view === 'home' ? (
           <HomeView
             characters={characters}
@@ -204,6 +229,7 @@ export default function App() {
             onDeleteImportedCard={onDeleteImportedCard}
             onEnterChat={openChat}
             onOpenNest={() => setView('nest')}
+            onCreateCharacter={()=>setCreatingAssistant(true)}
           />
         ) : view === 'nest' ? (
           <NestView />
@@ -241,12 +267,13 @@ export default function App() {
           />
         )}
       </div>
+      {creatingAssistant&&<CreateAssistantDialog onClose={()=>setCreatingAssistant(false)} onCreated={profile=>{setCharacters(list=>[...list,profile]);setCreatingAssistant(false);setChatSessionId(`single-${profile.id}`);setChatMobileTab('chat');setView('chat')}}/>}
       <ReminderNotice personaId={activePersonaId} />
       <nav className="app-mobile-nav" aria-label="手机端主导航">
-        <button onClick={() => { setChatMobileTab('sessions'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-sessions')) }}><span>💬</span>消息</button>
-        <button onClick={() => { setChatMobileTab('chat'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-chat')) }}><span>🐾</span>聊天</button>
-        <button onClick={() => { setChatMobileTab('settings'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-settings')) }}><span>⚙️</span>设置</button>
-        <button onClick={() => setView('space')}><span>🔒</span>隐私</button>
+        <button onClick={() => { setChatMobileTab('sessions'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-sessions')) }}><span><UiIcon name="chat" size={18}/></span>消息</button>
+        <button onClick={() => { setChatMobileTab('chat'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-chat')) }}><span><UiIcon name="chat" size={18}/></span>聊天</button>
+        <button onClick={() => { setChatMobileTab('settings'); setView('chat'); window.dispatchEvent(new Event('xtr-mobile-settings')) }}><span><UiIcon name="settings" size={18}/></span>设置</button>
+        <button onClick={() => setView('space')}><span><UiIcon name="lock" size={18}/></span>隐私</button>
       </nav>
     </div>
   )

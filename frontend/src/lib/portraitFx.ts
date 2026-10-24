@@ -114,7 +114,7 @@ export async function firstFrameOf(src: string): Promise<string | null> {
 
 /** 是不是 GIF（按扩展名判断；附件 URL 形如 /api/files/xx/orig/m-1a2b.gif）。 */
 export function isGif(src: string): boolean {
-  return /\.gif(\?|#|$)/i.test(src)
+  return /\.gif(\?|#|$)|[?&]format=gif(?:&|#|$)|^data:image\/gif;/i.test(src)
 }
 
 /** 主色阵列 → 一条柔和的横向渐变，用作占位区的色底。 */

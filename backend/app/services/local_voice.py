@@ -17,7 +17,9 @@ class LocalVoiceError(RuntimeError):
         self.code = code
         super().__init__(code)
 
-MODEL_DIR = Path(__file__).resolve().parents[2] / 'data' / 'asr' / 'paraformer-zh-en'
+from ..data_paths import runtime_root
+
+MODEL_DIR = runtime_root() / 'asr' / 'paraformer-zh-en'
 _file_asr_lock = threading.Lock()
 _file_recognizer = None
 
@@ -46,7 +48,7 @@ def transcribe_pcm(data: bytes) -> str:
         while recognizer.is_ready(stream):
             recognizer.decode_stream(stream)
         return recognizer.get_result(stream).strip()
-PIPER_DIR = Path(__file__).resolve().parents[2] / 'data' / 'tts' / 'piper'
+PIPER_DIR = runtime_root() / 'tts' / 'piper'
 PIPER_VOICES = ('zh_CN-huayan-medium', 'zh_CN-xiao_ya-medium', 'zh_CN-chaowen-medium')
 
 

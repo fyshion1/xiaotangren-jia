@@ -1,5 +1,5 @@
 // 画廊大图浮层（§9.4 / §19.13）：点开一张收藏图 / 一段画廊视频，把画廊那一套按钮
-// 直接摊在大图上 —— 自动描述 / 编辑 / 进小糖人记忆 / 🔒 私密 / 归属 / 移除。
+// 直接摊在大图上 —— 自动描述 / 编辑 / 加入角色记忆 / 🔒 私密 / 归属 / 移除。
 //
 // 为什么单独抽出来：介绍页的立绘浮层和聊天里的 🖼 画廊浮层本来各写一份 <img>，
 // 介绍页那份只有「看大图」，没有画廊动作 —— 用户要在两个地方来回跳才能改一张图。
@@ -198,7 +198,7 @@ export default function GalleryLightbox({
                 className="input min-h-[64px] w-full resize-y text-[13px]"
                 value={editing}
                 onChange={(e) => setEditing(e.target.value)}
-                placeholder="写一段描述，例如：大诗音系着围裙在烘焙坊里端着刚烤好的小饼干"
+                placeholder="写一段描述，例如：在厨房里端着刚烤好的饼干"
                 autoFocus
               />
               <div className="flex gap-2">
@@ -236,7 +236,7 @@ export default function GalleryLightbox({
           </button>
           <label
             className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-2)]"
-            title="关掉后这一项不再进小糖人的长期记忆，但内容仍留在画廊里"
+            title="关掉后这一项不再进角色的长期记忆，但内容仍留在画廊里"
           >
             <input
               type="checkbox"
@@ -244,11 +244,11 @@ export default function GalleryLightbox({
               disabled={busy}
               onChange={(e) => void toggleMemory(e.target.checked)}
             />
-            进小糖人记忆
+            加入角色记忆
           </label>
           <label
             className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[var(--text-2)]"
-            title="收进私密层：介绍页 / 小窝默认不列出它（防别人瞥屏）。不影响记忆 —— 私密 ≠ 瞒着小糖人"
+            title="收进私密层：介绍页 / 小窝默认不列出它（防别人瞥屏）。不影响记忆 —— 私密不等于停止记忆注入"
           >
             <input
               type="checkbox"

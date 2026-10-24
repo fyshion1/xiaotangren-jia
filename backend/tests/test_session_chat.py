@@ -127,6 +127,7 @@ class SessionChatTests(unittest.TestCase):
         self.assertEqual(result['base_url'], 'http://brain.test/v1')
 
     def test_imported_card_chat_mode_reaches_the_model(self):
+        db.set_settings({'tavern_mode': 'true'})
         db.upsert_character(self.char, {**db.get_character(self.char), 'imported': True})
         response = self.turn(card_display_mode='chat', auto_memory=False)
         self.assertEqual(response.status_code, 200, response.text)
@@ -136,6 +137,7 @@ class SessionChatTests(unittest.TestCase):
         self.assertEqual(changed.status_code, 409)
 
     def test_imported_card_html_mode_and_native_chat_are_separate(self):
+        db.set_settings({'tavern_mode': 'true'})
         db.upsert_character(self.char, {**db.get_character(self.char), 'imported': True})
         response = self.turn(card_display_mode='html', auto_memory=False)
         self.assertEqual(response.status_code, 200, response.text)

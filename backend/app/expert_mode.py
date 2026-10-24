@@ -34,7 +34,8 @@ def require_expert():
 
 
 def plugin_installed() -> bool:
-    return (FEATURES_DIR / 'autonomous-activity' / 'autonomous_activity' / 'plugin.py').is_file()
+    from .plugin_state import enabled as plugin_enabled
+    return plugin_enabled('autonomous_activity') and (FEATURES_DIR / 'autonomous-activity' / 'autonomous_activity' / 'plugin.py').is_file()
 
 
 def status() -> dict:

@@ -1,7 +1,7 @@
 // Browser checks for actual iframe rendering and the sandbox boundary.
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { build } from 'esbuild'
+import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 import { fileURLToPath } from 'node:url'
 

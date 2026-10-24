@@ -369,8 +369,8 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
             html={viewRaw || !aboutZh ? pickHtml(view.about, view.aboutHtml) : aboutZh}
             className="text-[15px] leading-relaxed text-[var(--text-2)]"
           />
-          {hasCardHtml(view.about) && <CardHtmlPreview key={view.id} html={view.about} characterName={view.name} />}
-          {(hasCardHtml(view.greetingSource || view.greetingHtml || '') || view.tavernRegexScripts?.length) && <CardHtmlPreview
+          {tavernMode && hasCardHtml(view.about) && <CardHtmlPreview key={view.id} html={view.about} characterName={view.name} />}
+          {tavernMode && (hasCardHtml(view.greetingSource || view.greetingHtml || '') || view.tavernRegexScripts?.length) && <CardHtmlPreview
             key={`${view.id}:greeting`} html={view.greetingSource || view.greetingHtml || view.greeting || ''}
             characterName={view.name} rules={view.tavernRegexScripts} title="开场白原始排版" />}
         </div>
@@ -423,9 +423,7 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
         {/* CTA */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {onEnterChat && <button className="btn" onClick={onEnterChat}>进入她的小窝 · 聊天</button>}
-          {/* 开场白按钮永远在：档案里没有开场白时按钮是虚的，旁边写明为什么 ——
-              不藏起来，免得用户以为这功能没做。 */}
-          <div className="flex flex-wrap items-center gap-2">
+          {tavernMode && <div className="flex flex-wrap items-center gap-2">
             <button
               className="btn ghost sm"
               onClick={() => void insertGreeting()}
@@ -438,11 +436,11 @@ export default function CharacterProfileCard({ p, onEdit, onEnterChat, onSwitchF
               <span className="max-w-[360px] text-[11px] leading-snug text-[var(--text-3)]">
                 {p.imported
                   ? '档案里没有开场白 —— 这张卡的 first_mes 是空的，或者她是在「存开场白」之前就导入的老卡；重新导一次这张卡才会补进来。'
-                  : '档案里没有开场白 —— 家里这几位小糖人本来就没有；自己写一句填进「开场白」就能用。'}
+                  : '尚未设置开场白，可在档案的「开场白」中添加。'}
               </span>
             )}
             {greetingNote && <span className="max-w-[360px] text-[11px] leading-snug text-[var(--text-3)]">{greetingNote}</span>}
-          </div>
+          </div>}
           <button className="btn ghost sm ml-auto" onClick={onEdit}>
             ✎ 编辑资料
           </button>

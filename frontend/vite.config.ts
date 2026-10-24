@@ -9,6 +9,89 @@ import tailwindcss from '@tailwindcss/vite'
 // 一堆相对路径引用的散文件（moc3 / 贴图 / 动作 / 物理），拷进 frontend/public 会多一份副本，
 // 更容易漏文件。
 const ASSETS_DIR = fileURLToPath(new URL('../assets', import.meta.url))
+const HERE = fileURLToPath(new URL('.', import.meta.url))
+const BACKEND_URL = process.env.SHIONARIUM_BACKEND_URL || 'http://127.0.0.1:8000'
+const THEME_DIR = path.resolve(HERE, '../features/xiaotangren-theme')
+const PLUGIN_STATE = path.resolve(HERE, '../backend/data/plugin-state.json')
+function pluginEnabled(id: string) {
+  try { return JSON.parse(fs.readFileSync(PLUGIN_STATE, 'utf8'))[id]?.disabled !== true }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true; throw error }
+}
+function hasTheme() { return pluginEnabled('xiaotangren_theme') && fs.existsSync(path.join(THEME_DIR, 'xiaotangren_theme/__init__.py')) }
+function hasPanel(folder:string,id:string) {
+  try {
+    const manifest=JSON.parse(fs.readFileSync(path.resolve(HERE,'../features',folder,'plugin.json'),'utf8'))
+    return manifest.id===id&&manifest.kind==='personal-space-panel'&&manifest.host_api===1
+  } catch {return false}
+}
+function hasGemini() {
+  try {
+    const folder=path.resolve(HERE,'../features/gemini-sync')
+    const manifest=JSON.parse(fs.readFileSync(path.join(folder,'plugin.json'),'utf8'))
+    return manifest.id==='gemini_sync'&&manifest.kind==='integration'&&manifest.host_api===1&&fs.existsSync(path.join(folder,'gemini_sync_plugin/__init__.py'))
+  } catch {return false}
+}
+function watchPlugins(): Plugin {
+  return {name:'watch-plugin-state', configureServer(server) {
+    const files=[PLUGIN_STATE,...['personal-profile','personal-database','gemini-sync'].map(folder=>path.resolve(HERE,'../features',folder,'plugin.json'))]
+    server.watcher.add(files)
+    const current=()=>JSON.stringify([hasTheme(),pluginEnabled('tavern'),hasPanel('personal-profile','personal_profile'),hasPanel('personal-database','personal_database'),hasGemini()])
+    let signature=current()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const changed = (file: string) => {
+      if(!files.includes(path.resolve(file))) return
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        const next=current()
+        if(next===signature)return
+        signature=next
+        void server.restart()
+      }, 150)
+    }
+    server.watcher.on('add', changed).on('change', changed).on('unlink', changed)
+    server.httpServer?.once('close', () => { clearTimeout(timer); server.watcher.off('add',changed).off('change',changed).off('unlink',changed) })
+  }}
+}
+
+// The optional theme owns its public files; the host does not retain copies.
+function optionalTheme(): Plugin {
+  const HAS_THEME = hasTheme()
+  let output = ''
+  let building = false
+  const publicRoot = path.join(THEME_DIR, 'public')
+  return {
+    name: 'optional-xiaotangren-theme',
+    configResolved(config) {
+      output = path.resolve(config.root, config.build.outDir)
+      building = config.command === 'build'
+    },
+    transformIndexHtml(html) {
+      const head = HAS_THEME ? fs.readFileSync(path.join(THEME_DIR, 'frontend/head.html'), 'utf8') : ''
+      return (HAS_THEME ? html.replace(/<title>.*?<\/title>/, '') : html)
+        .replace('<!-- optional-theme-head -->', head)
+    },
+    configureServer(server) {
+      if (!HAS_THEME) return
+      server.middlewares.use((req, res, next) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+        let pathname: string
+        try { pathname = decodeURIComponent((req.url || '/').split('?')[0]) } catch { return next() }
+        if (!/^\/(characters|visual)\//.test(pathname)) return next()
+        const file = path.resolve(publicRoot, '.' + pathname)
+        const relative = path.relative(publicRoot, file)
+        if (relative.startsWith('..') || path.isAbsolute(relative)) return next()
+        if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return next()
+        const mime: Record<string, string> = {'.webp':'image/webp', '.png':'image/png', '.jpg':'image/jpeg', '.svg':'image/svg+xml', '.txt':'text/plain; charset=utf-8'}
+        res.setHeader('Content-Type', mime[path.extname(file)] || 'application/octet-stream')
+        if (req.method === 'HEAD') return res.end()
+        fs.createReadStream(file).pipe(res)
+      })
+    },
+    closeBundle() {
+      if (building && HAS_THEME && output && fs.existsSync(publicRoot)) fs.cpSync(publicRoot, output, {recursive:true})
+    },
+  }
+}
 
 // 为什么不用 publicDir 指过去：Vite 会把 publicDir 的内容**按 URL 根**吐出来
 // （默认的 frontend/public/ 就是靠这个，所以它的 vendor/ 在 /vendor/ 下），
@@ -76,8 +159,22 @@ function serveRepoAssets(): Plugin {
   }
 }
 
-export default defineConfig({
-  plugins: [react(), tailwindcss(), serveRepoAssets()],
+export default defineConfig(() => ({
+  // Keep isolated test workspaces from rewriting the live optimizer cache
+  // through their shared node_modules junction.
+  cacheDir: path.resolve(HERE, '.vite'),
+  resolve: {
+    dedupe: ['react', 'react-dom'],
+    alias: {
+      '#theme': path.resolve(HERE, hasTheme()
+        ? '../features/xiaotangren-theme/frontend' : 'src/optional/theme'),
+      '#personal-profile': path.resolve(HERE,hasPanel('personal-profile','personal_profile')?'../features/personal-profile/frontend':'src/optional/personal-profile'),
+      '#personal-database': path.resolve(HERE,hasPanel('personal-database','personal_database')?'../features/personal-database/frontend':'src/optional/personal-database'),
+      '#gemini-sync':path.resolve(HERE,hasGemini()?'../features/gemini-sync/frontend':'src/optional/gemini-sync'),
+      '#tavern': path.resolve(HERE, pluginEnabled('tavern') && fs.existsSync(path.resolve(HERE, '../features/tavern/tavern_feature/__init__.py'))
+      ? '../features/tavern/frontend' : 'src/optional/tavern') },
+  },
+  plugins: [react(), tailwindcss(), serveRepoAssets(), optionalTheme(), watchPlugins()],
   server: {
     // 监听所有网卡 —— 手机连同一校园网时，用电脑局域网 IP 也能打开（默认只监听 localhost 会被拒）。
     host: true,
@@ -87,14 +184,14 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api/voice/call/ws': {
-        target: 'http://127.0.0.1:8000',
+        target: BACKEND_URL,
         ws: true,
         changeOrigin: false,
       },
       // 后端留 127.0.0.1 即可：代理发生在电脑本机，手机只跟 Vite 打交道，
       // /api 由 Vite 转发给后端，所以手机侧不需要、也不应该直连 8000。
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: BACKEND_URL,
         changeOrigin: true,
       },
       // 小窝里的「日语实验室」面板（feature `japanese_lab`）：它自己的服务绑在 8765，
@@ -113,4 +210,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

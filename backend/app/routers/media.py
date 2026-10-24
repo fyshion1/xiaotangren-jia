@@ -31,7 +31,9 @@ from ..services import attachments
 from .chat import ChatMessage, _to_openai_messages, _resolve_persona, context_debug
 
 router = APIRouter(prefix="/media", tags=["media"])
-ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "media_tasks"
+from ..data_paths import runtime_root
+
+ROOT = runtime_root() / "media_tasks"
 MAX_BYTES = 50 * 1024 * 1024  # 50MB
 MAX_DURATION = 15  # 秒
 MAX_FRAMES = 8  # 抽帧上限（token 安全）

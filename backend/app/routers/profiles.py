@@ -44,6 +44,11 @@ async def create_profile(body: dict) -> dict:
     profile_id = (body.get("id") or "").strip()
     if not profile_id or db.get_profile(profile_id) is not None:
         profile_id = f"persona-{uuid.uuid4().hex[:10]}"
+    from ..services import assets
+    try:
+        body = assets.prepare_profile(body)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     db.upsert_profile(profile_id, body)
     return db.get_profile(profile_id) or {}
 
@@ -52,6 +57,11 @@ async def create_profile(body: dict) -> dict:
 async def update_profile(profile_id: str, body: dict) -> dict:
     if db.get_profile(profile_id) is None:
         raise HTTPException(status_code=404, detail="没有这份身份档案")
+    from ..services import assets
+    try:
+        body = assets.prepare_profile(body)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     db.upsert_profile(profile_id, body)
     return db.get_profile(profile_id) or {}
 

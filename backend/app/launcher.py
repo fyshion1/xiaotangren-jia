@@ -132,6 +132,7 @@ class Launcher:
     def environment(self):
         env = os.environ.copy()
         env.update(PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", HOST="127.0.0.1",
+                   SHIONARIUM_BACKEND_URL=f"http://127.0.0.1:{self.backend_port}",
                    PORT=str(self.backend_port), XTR_LAUNCHER_PID=str(os.getpid()),
                    XTR_LAUNCHER_TOKEN=self.token,
                    XTR_LAUNCHER_URL=f"http://127.0.0.1:{self.control.server_port}")
@@ -325,7 +326,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="小糖人之家总启动器")
     parser.add_argument("--configure", action="store_true")
     parser.add_argument("--reset-startup", action="store_true")
+    parser.add_argument('--backend-port',type=int,default=8000)
+    parser.add_argument('--frontend-port',type=int,default=5173)
     args = parser.parse_args(argv)
+    if not all(1 <= port <= 65535 for port in (args.backend_port,args.frontend_port)):
+        parser.error('端口必须在 1 到 65535 之间')
+    if args.backend_port == args.frontend_port:
+        parser.error('前端和后端不能使用同一个端口')
     if os.name != "nt":
         parser.error("此启动器使用 Windows Job，请在 Windows 运行 start.bat")
     if args.configure:
@@ -351,7 +358,7 @@ def main(argv=None):
             say("总启动窗口已经在运行，请回到已有窗口。")
             return 1
         settings = load_startup()
-        launcher = Launcher(settings)
+        launcher = Launcher(settings,backend_port=args.backend_port,frontend_port=args.frontend_port)
         job = WindowsJob()  # Fail closed: never start unmanaged children.
         def stop(*_):
             launcher.stopping.set()

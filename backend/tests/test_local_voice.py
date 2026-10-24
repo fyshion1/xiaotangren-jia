@@ -1,6 +1,8 @@
 """Local adapters: no model download, microphone, cloud keys or paid calls."""
 import asyncio
 import json
+import tempfile
+from pathlib import Path
 import unittest
 import httpx
 from types import SimpleNamespace
@@ -179,6 +181,9 @@ class LocalSocketTests(unittest.TestCase):
             await voice.finish()
             return {'assistant': {'content': '你好。'}}
         model = SimpleNamespace(synthesize=lambda _: iter([SimpleNamespace(audio_int16_bytes=b'\1\0' * 20)]))
+        model_folder=tempfile.TemporaryDirectory()
+        self.addCleanup(model_folder.cleanup)
+        (Path(model_folder.name)/'zh_CN-huayan-medium.onnx').write_bytes(b'fixture')
         app = FastAPI()
         app.include_router(voice_call.router, prefix='/api')
         with patch.object(voice_call, 'LocalRecognizer', Recognizer), \
@@ -187,6 +192,7 @@ class LocalSocketTests(unittest.TestCase):
              patch.object(voice_call, '_session_turn', turn), \
              patch.object(voice_call, 'local_asr_ready', return_value=True), \
              patch.object(voice_call, '_local_asr_installed', return_value=True), \
+             patch.object(voice_call, 'PIPER_DIR', Path(model_folder.name)), \
              patch('app.routers.voice._load_piper', return_value=model), \
              TestClient(app) as client:
             with client.websocket_connect('/api/voice/call/ws', headers={'origin': 'http://testserver'}) as ws:
