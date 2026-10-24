@@ -6,7 +6,9 @@ from pathlib import Path
 
 from .optional_plugins import HostSDK
 
-FEATURES_DIR = Path(__file__).resolve().parents[2] / 'features'
+from .data_paths import features_root
+
+FEATURES_DIR = features_root()
 PACKAGE = 'xiaotangren_tools'
 
 

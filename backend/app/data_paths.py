@@ -9,6 +9,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def features_root() -> Path:
+    """One explicit plugin collection per instance; never merge private defaults."""
+    value = os.getenv('SHIONARIUM_PLUGINS_DIR')
+    if not value:
+        return PROJECT_ROOT / 'features'
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError('SHIONARIUM_PLUGINS_DIR must be an absolute directory')
+    return path.resolve()
+
+
 def runtime_root() -> Path:
     return PROJECT_ROOT / 'backend' / 'data'
 

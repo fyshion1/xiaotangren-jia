@@ -6,8 +6,8 @@
   "scripts": {
     "test:voice": "node --test tests/voice-call.test.mjs",
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "typecheck": "tsc -b",
+    "build": "node tools/typecheck.mjs && vite build",
+    "typecheck": "node tools/typecheck.mjs",
     "preview": "vite preview",
     "test:stream": "node --test tests/stream.test.mjs",
     "test:tools": "node tests/tools-browser.mjs",

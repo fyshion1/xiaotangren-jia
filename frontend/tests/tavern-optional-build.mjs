@@ -40,7 +40,7 @@ try {
   assert.equal((await readdir(assets)).some(name => name.endsWith('.woff2')), false, 'Theme fonts leaked into core')
   assert.equal(bundle.includes('test · Gemini'), false, 'Gemini session leaked into core')
   const html = await readFile(path.join(frontend, 'dist/index.html'), 'utf8')
-  assert(html.includes('<title>聊天</title>'))
+  assert(html.includes('<title>Shionarium</title>'))
   assert.equal(html.includes('xtr.visual.palette'), false)
   assert.equal((await readdir(path.join(frontend, 'dist'))).includes('characters'), false)
   if (process.argv[2]) {

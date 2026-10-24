@@ -10,8 +10,6 @@ import types
 
 from fastapi import Depends, HTTPException
 
-from . import expert_mode
-
 PACKAGE = 'autonomous_activity'
 
 
@@ -20,7 +18,10 @@ class HostSDK(types.ModuleType):
         if name.startswith('__'):
             raise AttributeError(name)
         if name == 'repo':
-            return expert_mode.FEATURES_DIR.parent
+            from .data_paths import PROJECT_ROOT
+            return PROJECT_ROOT
+        if name == 'features_dir':
+            return expert_mode.FEATURES_DIR
         if name == 'expert_enabled':
             return expert_mode.enabled
         if name == 'expert_enabled_in':
@@ -33,6 +34,10 @@ class HostSDK(types.ModuleType):
             return _effective_config
         path = {'db': 'app.db', 'openai': 'app.providers.openai'}.get(name, 'app.services.' + name)
         return importlib.import_module(path)
+
+
+# Define the SDK before expert_mode imports db -> tavern_feature -> this module.
+from . import expert_mode
 
 
 def load():

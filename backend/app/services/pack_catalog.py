@@ -11,10 +11,10 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from .. import db
-from ..data_paths import PROJECT_ROOT
+from ..data_paths import features_root
 from . import character_packs as packs
 
-FEATURES_DIR = PROJECT_ROOT / 'features'
+FEATURES_DIR = features_root()
 HOSTS = {'github.com','raw.githubusercontent.com','objects.githubusercontent.com','release-assets.githubusercontent.com'}
 
 

@@ -4,7 +4,9 @@ import importlib.util
 import sys
 from pathlib import Path
 
-FEATURE_DIR = Path(__file__).resolve().parents[2] / "features" / "xiaotangren-theme"
+from .data_paths import features_root
+
+FEATURE_DIR = features_root() / "xiaotangren-theme"
 PACKAGE = "xiaotangren_theme"
 
 def installed():
@@ -29,7 +31,7 @@ def load(name):
 
 
 def app_name():
-    return load("metadata").NAME if installed() else "聊天服务"
+    return load("metadata").NAME if installed() else "Shionarium"
 
 
 def default_character_id():

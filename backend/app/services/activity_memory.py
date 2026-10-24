@@ -1,6 +1,8 @@
 """Shared, append-only activity evidence; daily views are projections, not competing prose."""
 from __future__ import annotations
 
+from ..data_paths import features_root
+
 import hashlib
 import json
 from contextlib import contextmanager
@@ -181,8 +183,7 @@ def sources(persona: str):
     for source in sorted(ids):
         f = get_feature(source)
         events = records(persona, source=source, limit=1)
-        from pathlib import Path
-        installed = source in CORE_SOURCES or bool(f and f.get('folder') and (Path(__file__).resolve().parents[3] / 'features' / f['folder']).is_dir())
+        installed = source in CORE_SOURCES or bool(f and f.get('folder') and (features_root() / f['folder']).is_dir())
         output.append({**policy(persona, source), 'name': CORE_SOURCES.get(source) or (f or {}).get('name', source),
                        'registered': source in CORE_SOURCES or bool(f), 'installed': installed, 'count': events['total'],
                        'pending_count':sum(i.get('review_status')=='pending' for i in source_documents.get(source, [])),

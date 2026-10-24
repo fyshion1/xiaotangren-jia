@@ -1,9 +1,9 @@
 """Availability contract for trusted, optional personal-data management panels."""
 import json
 from . import plugin_state
-from .data_paths import PROJECT_ROOT
+from .data_paths import features_root
 
-FEATURES_DIR = PROJECT_ROOT / 'features'
+FEATURES_DIR = features_root()
 PANELS = {'personal_profile': ('personal-profile','personal-space.profile'),
           'personal_database': ('personal-database','personal-space.database')}
 

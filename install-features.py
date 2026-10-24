@@ -8,7 +8,13 @@ import tempfile
 import urllib.request
 
 REPO = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO / 'backend'))
+from app.data_paths import features_root
 CHOICES = (("桌宠", "desktop-pet"), ("QQ 桥", "qq-bridge"))
+
+
+def plugins_dir():
+    return features_root() if os.getenv('SHIONARIUM_PLUGINS_DIR') else REPO / 'features'
 
 
 def download(url, target):
@@ -32,7 +38,7 @@ def download(url, target):
 
 
 def install_web():
-    target=REPO/'features'/'tools'
+    target=plugins_dir()/'tools'
     plugin = target / 'src' / 'xiaotangren_tools' / '__init__.py'
     if not target.exists():
         if not shutil.which('git'):
@@ -101,7 +107,7 @@ def main():
     failed = False
     for label, folder in CHOICES:
         print('桌面上显示小糖人并和她互动。' if folder == 'desktop-pet' else '在 QQ 上与小糖人聊天；另外需要兼容的 QQ 客户端和网关。')
-        target = REPO / "features" / folder
+        target = plugins_dir() / folder
         if target.exists():
             print(f"{label}：目录已存在，跳过，不修改已有文件。")
             continue

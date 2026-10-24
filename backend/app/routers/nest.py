@@ -48,7 +48,8 @@ router = APIRouter(prefix="/nest", tags=["nest"])
 # 启动独立功能项目时的落地目录与日志目录。
 # 后端在 backend/ 下跑，仓库根是它的上一级；`data/nest_runs/` 存每个进程的输出日志。
 REPO_ROOT = Path(__file__).resolve().parents[3]
-FEATURES_DIR = REPO_ROOT / "features"
+from ..data_paths import features_root
+FEATURES_DIR = features_root()
 from ..data_paths import runtime_root
 
 RUNS_DIR = runtime_root() / "nest_runs"
@@ -1121,6 +1122,7 @@ async def run_feature(feature_id: str, body: RunIn) -> dict:
             proc = subprocess.Popen(  # noqa: S603 - argv 全部由注册表白名单拼出
                 argv, cwd=str(info["cwd"]), stdout=fp, stderr=subprocess.STDOUT,
                 env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
+                     "SHIONARIUM_CORE_DIR": str(REPO_ROOT), "SHIONARIUM_PLUGINS_DIR": str(FEATURES_DIR),
                      **({"PYTHONPATH": str(Path(__file__).resolve().parents[2])}
                         if info['runner'].get('host_plugin') else {})},
                 creationflags=_CREATE_NEW_GROUP,

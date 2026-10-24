@@ -30,6 +30,8 @@ from .launcher_settings import StartupSettings, load_startup, save_startup
 
 BACKEND = Path(__file__).resolve().parents[1]
 REPO = BACKEND.parent
+from .data_paths import features_root
+FEATURES_DIR = features_root()
 LOGS = BACKEND / "logs"
 
 
@@ -62,7 +64,7 @@ def cleanup_legacy():
             cwd = Path(process.cwd()).resolve()
             backend = cwd == BACKEND and "uvicorn" in args and "app.main:app" in args
             helper = cwd == BACKEND and "app.restart_helper" in args
-            feature = any(cwd == REPO / "features" / folder and module in args and "run" in args
+            feature = any(cwd == FEATURES_DIR / folder and module in args and "run" in args
                           for folder, module in (("qq-bridge", "qqbridge"), ("desktop-pet", "pet")))
             frontend = (cwd == REPO / "frontend" and process.name().lower() in ("node.exe", "node")
                         and any("node_modules" in arg and "vite" in arg for arg in args[1:]))
@@ -133,6 +135,7 @@ class Launcher:
         env = os.environ.copy()
         env.update(PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", HOST="127.0.0.1",
                    SHIONARIUM_BACKEND_URL=f"http://127.0.0.1:{self.backend_port}",
+                   SHIONARIUM_CORE_DIR=str(REPO), SHIONARIUM_PLUGINS_DIR=str(FEATURES_DIR),
                    PORT=str(self.backend_port), XTR_LAUNCHER_PID=str(os.getpid()),
                    XTR_LAUNCHER_TOKEN=self.token,
                    XTR_LAUNCHER_URL=f"http://127.0.0.1:{self.control.server_port}")
@@ -193,7 +196,7 @@ class Launcher:
     def start_feature(self, feature: str):
         from .features_registry import runner_of
         runner = runner_of(feature)
-        if not runner or not (REPO / 'features' / runner['folder']).is_dir():
+        if not runner or not (FEATURES_DIR / runner['folder']).is_dir():
             say(f"{feature} 未安装，跳过。")
             return
         if feature == "qq_bridge":
@@ -269,7 +272,7 @@ class Launcher:
             for feature in FEATURES:
                 runner = feature.get('runner')
                 if runner and any(c['name'] == 'serve' and c.get('background') for c in runner['commands']):
-                    if (REPO / 'features' / runner['folder']).is_dir():
+                    if (FEATURES_DIR / runner['folder']).is_dir():
                         threading.Thread(target=self.start_feature, args=(feature['id'],), daemon=True).start()
         say("关闭本窗口 = 退出全部服务（含 QQ 桥、网关、桌宠和前端）。")
         if self.settings.frontend:
@@ -323,7 +326,7 @@ def configure():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="小糖人之家总启动器")
+    parser = argparse.ArgumentParser(description="Shionarium 总启动器")
     parser.add_argument("--configure", action="store_true")
     parser.add_argument("--reset-startup", action="store_true")
     parser.add_argument('--backend-port',type=int,default=8000)

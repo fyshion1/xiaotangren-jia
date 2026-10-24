@@ -1,7 +1,7 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title Xiaotangren Jia - close this window to stop everything
+title Shionarium - close this window to stop everything
 cd /d "%~dp0backend"
 set PYTHONIOENCODING=utf-8
 set PYTHONUNBUFFERED=1

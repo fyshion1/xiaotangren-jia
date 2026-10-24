@@ -6,10 +6,10 @@ import sys
 import types
 
 from fastapi import HTTPException
-from .data_paths import PROJECT_ROOT
+from .data_paths import features_root
 from . import plugin_state
 
-FEATURES_DIR=PROJECT_ROOT/'features'
+FEATURES_DIR=features_root()
 PACKAGE='gemini_sync_plugin'
 
 

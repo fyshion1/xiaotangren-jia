@@ -23,6 +23,10 @@
 | 自主活动与小工作室 | 自主活动设置、项目申请、预算、成果与隔离工作区管理；容器执行需要 Docker 和配套镜像。 |
 | 轻量与委托运行 | 可选轻量常驻主机和独立算力端，见[部署指南](docs/guides/delegated-mode.md)。 |
 
+## 内核与小糖人之家
+
+Shionarium 是唯一的公开内核仓库；小糖人之家在私有 `xiaotangren-home` 组合仓库集中管理插件，通过 Git 子模块固定内核版本，不复制维护两份内核。插件不必各占一个仓库。自用组合、路径设置和更新方式见[两仓库工作流](docs/guides/distribution-workspace.md)。旧的本地工作目录不自动搬动，已有聊天和配置保留。
+
 ## 首次安装：推荐 Windows 网页测试
 
 准备 Git、**Python 3.11**（项目声明支持 3.10+）、**Node.js 22 LTS** 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。网页基础聊天不要求独立显卡、Docker、QQ 或桌宠。
@@ -32,8 +36,8 @@
 在 PowerShell 中运行：
 
 ```powershell
-git clone https://github.com/fyshion1/xiaotangren-jia.git
-cd xiaotangren-jia
+git clone https://github.com/fyshion1/shionarium.git
+cd shionarium
 python install-features.py
 ```
 

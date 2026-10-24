@@ -10,7 +10,9 @@ from .. import plugin_state
 from ..features_registry import all_features, get_feature, folder_has_payload
 from ..local_access import local_dashboard
 
-FEATURES_DIR = Path(__file__).resolve().parents[3] / 'features'
+from ..data_paths import features_root
+
+FEATURES_DIR = features_root()
 from ..data_paths import runtime_root
 
 ARCHIVE_DIR = runtime_root() / 'uninstalled-plugins'

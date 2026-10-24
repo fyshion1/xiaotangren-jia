@@ -11,7 +11,10 @@ import tailwindcss from '@tailwindcss/vite'
 const ASSETS_DIR = fileURLToPath(new URL('../assets', import.meta.url))
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const BACKEND_URL = process.env.SHIONARIUM_BACKEND_URL || 'http://127.0.0.1:8000'
-const THEME_DIR = path.resolve(HERE, '../features/xiaotangren-theme')
+const configuredPlugins = process.env.SHIONARIUM_PLUGINS_DIR
+if (configuredPlugins && !path.isAbsolute(configuredPlugins)) throw new Error('SHIONARIUM_PLUGINS_DIR must be an absolute directory')
+const PLUGINS_DIR = configuredPlugins ? path.resolve(configuredPlugins) : path.resolve(HERE, '../features')
+const THEME_DIR = path.join(PLUGINS_DIR, 'xiaotangren-theme')
 const PLUGIN_STATE = path.resolve(HERE, '../backend/data/plugin-state.json')
 function pluginEnabled(id: string) {
   try { return JSON.parse(fs.readFileSync(PLUGIN_STATE, 'utf8'))[id]?.disabled !== true }
@@ -20,20 +23,20 @@ function pluginEnabled(id: string) {
 function hasTheme() { return pluginEnabled('xiaotangren_theme') && fs.existsSync(path.join(THEME_DIR, 'xiaotangren_theme/__init__.py')) }
 function hasPanel(folder:string,id:string) {
   try {
-    const manifest=JSON.parse(fs.readFileSync(path.resolve(HERE,'../features',folder,'plugin.json'),'utf8'))
+    const manifest=JSON.parse(fs.readFileSync(path.join(PLUGINS_DIR,folder,'plugin.json'),'utf8'))
     return manifest.id===id&&manifest.kind==='personal-space-panel'&&manifest.host_api===1
   } catch {return false}
 }
 function hasGemini() {
   try {
-    const folder=path.resolve(HERE,'../features/gemini-sync')
+    const folder=path.join(PLUGINS_DIR,'gemini-sync')
     const manifest=JSON.parse(fs.readFileSync(path.join(folder,'plugin.json'),'utf8'))
     return manifest.id==='gemini_sync'&&manifest.kind==='integration'&&manifest.host_api===1&&fs.existsSync(path.join(folder,'gemini_sync_plugin/__init__.py'))
   } catch {return false}
 }
 function watchPlugins(): Plugin {
   return {name:'watch-plugin-state', configureServer(server) {
-    const files=[PLUGIN_STATE,...['personal-profile','personal-database','gemini-sync'].map(folder=>path.resolve(HERE,'../features',folder,'plugin.json'))]
+    const files=[PLUGIN_STATE,...['personal-profile','personal-database','gemini-sync'].map(folder=>path.join(PLUGINS_DIR,folder,'plugin.json'))]
     server.watcher.add(files)
     const current=()=>JSON.stringify([hasTheme(),pluginEnabled('tavern'),hasPanel('personal-profile','personal_profile'),hasPanel('personal-database','personal_database'),hasGemini()])
     let signature=current()
@@ -166,16 +169,18 @@ export default defineConfig(() => ({
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: {
+      '#shionarium': path.join(HERE,'src'),
       '#theme': path.resolve(HERE, hasTheme()
-        ? '../features/xiaotangren-theme/frontend' : 'src/optional/theme'),
-      '#personal-profile': path.resolve(HERE,hasPanel('personal-profile','personal_profile')?'../features/personal-profile/frontend':'src/optional/personal-profile'),
-      '#personal-database': path.resolve(HERE,hasPanel('personal-database','personal_database')?'../features/personal-database/frontend':'src/optional/personal-database'),
-      '#gemini-sync':path.resolve(HERE,hasGemini()?'../features/gemini-sync/frontend':'src/optional/gemini-sync'),
-      '#tavern': path.resolve(HERE, pluginEnabled('tavern') && fs.existsSync(path.resolve(HERE, '../features/tavern/tavern_feature/__init__.py'))
-      ? '../features/tavern/frontend' : 'src/optional/tavern') },
+        ? path.join(THEME_DIR,'frontend') : 'src/optional/theme'),
+      '#personal-profile': hasPanel('personal-profile','personal_profile')?path.join(PLUGINS_DIR,'personal-profile/frontend'):path.join(HERE,'src/optional/personal-profile'),
+      '#personal-database': hasPanel('personal-database','personal_database')?path.join(PLUGINS_DIR,'personal-database/frontend'):path.join(HERE,'src/optional/personal-database'),
+      '#gemini-sync':hasGemini()?path.join(PLUGINS_DIR,'gemini-sync/frontend'):path.join(HERE,'src/optional/gemini-sync'),
+      '#tavern': pluginEnabled('tavern') && fs.existsSync(path.join(PLUGINS_DIR, 'tavern/tavern_feature/__init__.py'))
+      ? path.join(PLUGINS_DIR,'tavern/frontend') : path.join(HERE,'src/optional/tavern') },
   },
   plugins: [react(), tailwindcss(), serveRepoAssets(), optionalTheme(), watchPlugins()],
   server: {
+    fs: {allow: [path.resolve(HERE,'..'), PLUGINS_DIR]},
     // 监听所有网卡 —— 手机连同一校园网时，用电脑局域网 IP 也能打开（默认只监听 localhost 会被拒）。
     host: true,
     // 允许用 IP / 局域网主机名访问；仅本地开发用，别拿去公网裸奔。

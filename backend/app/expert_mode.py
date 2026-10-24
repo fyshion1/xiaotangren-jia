@@ -9,7 +9,8 @@ from . import db
 
 KEY = 'expert_mode_v1'
 PASSPHRASE = 'xiaotangren'
-FEATURES_DIR = Path(__file__).resolve().parents[2] / 'features'
+from .data_paths import features_root
+FEATURES_DIR = features_root()
 
 
 def enabled() -> bool:
