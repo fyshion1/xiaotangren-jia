@@ -83,7 +83,7 @@ const WORKBENCH_PANELS: Record<string, { title: string; render: () => ReactNode 
   },
 }
 
-/** 工作台最多同时挂几个 —— 大老大要的「1~2 个」。开到第三个就把最旧的顶掉。 */
+/** 工作台最多同时挂几个 —— 用户要的「1~2 个」。开到第三个就把最旧的顶掉。 */
 const MAX_WORKBENCH = 2
 const OPEN_KEY = 'xtr.nestWorkbench'
 const ACTIVE_KEY = 'xtr.nestWorkbenchActive'
@@ -182,7 +182,7 @@ export default function NestView() {
   // 最近用过的（工作台里开着的）—— 收起状态也摆在抽屉上面，省得每次都要点开找。
   const recent = openIds.map((id) => byId.get(id)).filter((f): f is NestFeature => !!f)
 
-  // 把一个项目送进工作台：已经在就切过去；满了就把最旧的那个挤掉（大老大只要 1~2 个）。
+  // 把一个项目送进工作台：已经在就切过去；满了就把最旧的那个挤掉（用户只要 1~2 个）。
   const openPanel = (id: string) => {
     setArea('play')
     setOpenIds((ids) => (ids.includes(id) ? ids : [...ids, id].slice(-MAX_WORKBENCH)))
@@ -231,7 +231,7 @@ export default function NestView() {
       // 面板类：直接开进工作台（以前是「滚到下面那块」，现在下面一次只挂一两个）。
       openPanel(f.id)
       // 独立项目的面板连的是它自己的小服务 —— 面板一挂上就自己按注册表把 serve 拉起来，
-      // 不用大老大再跑去「🚀 让功能跑起来」点一下（§9.6 安全边界不破：前端只报子命令名）。
+      // 不用用户再跑去「🚀 让功能跑起来」点一下（§9.6 安全边界不破：前端只报子命令名）。
       flash(f.id === 'japanese_lab' || f.id === 'english_study'
         ? `「${f.name}」开在工作台里了 —— 它的服务正在自动拉起来，一两秒就好。`
         : f.id === 'qq_bridge'

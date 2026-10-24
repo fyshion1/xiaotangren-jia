@@ -113,7 +113,7 @@ async def social(body: SocialIn):
             from ..services.prompt.assembler import _persona_block
             char = db.get_character(speaker) or {}
             history = [{'role': m['role'], 'content': str(m['content'])[:400]} for m in db.list_messages(sid, limit=4)]
-            prompt = _persona_block(char)[:3500] + '\n你想主动来陪大老大聊一句。他欢迎你热情自然地靠近，不要习惯性说“不吵你”“算了算了”或“有事再喊我”；可以顺着最近话题多接一句、分享当下想法、轻轻吐槽或表达想念，不必每次都问问题。按你的人设写1到2句、最多100字。不要声称看到了屏幕、听到了环境声音、执行了工具或知道他在做什么。只输出实际台词，不加角色名。没有想说的只输出[等等]。'
+            prompt = _persona_block(char)[:3500] + '\n你想主动来陪用户聊一句。他欢迎你热情自然地靠近，不要习惯性说“不吵你”“算了算了”或“有事再喊我”；可以顺着最近话题多接一句、分享当下想法、轻轻吐槽或表达想念，不必每次都问问题。按你的人设写1到2句、最多100字。不要声称看到了屏幕、听到了环境声音、执行了工具或知道他在做什么。只输出实际台词，不加角色名。没有想说的只输出[等等]。'
             cfg = _effective_config('desktop_pet')
             result = await openai.complete_chat_full([{'role': 'system', 'content': prompt}, *history,
                 {'role': 'user', 'content': '现在可以主动轻轻搭一句话。这是系统调度，不是用户刚发送的聊天。'}],

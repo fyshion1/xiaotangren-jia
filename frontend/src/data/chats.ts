@@ -43,10 +43,10 @@ export type ChatMessage = {
   createdAt?: string
 }
 
-// 默认身份（大老大）的 id。同时也是「会话 id 不加后缀」的那个身份（§22）。
+// 默认身份（用户）的 id。同时也是「会话 id 不加后缀」的那个身份（§22）。
 export const MAIN_PERSONA_ID = 'dalaoda'
 
-// 兼容旧引用：大老大以前混在 characters 里，现在搬到「私人空间」的档案里（§22）。
+// 兼容旧引用：用户以前混在 characters 里，现在搬到「私人空间」的档案里（§22）。
 export const SELF_CHARACTER_ID = MAIN_PERSONA_ID
 
 /**
@@ -68,7 +68,7 @@ export function personasAsCast(profiles: CharacterProfile[], activePersonaId: st
 
 // 由当前角色列表生成默认会话：一个群聊 + 每个小糖人的私聊。
 //
-// `extra` 是「别的身份」在当前视角下现身的样子（§22）：切到汐子时，大老大会作为一位
+// `extra` 是「别的身份」在当前视角下现身的样子（§22）：切到其他身份时，用户会作为一位
 // 可聊角色加进来。会话 id 照旧 `group` / `single-dalaoda` —— 隔离靠 personaSessionId
 // 加前缀，与阵容本身无关。
 //

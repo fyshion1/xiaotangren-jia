@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 from contextlib import ExitStack
 import json
 import os
@@ -109,17 +110,19 @@ def run_case(case, raw, *, topic_drift=False, incremental=False):
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Replay explicitly supplied local model results; no network calls.')
+    parser.add_argument('--results', type=Path, nargs='+', required=True, help='Authorized local results.json files')
+    args = parser.parse_args()
     source_names = ['memory_daily.py', 'memory_workflow.py', 'memory_extract.py', 'memory_cleaning.py',
                     'memory_sources.py', 'persona_memory.py', 'memory_retrieval.py', 'activity_memory.py']
     before = {name: semantic.sha((semantic.ROOT / 'backend/app/services' / name).read_bytes()) for name in source_names}
-    paths = [semantic.HERE / 'model-runs/20261019T021557779118Z/results.json',
-             semantic.HERE / 'model-runs/20261019T022014601442Z/results.json']
+    paths = args.results
     selected = {'S01', 'S06', 'S11'}
     rows, sources = [], {}
     for path in paths:
         report = semantic.read(path)
         cases = {c['id']: c for c in report['plan']['cases']}
-        sources[str(path.relative_to(semantic.ROOT))] = semantic.sha(path.read_bytes())
+        sources[path.name] = semantic.sha(path.read_bytes())
         for result in report['results']:
             if result['id'] in selected and result['status'] == 'needs_review':
                 try:

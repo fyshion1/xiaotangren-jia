@@ -39,19 +39,3 @@ React/桌宠 → 现有会话接口 → 本体可信沙箱适配器 → Python `
 工具开启的聊天采用非流式模型决策，在执行期间发送进度，最后显示回复；未开启工具时保留原有逐字流式聊天。模型供应商需要支持 OpenAI 兼容的 `tools/tool_calls` 协议。网页与桌宠共用此循环；QQ 桥共用执行器，目前保留原循环。外部适配器的 `/api/nest/tool-turn` 仍只负责转发模型决定。
 
 通用网页搜索、歌词搜索、个人知识资料检索及草案、项目费用和日常饮食记录已接入共用工具循环。QQ 桥复用工具执行器并保留独立配置。一次性提醒已接通网页/桌宠；QQ 尚未接提醒，仍使用既有工具循环。
-
-## 验证与截图
-
-2026-10-19：SDK 31 项（含重复调用、预算、纠错、超时及取消）；新增后端 7 项；会话回归 12 项；前端流解析 7 项；桌宠原有单测 5 项通过。前端类型检查、生产构建及桌宠构建通过。
-
-浏览器 `cd frontend; npm run test:tools` 使用独立 Chrome 和假 API，覆盖保存、未保存状态、示例填入、对话框 Escape、实时结果、取消、手机布局与深链接。需要先 `npm run build`。桌宠 `node tests/electron-smoke.cjs --tools` 使用独立 Electron 配置与假后端，覆盖工具状态 IPC、实时结果及取消。
-
-上述自动化回归没有调用付费模型、发送真实 QQ 消息或改动用户会话。本机没有 Docker，未验证容器构建。
-
-随后经用户授权完成真实付费验证：使用小窝实际端点 `https://moyuu.cc/v1` 和用户专用测试 Key，请求并收到网关报告的 `gpt-6.1-sol`。网页 SSE 多步查找→读取→回答、桌宠 NDJSON 读取→回答、网页越界读取→`denied`→如实回复三项均通过。共 7 次成功模型请求，网关报告输入 4798、输出 176、合计 4974 tokens；实际金额与 Key 分组由网关账单确认，测试未额外指定分组请求头。此前对环境默认端点 `https://vsllm.cc/v1` 的一次探测返回 401，因此改用小窝实际端点，没有盲目重试。
-
-真实测试沿用生产 provider、Agent、执行器及会话传输，但使用临时数据库、合成文件、简化测试 Prompt，不加载用户记忆，不启动真实 QQ。没有改变现有模型配置或工具开关，也没有将 Key 写入项目文件。脱敏证据见 [live-smoke.json](../tool-agent-evidence/live-smoke.json)。复现脚本为 `tools/live_tool_smoke.py`，只从标准输入接收 Key，最多 10 次请求、每次最多 1200 输出 tokens，必须手动运行；这不是自动免费单测。
-
-- [桌面工具中心](../tool-agent-evidence/tool-center-desktop.png)
-- [聊天工具结果](../tool-agent-evidence/tool-chat-desktop.png)
-- [手机工具中心](../tool-agent-evidence/tool-center-mobile.png)

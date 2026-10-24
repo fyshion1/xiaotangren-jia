@@ -364,7 +364,7 @@ export default function ChatView({ characters, personas = [], activePersona, ini
   const toolsChoice=useDesignChoice('tools')
   const chatToolsRef=useDismissableDetails()
   const activePersonaId = activePersona?.id ?? MAIN_PERSONA_ID
-  // 当前视角下能出场的全部角色（§22）：小糖人 + 「别的身份」（汐子视角下的大老大）。
+  // 当前视角下能出场的全部角色（§22）：小糖人 + 「别的身份」（其他身份视角下的用户）。
   // 后者不进屋里的成员表，只在这个视角下临时现身，会话 id 照旧，隔离交给 personaSessionId。
   const extraCast = useMemo(() => personasAsCast(personas, activePersonaId), [personas, activePersonaId])
   const visibleCharacters = useMemo(() => [...characters, ...extraCast], [characters, extraCast])

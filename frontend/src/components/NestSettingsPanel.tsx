@@ -1,6 +1,6 @@
 // 小窝 · 功能的开关搬进前端（§9.6.5）。
 //
-// 起因（大老大原话）：「这块希望在前端可以自己配置，现在说比较复杂」——
+// 通过前端配置功能，避免手工编辑配置文件：
 // 以前改 QQ 桥的白名单 / 演谁 / 音色 / 表情包，得开终端编辑 `features/qq-bridge/config.json`
 // （终端中文还是乱码），现在在这里点几下。
 //
@@ -33,18 +33,18 @@ function asList(v: unknown): string[] {
 }
 
 function hint(text: string): string {
-  // 声明里的 desc 是给大老大看的人话，原样显示；只把 markdown 的 **加粗** 去掉。
+  // 声明里的 desc 是给用户看的人话，原样显示；只把 markdown 的 **加粗** 去掉。
   return text.replace(/\*\*/g, '')
 }
 
 // ---- 名字反着写的开关（声明里的 `invert`）----
 //
 // 有些底层 key 天生是反的：`memory.isolate` = 「单独记」（true = 隔离），
-// 而大老大要看的是正面那句「和群聊 / 私聊共享记忆」。声明里标 `invert: true` 之后：
+// 而用户要看的是正面那句「和群聊 / 私聊共享记忆」。声明里标 `invert: true` 之后：
 // **勾选框和「恢复默认」按反的显示**，提交上去的（`values`）永远还是存储语义 ——
 // 功能侧拉回去直接覆盖 config.json，它不认得这个标记，也不该认得。
 
-/** 存储值 → 给大老大看的值（只管显示/勾选）。 */
+/** 存储值 → 给用户看的值（只管显示/勾选）。 */
 function shown(field: NestSettingField, value: unknown): unknown {
   return field.invert && field.type === 'bool' ? !value : value
 }

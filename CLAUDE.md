@@ -1,13 +1,8 @@
-# 开发入口
+# Shionarium development
 
-这是与用户共享、已有大量未提交与未跟踪改动的工作区。保留其他任务的成果。用户当前指示优先于历史文档。
-
-修改自主活动、沙盒或 QQ 接线时，先看 [系统地图](docs/guides/sandbox-development-map.md)，按问题定位到函数，再读相关源码区间；无需先通读整条链。地图是导航，当前代码是事实。
-
-做一个明确任务，完成后报告改了什么、怎样验证、还有什么没做。已有能力内直接推进，普通可逆修复无需反复征求许可。扩展范围前先收敛当前交付。
-
-为降低长会话成本：优先用 rg 定位符号，批量读取必要区间；出现重复调查时把已证实结论写进 [交接记录](docs/evaluations/sandbox-development-handoff.md)。压缩后先读交接，再针对变化查源码。没有变化和新疑点时复用已经通过的验证。
-
-未跟踪文件不会显示在普通 git diff 中：编辑前可在项目外留副本，用 git diff --no-index 对比；这不要求先提交整个工作区。
-
-日常验证优先临时数据库和假 provider。真实模型调用、运行后台、QQ 发布与文件编辑是不同动作；根据用户已有授权判断，避免为了调试产生无意的付费循环或重复消息。保留角色自己在工作区内探索、连续推进和自然交流的空间。
+- Read `README.md` and `docs/README.md` for installation and public documentation.
+- Check Git status before editing; preserve unrelated changes.
+- Keep the framework generic; themes and character packs belong in plugins.
+- Never commit conversations, private authoring documents, credentials, personal libraries or local evaluation output. Run `python tools/check_public_tree.py` before publishing.
+- Prefer temporary databases and synthetic fixtures. Do not start live integrations or make paid requests merely to validate a change.
+- Use the configured Python environment and pinned dependencies. Report changes, tests and limitations accurately.

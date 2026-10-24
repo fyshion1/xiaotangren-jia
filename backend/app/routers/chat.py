@@ -41,7 +41,7 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(default_factory=list)
     # 本会话在场角色 id（群聊 = 多位；私聊 = 一位）；缺省 = 全员在场。
     character_ids: list[str] = Field(default_factory=list)
-    # 当前用户身份 id（§22）。缺省 = 服务端记着的当前身份，再缺省 = 大老大。
+    # 当前用户身份 id（§22）。缺省 = 服务端记着的当前身份，再缺省 = 用户。
     persona_id: str | None = None
     # 模型来源由前端显式传入，未传时用服务端默认（见 config）
     base_url: str | None = None

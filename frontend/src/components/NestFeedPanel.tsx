@@ -4,7 +4,7 @@
 // 推进来，这里渲染成卡片。后端只当中转站，不解释 payload —— 卡片长什么样由 `kind` 决定：
 //   video → 封面 + 标题 + 一句推荐语 + 外链
 //   其余  → 标题 + 简述（note 等）
-// 大老大的反馈（收藏 / 不感兴趣）写回 status，功能项目可以去读回来当信号。
+// 用户的反馈（收藏 / 不感兴趣）写回 status，功能项目可以去读回来当信号。
 
 import { useEffect, useState } from 'react'
 import {

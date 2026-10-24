@@ -72,3 +72,28 @@ docs/pending-agent-response-*.json
 
 # SnowLuma WebUI 本机的密码哈希（机器相关，不进 git）
 backend/config/webui.json
+
+# Private authoring documents and local research are not framework source.
+/规划探讨.md
+/角色设定.md
+/项目坑点总结.md
+/项目要求.txt
+/ui-preview.html
+/doc/
+/docs/plans/
+/docs/product/
+/docs/research/
+/docs/evaluations/
+/docs/desktop-pet-review/
+/docs/*evidence/
+/assets/酒馆角色卡/
+/evals/memory/pilot-config.json
+/evals/memory/runs/
+/evals/memory/model-plans/
+/evals/memory/model-runs/
+/evals/memory/validations/
+/evals/memory/workflow-runs/
+/evals/memory/topic-drift-runs/
+
+/backend/config/runtime.json
+/frontend/artifacts/

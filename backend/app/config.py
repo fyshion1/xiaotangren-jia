@@ -26,14 +26,11 @@ class Settings(BaseSettings):
     worker_images_enabled: bool = False
     serve_frontend: bool = False
 
-    # 模型来源（OpenAI 兼容，多路切换）。几个中转都保留、随时可换：
-    #   vsllm（当前主力）便宜，但模型掺水、没有生图通道；
-    #   moyuu          贵一些，能看图；生图要 gpt-image-* 系列（nanobanana 之类打 /images/generations 会报错）。
-    # 生图中转走 IMAGE_BASE_URL，聊天中转走 MODEL_BASE_URL，互不影响。
-    model_base_url: str = "https://vsllm.cc/v1"
+    # 模型接口由用户配置；不内置维护者的供应商或模型。
+    model_base_url: str = ""
     model_api_key: str = ""
-    model_chat: str = "gemini-3.8-flash"
-    model_vision: str = "gemini-3.8-flash"
+    model_chat: str = ""
+    model_vision: str = ""
     game_chat_timeout: int = 45
     # 生图：默认留空；要用时填 IMAGE_BASE_URL + MODEL_IMAGE（错填会报「没有配置生图模型」）。
     model_image: str = ""

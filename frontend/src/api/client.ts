@@ -437,7 +437,7 @@ export async function claimNestGateway(featureId: string): Promise<NestGatewaySt
   )
 }
 
-/** 「主要看什么」：大老大写给功能的方向说明。本体只存原文，怎么用是功能自己的事。 */
+/** 「主要看什么」：用户写给功能的方向说明。本体只存原文，怎么用是功能自己的事。 */
 export type NestDirective = {
   feature_id: string
   look_for: string

@@ -66,7 +66,7 @@ class BrainDefaultIn(BaseModel):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
-    # 全局默认**必须带视觉路**（大老大批注：QQ 也会看图看视频）。
+    # 全局默认**必须带视觉路**（用户批注：QQ 也会看图看视频）。
     vision_base_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
@@ -81,14 +81,14 @@ class FeatureApiConfigIn(BaseModel):
     vision_base_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
-    # 屏蔽视觉（大老大批注）：False = 这个功能不读视觉那一路。
+    # 屏蔽视觉（用户批注）：False = 这个功能不读视觉那一路。
     needs_vision: bool = True
 
 
 def _effective_config(feature_id: str) -> dict:
     """把「全局默认 + 功能覆盖」合并成适配器实际要用的一份配置。
 
-    **不回退到服务端 .env / 聊天配置** —— 大老大明确要求：小窝大脑用的是小窝自己的通用接口配置，
+    **不回退到服务端 .env / 聊天配置** —— 用户明确要求：小窝大脑用的是小窝自己的通用接口配置，
     不是聊天接口那份 API。没配就是没配，让功能拿到明确的 409 去提示用户填，别偷偷借用。
 
     返回值包含 api_key / vision_api_key 明文，仅限本机桥接端调用，别写日志、别外发。
@@ -823,7 +823,7 @@ class FeedStatusIn(BaseModel):
 
 @router.put("/feed/{item_id}")
 async def update_feed(item_id: str, body: FeedStatusIn) -> dict:
-    """标记已看 / 收藏 / 不感兴趣（大老大对推荐的反馈，功能可以去读回来当信号）。"""
+    """标记已看 / 收藏 / 不感兴趣（用户对推荐的反馈，功能可以去读回来当信号）。"""
     if not db.update_feed_status(item_id, body.status):
         raise HTTPException(404, "动态不存在")
     return {"ok": True, "id": item_id, "status": body.status}
@@ -836,10 +836,10 @@ async def delete_feed(item_id: str) -> dict:
     return {"ok": True, "id": item_id}
 
 
-# ---- 「主要看什么」：大老大写给功能的方向说明（§9.6）----
+# ---- 「主要看什么」：用户写给功能的方向说明（§9.6）----
 #
 # 功能的口味画像（B站那个 data/taste.json）是**从收藏行为长出来的**，慢。
-# 大老大想直接说「我要看什么 / 别给我看什么」时，写在这两格里 —— 前端在功能卡片旁边给入口。
+# 用户想直接说「我要看什么 / 别给我看什么」时，写在这两格里 —— 前端在功能卡片旁边给入口。
 # 本体**只存原文，不解释**：怎么用是功能自己的事（逛 B站 拿它当最高优先级指引、权重 8.0）。
 
 
@@ -860,10 +860,10 @@ async def put_directive(feature_id: str, body: DirectiveIn) -> dict:
     return db.set_feature_directive(feature_id, body.look_for.strip(), body.avoid.strip())
 
 
-# ---- 功能设置：大老大在前端改的那些开关（§9.6.5）----
+# ---- 功能设置：用户在前端改的那些开关（§9.6.5）----
 #
 # 「有哪些项、什么类型、默认值」由功能在注册表里**声明**（跟着功能代码走）；
-# 「值是多少」存在本体（`feature_settings` 表），因为大老大不该为了改个白名单去开终端
+# 「值是多少」存在本体（`feature_settings` 表），因为用户不该为了改个白名单去开终端
 # 编辑 `features/<folder>/config.json`（原话：这块希望在前端可以自己配置）。
 #
 # 边界：本体**不解释**这些字段的业务含义，只做四件事 ——
@@ -1024,7 +1024,7 @@ async def put_feature_settings(feature_id: str, body: SettingsIn) -> dict:
 
 # ---- 启动独立功能项目（本体只开进程，逻辑全在 `features/<folder>/`）----
 #
-# 大老大想在小窝里点一下就把功能跑起来，而不是自己去终端敲命令（终端里中文还会变乱码）。
+# 用户想在小窝里点一下就把功能跑起来，而不是自己去终端敲命令（终端里中文还会变乱码）。
 # **安全边界**：命令串完全由后端注册表拼出 —— 前端只能传「功能 id + 注册表里列出的子命令 + 白名单参数」，
 # 不接受任意命令、任意路径、任意 shell 元字符。进程 cwd 固定在该功能的目录里，日志落 `data/nest_runs/<id>.log`。
 
@@ -1377,7 +1377,7 @@ def _gateway_uin(log: Path) -> str:
     """网关日志里最后一条 `UIN=<号>` —— 它现在挂上的是哪个 QQ。
 
     SnowLuma 不是自己登录，而是注入到一个已经在跑的 QQ 进程里。机器人号没登录、
-    电脑上开着大老大自己的号时，它会默默挂到**错的那个号**上 —— 桥连过去看着一切正常，
+    电脑上开着用户自己的号时，它会默默挂到**错的那个号**上 —— 桥连过去看着一切正常，
     说话的身份却是错的。把号带回前端，前端才能提醒。
 
     日志只当兜底：它记的是「谁被挂上过」，换过号之后不一定马上有新的 UIN 行 ——
@@ -1424,7 +1424,7 @@ def _gateway_status(feature_id: str) -> dict:
     online = _port_listening(port)
     log = _log_path(f"{feature_id}-gateway")
     if online and not ours_alive:
-        # 端口在听但不是这次从小窝起的 —— 大老大自己双击的、或后端重启前起的，都算在线。
+        # 端口在听但不是这次从小窝起的 —— 用户自己双击的、或后端重启前起的，都算在线。
         message = f"{gw['label']} 在线（不是从小窝起的）"
     elif online:
         message = f"{gw['label']} 在线"
@@ -1460,7 +1460,7 @@ def _auto_swap_bot(feature_id: str, gw: dict) -> dict:
     """把网关的 OneBot 端口**换给机器人号**独占（同时登两个号时用）。
 
     两个号的 snowluma 配置写死同一对端口，谁先被挂上谁赢 —— 赢的多半是大号。
-    有 WebUI 密码就替大老大把这个号摘下来、让机器人号顶上去；没填密码就老实说
+    有 WebUI 密码就替用户把这个号摘下来、让机器人号顶上去；没填密码就老实说
     「只是提醒，自己换」。**任何失败都只是没换成**，不影响「网关已经开好了」这件事。
     """
     if _setting(feature_id, 'accounts', []):

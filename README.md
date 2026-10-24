@@ -43,8 +43,6 @@ python install-features.py
 
 下载询问依次提供 **桌宠、QQ 桥、联网搜索、QQ 语音转写、本地说话与听写、按意思查找记忆和资料**，全部默认不安装（直接回车）。提示先解释能做什么，再介绍依赖。QQ 语音转写不下载朗读音色；完整本地语音另含中文音色。「按意思查找」安装本地 embedding 模型，模型约 100 MB，但运行依赖可能占 GB 级空间；不安装仍可关键词检索。安装及首次配置见[可选组件说明](docs/guides/optional-components.md)。其他功能不在安装器中提供选项，请到 [GitHub](https://github.com/fyshion1) 按需求查看各仓库。下载不等于已完成账号配置；私有仓库需要访问权限。以后也可再次运行 `python install-features.py`，已有目录会跳过。
 
-维护者首次部署验收记录、已发现问题及已推送版本的验证范围，见[从 GitHub 开始的首次部署验收](docs/guides/fresh-github-install-2026-10-24.md)。
-
 已有项目时先保存自己的改动，再运行 `git pull`。不要用另一台机器的私人数据覆盖自己的配置。
 
 未安装主题时，首次创建一个“用户”身份和一个“助手”，不预填生日、身体数据、职业或亲密关系。可在私人空间自行编辑，身体尺寸字段默认隐藏，可在编辑器中取消隐藏。更新程序会保留已有档案；旧档案的称呼和介绍需要在私人空间自行修改。
@@ -147,7 +145,7 @@ npm run dev
 ### 语音、视频和生图
 
 - **朗读**：基础安装不含 Edge/Piper 运行库。按需在 `backend/` 执行 `uv sync --locked --inexact --extra online-voice` 安装 Edge 在线朗读；需要联网。Piper 随安装器的本地说话与听写选项安装，需要本地音色。
-- **持续通话**：目前支持单角色私聊。可用本地 Paraformer/Piper 或云端 ASR/TTS；新 clone 不含本机已下载的识别与音色文件。本地语音可选依赖安装命令为 `uv sync --locked --inexact --extra local-voice`（在 `backend/` 执行），模型位置与服务配置见[通话说明](docs/voice-call.md)和[本地语音评估](docs/research/local-streaming-voice-options.md)。未安装语音运行库、未配置云端语音时，聊天页不显示通话、音色和语音输入入口；安装后需要重启后端并刷新页面。入口可见表示可以配置，不保证识别与合成链路均已就绪。按住说话使用浏览器识别服务，不能当成本地 Paraformer。视频通话尚未实现，不显示占位按钮。
+- **持续通话**：目前支持单角色私聊。可用本地 Paraformer/Piper 或云端 ASR/TTS；新 clone 不含本机已下载的识别与音色文件。本地语音可选依赖安装命令为 `uv sync --locked --inexact --extra local-voice`（在 `backend/` 执行），模型位置与服务配置见[通话说明](docs/guides/voice-call.md)和[可选依赖](docs/guides/optional-components.md)。未安装语音运行库、未配置云端语音时，聊天页不显示通话、音色和语音输入入口；安装后需要重启后端并刷新页面。入口可见表示可以配置，不保证识别与合成链路均已就绪。按住说话使用浏览器识别服务，不能当成本地 Paraformer。视频通话尚未实现，不显示占位按钮。
 - **视频**：安装 FFmpeg 并加入 PATH，先用短视频测试；视觉模型仍需另外配置。见[聊天附件说明](docs/guides/chat-media.md)。
 - **生图**：ComfyUI 需要 API 格式工作流及实际安装的模型；示例中的 checkpoint 名称要按自己的环境修改。第三方生图需要支持 `/images/generations` 的服务与 `IMAGE_BASE_URL`、`MODEL_IMAGE` 配置。见[工作流示例](backend/examples/comfyui/README.md)。
 
@@ -155,7 +153,7 @@ npm run dev
 
 **`features/` 中的应用是独立 Git 仓库，本体 clone 不会将它们下载，也没有自动安装全部功能的子模块。** 功能页仅显示已安装并开启的独立功能，未安装的日语、英语和 Gemini 同步等不显示；Gemini 同步实现已迁至独立插件。
 
-2026-10-22 已将桌宠首次提交 `101df58` 推送到私有仓库 [fyshion1/desktop-pet](https://github.com/fyshion1/desktop-pet)，QQ 桥更新 `bf8f092` 已推送到私有仓库 [fyshion1/qq-bridge](https://github.com/fyshion1/qq-bridge)。朋友需先取得两个仓库的访问权限并接受邀请。本体与两个功能分别提交、分别更新；仅拉取本体不会更新它们。
+桌宠和 QQ 桥分别作为可选插件维护。私有仓库需取得访问权限，仅更新内核不会自动更新插件。
 
 #### 桌宠安装
 
@@ -200,7 +198,7 @@ cd ../features/qq-bridge
 
 QQ 需要桥客户端、网关与登录配置；桌宠需要独立桌面应用；日语、英语、项目费用等面板也依赖各自功能项目。需要这些功能时向项目维护者取得对应仓库与安装说明，按 `backend/app/features_registry.py` 的目录约定放入 `features/`。本体仅保留接口、配置与展示层；未安装的功能不会出现在功能列表中。
 
-入口文档：[独立功能约定](features/README.md)、[QQ 网关接入](docs/integrations/qq-gateway-snowluma.md)、[QQ 排查](docs/qq-bridge-troubleshooting.md)、[桌宠方案与接入](docs/plans/desktop-pet-mvp.md)、[Gemini 网页扩展](extensions/gemini-sync/README.md)。
+入口文档：[独立功能约定](features/README.md)、[QQ 网关接入](docs/integrations/qq-gateway-snowluma.md)与[多端对话协议](docs/integrations/shared-conversation-runtime.md)。各插件的安装与排查说明见对应插件 README。
 
 自主活动、联网和容器执行按界面配置与授权使用；活动循环会产生额外模型调用。第一次建议先完成普通聊天测试，再配置模型、预算和所需运行环境。见[小工作室](docs/guides/exploration-workshop.md)与[沙盒系统地图](docs/guides/sandbox-development-map.md)。
 
@@ -272,7 +270,7 @@ extensions/            浏览器扩展
 assets/、models/        素材与本机模型，留意授权与忽略规则
 deploy/                常驻主机及算力端配置样例
 evals/                 记忆等评测数据与运行器
-docs/                  使用指南、协议、研究、方案和评测记录
+docs/                  通用使用指南与接入协议
 ```
 
-完整索引见 [docs/README.md](docs/README.md)。其他常用说明：[工具中心](docs/guides/tool-agent.md)、[一次性提醒](docs/guides/reminders.md)、[跨端共享对话](docs/integrations/shared-conversation-runtime.md)。`项目要求.txt` 和 `docs/plans/` 中的历史设计不等于当前已经实现的功能，实际行为以代码和对应使用说明为准。
+完整索引见 [docs/README.md](docs/README.md)。其他常用说明：[工具中心](docs/guides/tool-agent.md)、[一次性提醒](docs/guides/reminders.md)、[跨端共享对话](docs/integrations/shared-conversation-runtime.md)。私人创作、内部规划及本地评测产物不随内核发布；[源码发布边界](docs/guides/public-source-boundary.md)说明了当前清理与 Git 历史的区别。

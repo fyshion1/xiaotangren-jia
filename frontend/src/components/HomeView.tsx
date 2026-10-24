@@ -303,7 +303,7 @@ export default function HomeView({
   )
 }
 
-/** 私人空间专属：卡片里那两行「这个身份的定位」+ 删除按钮（§22 大老大不能删）。 */
+/** 私人空间专属：卡片里那两行「这个身份的定位」+ 删除按钮（§22 用户不能删）。 */
 function PersonaActions({ p, onDelete }: { p: CharacterProfile; onDelete?: (p: CharacterProfile) => void }) {
   const isMain = p.id === MAIN_PERSONA_ID
   return (

@@ -102,4 +102,4 @@ backend/.venv/Scripts/python.exe -m unittest discover -s backend/tests -t backen
 4. 新增 agent 名字、JSON 字段或提示词不是实现新通道；必须同时核对函数签名、镜像、协议、授权、计量和回归。
 5. 调用次数、缓存输入、总输入与费用不是同一个指标；供应商缓存原因和真实金额没有回执就标未知。
 
-接力模板与最近状态见 [开发交接](../evaluations/sandbox-development-handoff.md)。使用说明见 [小工作室](exploration-workshop.md)。
+接力模板与最近状态见 开发交接（不随内核分发）。使用说明见 [小工作室](exploration-workshop.md)。

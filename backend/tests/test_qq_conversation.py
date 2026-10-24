@@ -545,7 +545,7 @@ class QqConversationTests(unittest.TestCase):
         self.assertNotIn('250～400', prompt)
         self.assertIn('约10～60', prompt)
         self.assertIn('不逐标点机械拆分', prompt)
-        self.assertIn('大老大欢迎你自然亲近、热情接话', prompt)
+        self.assertIn('用户欢迎你自然亲近、热情接话', prompt)
         self.assertIn('避免把‘不吵你’‘算了算了’', prompt)
         self.assertIn('不虚构共同经历', prompt)
         self.assertIn('不要求每位角色都发言', prompt)

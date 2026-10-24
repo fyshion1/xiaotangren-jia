@@ -80,7 +80,7 @@ export default function App() {
         setCharacters(PROFILE_FALLBACK) // 使用当前主题或中性本体的离线占位
         setCharsReady(true)
       })
-    // 档案列表 + 当前身份一起拉。失败就保持默认（大老大），聊天照常可用。
+    // 档案列表 + 当前身份一起拉。失败就保持默认（用户），聊天照常可用。
     fetchProfiles()
       .then((payload) => {
         if (!alive) return
@@ -162,7 +162,7 @@ export default function App() {
   }, [])
 
   // 形态切换（§17）：只改 activeFormId，写回后端 → 刷新 / 换设备 / 换会话都保持。
-  // 在场的可能是小糖人，也可能是「别的身份」（如汐子视角下的大老大），两者存两张表。
+  // 在场的可能是小糖人，也可能是「别的身份」（如其他身份视角下的用户），两者存两张表。
   const onSwitchForm = useCallback(
     async (charId: string, formId: string) => {
       const persona = personas.find((p) => p.id === charId)

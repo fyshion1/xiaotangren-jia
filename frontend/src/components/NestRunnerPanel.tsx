@@ -1,7 +1,7 @@
 // 小窝 · 在小窝里把独立功能跑起来（§9.6）。
 //
 // 以前要自己开终端敲 `python -m scout run`，还得设 PYTHONIOENCODING，不然中文全是乱码
-// （大老大原话：「在 vscs 的终端里跑好像跑不动，没有东西给我」）。现在在这里点一下就行：
+// 通过界面选择命令并查看运行日志：
 //   选谁去看 → 选怎么跑 → 点按钮 → 日志就在下面滚动。
 //
 // 边界：前端只传「功能 id + 注册表里列出的子命令 + 白名单参数」，
@@ -68,7 +68,7 @@ export default function NestRunnerPanel({
   const [running, setRunning] = useState(false)
   const [log, setLog] = useState('')
   const [note, setNote] = useState('')
-  // 「主要看什么」：从后端读回大老大上次写的，改完立刻存（功能下轮就按它找）。
+  // 「主要看什么」：从后端读回用户上次写的，改完立刻存（功能下轮就按它找）。
   const [lookFor, setLookFor] = useState('')
   const [avoid, setAvoid] = useState('')
   const [directiveSaved, setDirectiveSaved] = useState('')

@@ -217,7 +217,7 @@ CREATE TABLE IF NOT EXISTS feature_runs (
     stopped_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_feature_runs_scope ON feature_runs (feature_id, started_at);
--- §9.6 「主要看什么」：大老大给功能写的**方向说明**（人写的，不是功能数据）。
+-- §9.6 「主要看什么」：用户给功能写的**方向说明**（人写的，不是功能数据）。
 -- 本体只负责存 / 取；意思由功能项目自己解释 —— 目前逛 B站 把它作为最高优先级的口味指引。
 CREATE TABLE IF NOT EXISTS feature_directives (
     feature_id TEXT PRIMARY KEY,
@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS feature_directives (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 -- §9.6.5 功能设置：功能项目自己声明的**可配置项**（白名单 / 语音 / 表情包 / 小工具…），
--- 值由大老大在**前端**改，存在本体这一行里（一功能一行 JSON）。
+-- 值由用户在**前端**改，存在本体这一行里（一功能一行 JSON）。
 -- 声明在注册表（代码级资产），值在这里（用户数据）—— 功能拉回去覆盖自己的 config.json。
 CREATE TABLE IF NOT EXISTS feature_settings (
     feature_id TEXT PRIMARY KEY,
@@ -329,11 +329,11 @@ def _write_tombstones(conn: sqlite3.Connection, ids: list[str]) -> None:
 
 
 def _migrate_dalaoda(conn: sqlite3.Connection) -> None:
-    """把大老大从 characters 迁进 profiles（§22）。幂等：跑过一次之后不再有可迁的行。
+    """把用户从 characters 迁进 profiles（§22）。幂等：跑过一次之后不再有可迁的行。
 
     只搬档案，**不动聊天记录 / 记忆 / 画廊** —— 会话 id（`single-dalaoda`）、记忆桶
-    （`personal/dalaoda`）、画廊归属都以「大老大」这个 id 为键，id 不变就全部照旧，
-    切回大老大身份时历史原样还在。这跟「记忆完全独立于用户视角」是同一条原则。
+    （`personal/dalaoda`）、画廊归属都以「用户」这个 id 为键，id 不变就全部照旧，
+    切回用户身份时历史原样还在。这跟「记忆完全独立于用户视角」是同一条原则。
     """
     row = conn.execute("SELECT id, data FROM characters WHERE id = ?", ("dalaoda",)).fetchone()
     if row is None:
@@ -351,8 +351,8 @@ def _migrate_dalaoda(conn: sqlite3.Connection) -> None:
 def _backfill_profile_fields(conn: sqlite3.Connection) -> None:
     """给老库里已有的身份档案补上「种子里新加、而这份档案整个键都还没有」的字段（§22）。
 
-    典型场景：大老大的档案是从 characters 抬过来的老数据，里面没有 `relation` 与
-    `asCharacter` —— 不补的话，Prompt 里注不进用户身份，汐子视角下他也不会现身。
+    典型场景：用户的档案是从 characters 抬过来的老数据，里面没有 `relation` 与
+    `asCharacter` —— 不补的话，Prompt 里注不进用户身份，其他身份视角下他也不会现身。
 
     判定用「键是否存在」而不是「值是否为空」：用户手动清空 relation（存成 `""`）算他的
     修改，不该被种子填回去。只补顶层缺失键，不递归。
@@ -405,7 +405,7 @@ def init_db() -> None:
                 data.update(missing)
                 conn.execute("UPDATE characters SET data = ? WHERE id = ?",
                              (json.dumps(data, ensure_ascii=False), seed["id"]))
-        # 大老大先从 characters 抬出来（老库升级路径），再补种 profiles。
+        # 用户先从 characters 抬出来（老库升级路径），再补种 profiles。
         _migrate_dalaoda(conn)
         # 个人档案（§22）同样逐条补种，且尊重删除墓碑：用户删掉的档案不会被种子复活。
         dead = _read_tombstones(conn)
@@ -503,7 +503,7 @@ def delete_profile(profile_id: str) -> None:
 
 
 def get_active_persona_id() -> str:
-    """当前正在用的身份 id。缺省（首次启动 / 没设置过）= 大老大。"""
+    """当前正在用的身份 id。缺省（首次启动 / 没设置过）= 用户。"""
     with _tx() as conn:
         row = conn.execute(
             "SELECT value FROM settings WHERE key = 'active_persona_id'"
@@ -1157,7 +1157,7 @@ def update_agent_message(message_id: str, status: str) -> bool:
 
 # ---- 功能运行记录（feature_runs，§9.6）----
 #
-# 只记「本体替大老大开过哪个功能的哪个子命令、pid 是多少」—— 判断是否已在跑，别无他用。
+# 只记「本体替用户开过哪个功能的哪个子命令、pid 是多少」—— 判断是否已在跑，别无他用。
 # 功能进程自己死了这里不会立刻知道（读的时候用 psutil 探一下 pid 更准）。
 
 
@@ -1262,10 +1262,10 @@ def delete_feed_item(item_id: str) -> bool:
         return bool(cur.rowcount)
 
 
-# ---- 「主要看什么」：大老大写给功能的方向说明（feature_directives，§9.6）----
+# ---- 「主要看什么」：用户写给功能的方向说明（feature_directives，§9.6）----
 #
 # 功能自己那套口味画像（例如逛 B站 的 data/taste.json）是**从行为长出来的**，
-# 大老大想直接说「我要看什么 / 别给我看什么」时没有地方写 —— 这两句就是那个地方。
+# 用户想直接说「我要看什么 / 别给我看什么」时没有地方写 —— 这两句就是那个地方。
 # 本体只存原文，**不解释**；功能拉回去当最高优先级的口味指引。
 
 
@@ -1289,9 +1289,9 @@ def set_feature_directive(feature_id: str, look_for: str, avoid: str) -> dict:
     return get_feature_directive(feature_id)
 
 
-# ---- 功能设置：大老大在前端改的那些开关（feature_settings，§9.6.5）----
+# ---- 功能设置：用户在前端改的那些开关（feature_settings，§9.6.5）----
 #
-# **为什么值不放在功能的 config.json 里**：功能是独立项目，大老大要改白名单 / 音色 /
+# **为什么值不放在功能的 config.json 里**：功能是独立项目，用户要改白名单 / 音色 /
 # 表情包开关，不该被逼去开终端编辑那个文件（中文还会乱码）。所以：
 #   - **声明**（有哪些项、什么类型、默认值）写在 features_registry.py —— 跟着功能代码走；
 #   - **值**存在这里，一功能一行 JSON，前端改完立刻生效（功能每轮读一次）。

@@ -6,7 +6,7 @@
 
 提醒列表显示待确认、等待提醒、已到时间、已读、已取消和草稿已过期。可以修改或取消未到期提醒；保存修改会返回待确认状态，需要重新确认。到期后点「知道了」标记已读，网页和桌宠会在下一次轮询后同步。草稿最长保存 24 小时，到原定时间也会失效。
 
-沿用原有粉色卡片、主题色和圆角按钮，支持手机、浅色及深色模式。截图：[桌面](../tool-agent-evidence/reminders-desktop.png)、[手机](../tool-agent-evidence/reminders-mobile.png)、[深色](../tool-agent-evidence/reminders-mobile-dark.png)。
+沿用原有粉色卡片、主题色和圆角按钮，支持手机、浅色及深色模式。
 
 ## 时间与通知
 
@@ -21,13 +21,3 @@
 草稿按当前主人身份、内容和绝对时间去重，防止重试重复创建；修改后重新生成原事项不会返回错误内容。确认、编辑、取消、标记已读必须经界面 API，并使用 revision 检测冲突；重复确认不会重复安排。请求只可操作当前活动身份的提醒。本地应用既有的单用户信任模型保持不变，身份筛选不是独立的登录认证。
 
 提醒内容、时间、所属身份、来源会话、状态和修订号保存在 SQLite 的 `reminders` 表，重启不依赖内存计时器。提醒本身是用户需要保留的任务数据；工具运行日志仍只存元数据，不复制参数或工具正文。取消不删除历史。列表显示最多 100 条，优先显示到期和进行中的任务。关闭工具总开关仅停止生成新草稿，已确认任务继续有效；需要停止的任务请在列表取消。
-
-## 验证
-
-2026-10-19：新增提醒测试覆盖参数和时区校验、越权、草稿默认拒绝、重复生成、并发确认、修订冲突、修改后重新确认、取消、过期、重启补显和调度生命周期。网页浏览器测试覆盖确认、修改、到期卡片、已读和手机取消；真实 Electron 测试覆盖到期提示 IPC，原生系统弹窗在自动化测试中关闭，未验证 Windows 实际弹出。
-
-真实付费测试沿完整角色、用户身份和已审核记忆的生产 Prompt 组装链路执行，数据均为临时合成数据：多步文件工具 3 次请求通过；提醒生成草稿 2 次请求通过；时间不明追问 1 次请求通过。网关报告模型均为 `gpt-6.1-sol`，共 6 次成功请求、7497 tokens，金额以网关账单为准。另有一次 500 和一次 429 容量错误，未自动重试；429 对应的追问场景稍后单独补测通过。
-
-证据：[完整上下文](../tool-agent-evidence/live-full-context.json)、[提醒草稿及 429 记录](../tool-agent-evidence/live-reminders.json)、[追问补测](../tool-agent-evidence/live-reminder-clarification.json)。所有付费测试 Key 均未写入项目文件。
-
-免费回归：在 backend 执行 `.venv/Scripts/python.exe -X utf8 -m unittest tests.test_reminders tests.test_agent_tools tests.test_session_chat -q`。前端先构建，再执行 `npm run test:tools`；桌宠先构建，再执行 `node tests/electron-smoke.cjs --tools`。手动付费复现脚本 `tools/live_tool_smoke.py` 支持 `--full-context`、`--reminder` 和 `--clarification`，Key 通过标准输入提供，不属于自动单测。

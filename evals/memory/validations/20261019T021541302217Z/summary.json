@@ -1,5 +1,0 @@
-{
-  "exit_code": 0,
-  "scope": "synthetic offline harness tests; no model requests",
-  "command": "python -m unittest discover -s evals/memory/tests -v"
-}

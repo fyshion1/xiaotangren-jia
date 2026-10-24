@@ -1,12 +1,15 @@
 """Controlled counterexamples for topic drift. No network, no real private data."""
 from pathlib import Path
+import argparse
 
 import semantic
 import workflow
 
 
 def main():
-    source = semantic.HERE / 'model-runs/20261019T022014601442Z/results.json'
+    parser = argparse.ArgumentParser(description='Controlled topic-drift replay using authorized local results.')
+    parser.add_argument('--results', type=Path, required=True, help='Local results.json containing synthetic case S06')
+    source = parser.parse_args().results
     archived = semantic.read(source)
     case = next(c for c in archived['plan']['cases'] if c['id'] == 'S06')
     raw = next(r['raw_output'] for r in archived['results'] if r['id'] == 'S06')

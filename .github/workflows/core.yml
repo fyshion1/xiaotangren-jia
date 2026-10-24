@@ -20,7 +20,8 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: uv sync --locked --inexact --python 3.11
         working-directory: backend
-      - run: .venv/bin/python -m unittest tests.test_feature_paths tests.test_component_inventory tests.test_plugin_management tests.test_personal_space_plugins -q
+      - run: python tools/check_public_tree.py
+      - run: .venv/bin/python -m unittest tests.test_feature_paths tests.test_component_inventory tests.test_plugin_management tests.test_personal_space_plugins tests.test_public_source_boundary -q
         working-directory: backend
       - run: npm ci
         working-directory: frontend

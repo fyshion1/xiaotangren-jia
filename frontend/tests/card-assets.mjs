@@ -1,28 +1,26 @@
-// Inspect the user's actual PNG cards without importing anything into the live database.
+// Synthetic cards only; no personal PNG files, prompts or live database.
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { build } from './feature-build.mjs'
 import { chromium } from '@playwright/test'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const backend = fileURLToPath(new URL('../../backend/', import.meta.url))
-const py = spawnSync(`${backend}/.venv/Scripts/python.exe`, ['-X', 'utf8', '-c', `
-import json
-from pathlib import Path
-from app.services.card_import import read_card
-cards=[]
-for p in (Path.cwd().parent/'assets'/'酒馆角色卡').glob('*.png'):
-    try: cards.append(read_card(p.read_bytes(), p.name))
-    except ValueError: pass  # Ordinary images are covered by the backend import audit.
-print(json.dumps(cards, ensure_ascii=False))
-`], { cwd: backend, encoding: 'utf8' })
-if (py.status !== 0) throw new Error(py.stderr)
-const cards = JSON.parse(py.stdout)
-assert.ok(cards.length >= 2)
+const pluginRoot = process.env.SHIONARIUM_PLUGINS_DIR || resolve(root, '../features')
+const tavern = resolve(pluginRoot, 'tavern/frontend')
+if (!existsSync(resolve(tavern, 'components/CardHtmlPreview.tsx'))) {
+  console.log('SKIP: install the optional tavern plugin or set SHIONARIUM_PLUGINS_DIR to test card rendering.')
+  process.exit(0)
+}
+const cards = [
+  { name: '示例角色 A', display_rules: [], first_mes: '<div class="mx-root mx-theatre" style="--ac:#f1c86a"><div class="mx-scene">合成场景</div><div class="mx-st">合成状态</div><div class="mx-op"><button>A</button><button>B</button><button>C</button></div></div>' },
+  { name: '示例角色 B', display_rules: [], first_mes: '<div style="background-image:linear-gradient(red,blue)"><h1>示例角色 B</h1></div>' },
+]
 const bundle = await build({
+  alias: { '#tavern': tavern, '#shionarium': resolve(root, 'src') },
   stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
     import CardHtmlPreview from './src/components/CardHtmlPreview';
     import CardChatMessage from './src/components/CardChatMessage';
@@ -47,39 +45,38 @@ try {
   const errors = []
   page.on('pageerror', e => errors.push(e.message))
   await page.goto(`http://127.0.0.1:${server.address().port}`, { waitUntil: 'domcontentloaded' })
-  const kanon = page.frameLocator('iframe[title="朝比奈花音"]')
+  const kanon = page.frameLocator('iframe[title="示例角色 A"]')
   await kanon.locator('.mx-root.mx-theatre').waitFor()
   assert.equal(await kanon.locator('.mx-scene').count(), 1)
   assert.equal(await kanon.locator('.mx-st').count(), 1)
   assert.equal(await kanon.locator('.mx-op button').count(), 3)
   const color = await kanon.locator('.mx-root').evaluate(el => getComputedStyle(el).getPropertyValue('--ac').trim())
   assert.equal(color, '#f1c86a')
-  const kotori = page.frameLocator('iframe[title="南小鸟"]')
+  const kotori = page.frameLocator('iframe[title="示例角色 B"]')
   await kotori.locator('h1').waitFor()
-  assert.equal(await kotori.locator('h1').textContent(), '南小鸟')
-  assert.ok((await kotori.locator('body > div').first().evaluate(el => getComputedStyle(el).backgroundImage)).includes('zle6vq.gif'))
-  const output = fileURLToPath(new URL('../../docs/card-preview-evidence/', import.meta.url))
+  assert.equal(await kotori.locator('h1').textContent(), '示例角色 B')
+  assert.ok((await kotori.locator('body > div').first().evaluate(el => getComputedStyle(el).backgroundImage)).includes('linear-gradient'))
+  const output = fileURLToPath(new URL('../artifacts/card-preview/', import.meta.url))
   await mkdir(output, { recursive: true })
   await page.waitForTimeout(2000)
-  await page.locator('iframe[title="朝比奈花音"]').screenshot({ path: `${output}/kanon.png` })
-  await page.locator('iframe[title="南小鸟"]').screenshot({ path: `${output}/kotori.png` })
+  await page.locator('iframe[title="示例角色 A"]').screenshot({ path: `${output}/kanon.png` })
+  await page.locator('iframe[title="示例角色 B"]').screenshot({ path: `${output}/kotori.png` })
   console.log(JSON.stringify({ cards: cards.map(c => ({ name: c.name, rules: c.display_rules.length })),
-    kotoriImageLoaded: await kotori.locator('img').first().evaluate(el => el.complete && el.naturalWidth > 0),
     screenshots: output }, null, 2))
   await page.evaluate(() => window.slow())
   await page.getByText('卡内显示规则执行超时，保留原文', { exact: true }).waitFor()
   await page.getByRole('button', { name: '放大预览', exact: true }).click()
   await page.evaluate(() => window.chat())
-  const chatKanon = page.frameLocator('[data-character="朝比奈花音"] iframe')
+  const chatKanon = page.frameLocator('[data-character="示例角色 A"] iframe')
   await chatKanon.locator('.mx-root.mx-theatre').waitFor()
   assert.equal(await chatKanon.locator('.mx-op button').count(), 3)
   assert.equal(await chatKanon.locator('.mx-root').evaluate(el => getComputedStyle(el).getPropertyValue('--ac').trim()), '#f1c86a')
-  await page.frameLocator('[data-character="南小鸟"] iframe').locator('h1').waitFor()
-  await page.locator('[data-character="朝比奈花音"]').screenshot({ path: `${output}/kanon-chat.png` })
+  await page.frameLocator('[data-character="示例角色 B"] iframe').locator('h1').waitFor()
+  await page.locator('[data-character="示例角色 A"]').screenshot({ path: `${output}/kanon-chat.png` })
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.locator('[data-character="朝比奈花音"]').screenshot({ path: `${output}/kanon-chat-mobile.png` })
+  await page.locator('[data-character="示例角色 A"]').screenshot({ path: `${output}/kanon-chat-mobile.png` })
   assert.deepEqual(errors, [])
-  console.log('PASS: both real cards render in preview and chat; theatre CSS and 3 options load; slow regex is terminated; desktop/mobile screenshots saved.')
+  console.log('PASS: both synthetic cards render in preview and chat; theatre CSS and 3 options load; slow regex is terminated; desktop/mobile screenshots saved.')
 } finally {
   await browser?.close()
   await new Promise(resolve => server.close(resolve))

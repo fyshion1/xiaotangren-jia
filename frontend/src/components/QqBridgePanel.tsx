@@ -3,7 +3,7 @@ import NetworkAccess from './NetworkAccess'
 //
 // 为什么单独做一个面板：QQ 桥要连的是**外面一个网关**（SnowLuma，端口 3001）。
 // 以前网关卡没开的时候，桥只会每 5 秒报一句「Cannot connect to host 127.0.0.1:3001」，
-// 大老大得自己去 D:\SnowLuma 双击 launcher、再回小窝点启动 —— 两处来回跑。
+// 用户得自己去 D:\SnowLuma 双击 launcher、再回小窝点启动 —— 两处来回跑。
 // 现在这里一屏看完：
 //   ① 网关在线没有（后端只探端口，很便宜）；
 //   ② 没开 → 「⚡ 开 QQ 网关」一键把 SnowLuma 起起来（后端会等 3001 真的在听才回话）；

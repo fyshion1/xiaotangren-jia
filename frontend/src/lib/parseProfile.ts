@@ -1,6 +1,6 @@
 // 人设「粘贴模板」解析（§Feature B）。
 //
-// 在 CharacterEditor 里把《角色设定.md》某一角色那一段整块粘进来（或按「标签：值」逐行手写），
+// 在 CharacterEditor 里把角色资料模板某一角色那一段整块粘进来（或按「标签：值」逐行手写），
 // 前端解析成 CharacterProfile 字段，预览勾选后再填进表单。
 // 纯前端：不读文件、不调后端、不动 seed —— 只做「文本 → 字段」的识别。
 //
@@ -207,7 +207,7 @@ export function parseProfileText(text: string): ParseResult {
     assign(fields, warn, key, value)
   }
 
-  // 素材生产附录（角色设定.md 384 行之后）与后面几个角色的块都不要。
+  // 素材生产附录与后面几个角色的块都不要。
   let body = text.replace(/\r\n?/g, '\n')
   const appendix = body.search(/^#+\s*📦|^#+\s*素材生产/m)
   if (appendix >= 0) body = body.slice(0, appendix)

@@ -10,9 +10,9 @@ const STORAGE_KEY = 'xiaotangren.config'
 export type VisionRoute = { baseUrl: string; apiKey: string; model: string }
 
 const FALLBACK: VisionRoute = {
-  baseUrl: 'https://vsllm.cc/v1',
+  baseUrl: '',
   apiKey: '',
-  model: 'gemini-3.8-flash',
+  model: '',
 }
 
 /** 读取当前配置里的 vision 上游（无审查通道生效时优先用它的字段）。 */

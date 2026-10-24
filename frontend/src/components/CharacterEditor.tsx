@@ -415,7 +415,7 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
                 setParsed(null)
               }}
               className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-1 text-[12px] text-[var(--text-2)] hover:border-[var(--pink)]"
-              title="从《角色设定.md》整段复制粘贴，自动识别词条，快速填充"
+              title="从角色资料模板整段复制粘贴，自动识别词条，快速填充"
             >
               📋 粘贴模板填充
             </button>
@@ -429,7 +429,7 @@ export default function CharacterEditor({ initial, onSave, onClose }: Props) {
           <div className="mb-4 rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)] p-3">
             <div className="eyebrow mb-1.5">粘贴模板填充 · 识别词条后勾选应用（保存前可再改）</div>
             <p className="mb-2 text-[12px] text-[var(--text-3)]">
-              支持两种格式：①《角色设定.md》里某个角色那一段整块复制（标签行 + 空行 + 值行）；
+              支持两种格式：①角色资料模板里某个角色那一段整块复制（标签行 + 空行 + 值行）；
               ②每行写「标签：值」，如 <code>生日：3 月 14 日</code>、<code>性格：温柔、深情</code>。
               一次粘一个角色；同名标签只取首个。
             </p>
